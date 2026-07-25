@@ -6,6 +6,7 @@
 
 import sys
 import os
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -14,19 +15,18 @@ import thrift.transport.THttpClient as THttpClient
 import thrift.protocol.TBinaryProtocol as TBinaryProtocol
 
 
-def load_config():
+def load_config(env_path=None):
     """从 .env 文件加载配置"""
-    script_dir = os.path.dirname(__file__)
-    skill_dir = os.path.dirname(script_dir)
-    skills_dir = os.path.dirname(skill_dir)
-    workspace_dir = os.path.dirname(skills_dir)
-    env_path = os.path.join(workspace_dir, '.env')
+    if env_path is None:
+        env_path = Path(__file__).resolve().parent.parent / '.env'
+    else:
+        env_path = Path(env_path)
     
     token = None
     note_store_url = None
 
-    if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
+    if env_path.exists():
+        with env_path.open('r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line.startswith('EVERNOTE_TOKEN='):

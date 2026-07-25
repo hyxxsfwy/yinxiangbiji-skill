@@ -13,7 +13,10 @@
 import sys, os, json, time, hashlib, re, argparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from list_notebooks import load_config
+try:
+    from .list_notebooks import load_config
+except ImportError:
+    from list_notebooks import load_config
 import evernote.edam.notestore.NoteStore as NoteStore
 import thrift.transport.THttpClient as THttpClient
 import thrift.protocol.TBinaryProtocol as TBinaryProtocol

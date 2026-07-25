@@ -12,32 +12,14 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    from .list_notebooks import load_config
+except ImportError:
+    from list_notebooks import load_config
+
 import evernote.edam.notestore.NoteStore as NoteStore
 import thrift.transport.THttpClient as THttpClient
 import thrift.protocol.TBinaryProtocol as TBinaryProtocol
-
-
-def load_config():
-    """从 .env 文件加载配置"""
-    script_dir = os.path.dirname(__file__)
-    skill_dir = os.path.dirname(script_dir)
-    skills_dir = os.path.dirname(skill_dir)
-    workspace_dir = os.path.dirname(skills_dir)
-    env_path = os.path.join(workspace_dir, '.env')
-
-    token = None
-    note_store_url = None
-
-    if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('EVERNOTE_TOKEN='):
-                    token = line.split('=', 1)[1].strip()
-                elif line.startswith('EVERNOTE_NOTESTORE_URL='):
-                    note_store_url = line.split('=', 1)[1].strip()
-
-    return token, note_store_url
 
 
 def parse_query(query):
@@ -45,13 +27,13 @@ def parse_query(query):
     filter = NoteStore.NoteFilter()
 
     if query.startswith('标题:'):
-        filter.words = f'title:{query[3:]}'
+        filter.words = f'intitle:{query[3:]}'
     elif query.startswith('创建时间:'):
-        filter.words = f'created:{query[5:]}'
+        filter.words = f"created:{query[5:].replace('-', '')}"
     elif query.startswith('any:'):
-        # any:关键词1 关键词2 -> 在标题或正文中搜索
+        # any:关键词1 关键词2 -> 匹配任意关键词
         keywords = query[4:].strip()
-        filter.words = keywords
+        filter.words = f'any: {keywords}'
     else:
         # 默认：搜索标题和正文
         filter.words = query
