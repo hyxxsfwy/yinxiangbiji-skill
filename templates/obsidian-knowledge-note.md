@@ -1,7 +1,7 @@
 ---
 type: 知识
 domain:
-status: 常青
+status: 待提炼
 created: {{date}}
 updated: {{date}}
 tags: []

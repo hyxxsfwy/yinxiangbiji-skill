@@ -6,7 +6,7 @@ created: {{date}}
 updated: {{date}}
 tags: []
 review_status: pending
-llm_policy: strict
+llm_policy: standard
 ---
 
 # {{title}}

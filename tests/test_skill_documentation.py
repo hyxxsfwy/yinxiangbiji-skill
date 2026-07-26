@@ -8,6 +8,21 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def parse_frontmatter(markdown: str) -> dict[str, str]:
+    """Parse the scalar fields in a Markdown document's YAML frontmatter."""
+    match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", markdown, re.DOTALL)
+    if match is None:
+        raise ValueError("Markdown document must start with YAML frontmatter")
+
+    fields = {}
+    for line in match.group(1).splitlines():
+        field = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):(?:\s?(.*))?", line)
+        if field is None:
+            raise ValueError(f"Unsupported frontmatter line: {line!r}")
+        fields[field.group(1)] = (field.group(2) or "").strip()
+    return fields
+
+
 class SkillDocumentationTests(unittest.TestCase):
     def setUp(self):
         self.skill = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
@@ -41,6 +56,18 @@ class SkillDocumentationTests(unittest.TestCase):
             self.skill
             + self.readme
             + (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+            + (REPO_ROOT / "references" / "obsidian-knowledge-management.md").read_text(
+                encoding="utf-8"
+            )
+            + (REPO_ROOT / "templates" / "obsidian-source-note.md").read_text(
+                encoding="utf-8"
+            )
+            + (REPO_ROOT / "templates" / "obsidian-knowledge-note.md").read_text(
+                encoding="utf-8"
+            )
+            + (REPO_ROOT / "templates" / "obsidian-knowledge-map.md").read_text(
+                encoding="utf-8"
+            )
         )
         token_pattern = r"S=s[0-9]+:U=[0-9a-f]+:E=[0-9a-f]+:"
         self.assertIsNone(re.search(token_pattern, combined))
@@ -56,26 +83,109 @@ class SkillDocumentationTests(unittest.TestCase):
             with self.subTest(path=relative_path):
                 self.assertTrue((REPO_ROOT / relative_path).is_file())
 
-    def test_obsidian_templates_expose_manual_and_llm_contract(self):
-        source = (
-            REPO_ROOT / "templates/obsidian-source-note.md"
-        ).read_text(encoding="utf-8")
-        knowledge = (
-            REPO_ROOT / "templates/obsidian-knowledge-note.md"
-        ).read_text(encoding="utf-8")
-        knowledge_map = (
-            REPO_ROOT / "templates/obsidian-knowledge-map.md"
+    def test_obsidian_templates_enforce_lifecycle_and_automation_contract(self):
+        templates = {
+            path: (REPO_ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                "templates/obsidian-source-note.md",
+                "templates/obsidian-knowledge-note.md",
+                "templates/obsidian-knowledge-map.md",
+            )
+        }
+        source = parse_frontmatter(templates["templates/obsidian-source-note.md"])
+        knowledge = parse_frontmatter(
+            templates["templates/obsidian-knowledge-note.md"]
+        )
+        knowledge_map = parse_frontmatter(
+            templates["templates/obsidian-knowledge-map.md"]
+        )
+
+        self.assertEqual(
+            {
+                key: source[key]
+                for key in ("type", "status", "review_status", "llm_policy")
+            },
+            {
+                "type": "资料",
+                "status": "待提炼",
+                "review_status": "pending",
+                "llm_policy": "strict",
+            },
+        )
+        self.assertEqual(
+            {
+                key: knowledge[key]
+                for key in ("type", "status", "review_status", "llm_policy")
+            },
+            {
+                "type": "知识",
+                "status": "待提炼",
+                "review_status": "pending",
+                "llm_policy": "standard",
+            },
+        )
+        self.assertFalse(
+            knowledge["review_status"] == "pending"
+            and knowledge["status"] == "常青",
+            "待审知识草稿不得进入常青视图",
+        )
+        self.assertEqual(
+            {
+                key: knowledge_map[key]
+                for key in ("type", "status", "llm_policy")
+            },
+            {"type": "索引", "status": "常青", "llm_policy": "standard"},
+        )
+
+        map_content = templates["templates/obsidian-knowledge-map.md"]
+        auto_start = "<!-- llmwiki:auto:start -->"
+        auto_end = "<!-- llmwiki:auto:end -->"
+        self.assertEqual(map_content.count(auto_start), 1)
+        self.assertEqual(map_content.count(auto_end), 1)
+        self.assertLess(map_content.index(auto_start), map_content.index(auto_end))
+
+    def test_knowledge_management_reference_documents_approval_contract(self):
+        reference = (
+            REPO_ROOT / "references/obsidian-knowledge-management.md"
         ).read_text(encoding="utf-8")
 
-        for field in ("type: 资料", "status: 待提炼", "source_guid:",
-                      "llm_policy: strict"):
-            self.assertIn(field, source)
-        for field in ("type: 知识", "status: 常青", "summary:",
-                      "review_status: pending", "llm_policy: standard"):
-            self.assertIn(field, knowledge)
-        self.assertIn("type: 索引", knowledge_map)
-        self.assertIn("<!-- llmwiki:auto:start -->", knowledge_map)
-        self.assertIn("<!-- llmwiki:auto:end -->", knowledge_map)
+        self.assertIn(
+            "待审知识草稿默认 `status: 待提炼`，只有人工确认后才可提升为 `status: 常青`",
+            reference,
+        )
+        for condition in (
+            "操作在人工规则白名单中",
+            "存在可定位的证据",
+            "只使用已有主题词表",
+            "目标链接唯一且无同名歧义",
+            "生成器与独立审核模型结论一致",
+            "格式、路径、链接和 Properties 校验通过",
+            "变更可回滚且写入日志",
+            "目标笔记不是 `strict` 或 `off`",
+        ):
+            with self.subTest(condition=condition):
+                self.assertIn(condition, reference)
+
+        for human_review_operation in (
+            "创建永久标签",
+            "修改人工结论",
+            "合并、移动、重命名、删除、提升常青状态",
+            "修改人工精选区必须人工审批",
+        ):
+            with self.subTest(operation=human_review_operation):
+                self.assertIn(human_review_operation, reference)
+
+        self.assertIn("90_系统/LLM Wiki/", reference)
+        for asset in (
+            "审核规则.md",
+            "主题词表.md",
+            "别名词典.md",
+            "审核队列/",
+            "审核日志/",
+            "变更快照/",
+        ):
+            with self.subTest(asset=asset):
+                self.assertIn(asset, reference)
 
     def test_skill_documents_curated_obsidian_and_llm_wiki_rules(self):
         required_phrases = [
