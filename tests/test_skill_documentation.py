@@ -88,7 +88,7 @@ class SkillDocumentationTests(unittest.TestCase):
             "LLM Wiki",
             "`llm_policy: off`",
             "自动审批",
-            "链接消歧",
+            "同名或多候选链接存在歧义时不得自动审批，进入人工队列",
             "人工审批",
             "references/obsidian-knowledge-management.md",
             "templates/obsidian-source-note.md",
