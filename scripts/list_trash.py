@@ -1,112 +1,127 @@
 #!/usr/bin/env python3
-"""
-查看废纸篓中的笔记
-用法: python list_trash.py
-"""
+"""查看印象笔记废纸篓中的笔记。"""
 
-import sys
+import argparse
+from datetime import datetime
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    from .runtime import (
+        configure_utf8_output,
+        create_note_store,
+        load_config,
+    )
+except ImportError:
+    from runtime import configure_utf8_output, create_note_store, load_config
+
 import evernote.edam.notestore.NoteStore as NoteStore
-import thrift.transport.THttpClient as THttpClient
-import thrift.protocol.TBinaryProtocol as TBinaryProtocol
-from datetime import datetime
 
 
-def load_config():
-    """从 .env 文件加载配置"""
-    script_dir = os.path.dirname(__file__)
-    skill_dir = os.path.dirname(script_dir)
-    skills_dir = os.path.dirname(skill_dir)
-    workspace_dir = os.path.dirname(skills_dir)
-    env_path = os.path.join(workspace_dir, '.env')
-
-    token = None
-    note_store_url = None
-
-    if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('EVERNOTE_TOKEN='):
-                    token = line.split('=', 1)[1].strip()
-                elif line.startswith('EVERNOTE_NOTESTORE_URL='):
-                    note_store_url = line.split('=', 1)[1].strip()
-
-    return token, note_store_url
-
-
-def list_trash():
-    """列出废纸篓中的笔记"""
-    token, note_store_url = load_config()
-
-    if not token:
-        print("❌ 错误: 未找到 EVERNOTE_TOKEN")
+def find_deleted_notes(note_store, token, max_count=None):
+    """分页查询废纸篓，最多返回 ``max_count`` 条。"""
+    if max_count is not None and max_count <= 0:
         return []
-
-    if not note_store_url:
-        note_store_url = "https://app.yinxiang.com/shard/s16/notestore"
-
-    print(f"🔄 正在连接印象笔记...")
-
-    transport = THttpClient.THttpClient(note_store_url)
-    transport.setCustomHeaders({"Authorization": f"Bearer {token}"})
-    protocol = TBinaryProtocol.TBinaryProtocol(transport)
-    note_store = NoteStore.Client(protocol)
-
-    print("✅ 连接成功")
-    print()
 
     deleted_notes = []
     offset = 0
-    page_size = 100
+    result_spec = NoteStore.NotesMetadataResultSpec(
+        includeTitle=True,
+        includeDeleted=True,
+        includeCreated=True,
+    )
 
     while True:
-        try:
-            result = note_store.findNotesMetadata(
-                token,
-                NoteStore.NoteFilter(),
-                offset,
-                page_size,
-                NoteStore.NotesMetadataResultSpec(includeTitle=True, includeDeleted=True, includeCreated=True)
-            )
-
-            if not result.notes:
-                break
-
-            for note in result.notes:
-                if hasattr(note, 'deleted') and note.deleted and note.deleted > 0:
-                    deleted_notes.append(note)
-
-            offset += page_size
-            if offset >= result.totalNotes or len(deleted_notes) >= 500:
-                break
-
-        except Exception as e:
-            print(f"❌ 扫描出错: {e}")
+        remaining = (
+            None
+            if max_count is None
+            else max_count - len(deleted_notes)
+        )
+        if remaining is not None and remaining <= 0:
+            break
+        page_size = 100 if remaining is None else min(100, remaining)
+        result = note_store.findNotesMetadata(
+            token,
+            NoteStore.NoteFilter(inactive=True),
+            offset,
+            page_size,
+            result_spec,
+        )
+        notes = list(result.notes or [])
+        if not notes:
             break
 
-    print(f"{'='*60}")
-    print(f"🗑️  废纸篓 (共 {len(deleted_notes)} 条)")
-    print(f"{'='*60}")
-    print()
+        deleted_notes.extend(
+            note
+            for note in notes
+            if (getattr(note, "deleted", 0) or 0) > 0
+        )
+        offset += len(notes)
+        if offset >= result.totalNotes:
+            break
 
+    if max_count is not None:
+        return deleted_notes[:max_count]
+    return deleted_notes
+
+
+def list_trash(max_count=500):
+    """列出废纸篓中的笔记。"""
+    token, note_store_url = load_config()
+    if not token or not note_store_url:
+        print("❌ 错误: 未找到 EVERNOTE_TOKEN 或 EVERNOTE_NOTESTORE_URL")
+        return []
+
+    print("🔄 正在连接印象笔记...")
+    note_store = create_note_store(note_store_url, token)
+    print("✅ 连接成功\n")
+
+    try:
+        deleted_notes = find_deleted_notes(
+            note_store,
+            token,
+            max_count=max_count,
+        )
+    except Exception as exc:
+        print(f"❌ 扫描出错: {exc}")
+        return []
+
+    print(f"{'=' * 60}")
+    print(f"🗑️  废纸篓（显示 {len(deleted_notes)} 条）")
+    print(f"{'=' * 60}\n")
     if not deleted_notes:
         print("✅ 废纸篓是空的")
         return []
 
-    for i, note in enumerate(deleted_notes, 1):
-        dt = datetime.fromtimestamp(note.deleted / 1000)
-        date_str = dt.strftime('%Y-%m-%d %H:%M')
-        print(f"{i}. {note.title}")
-        print(f"   删除时间: {date_str}")
-        print(f"   GUID: {note.guid}")
-        print()
-
+    for index, note in enumerate(deleted_notes, 1):
+        deleted_at = datetime.fromtimestamp(note.deleted / 1000)
+        print(f"{index}. {note.title}")
+        print(f"   删除时间: {deleted_at:%Y-%m-%d %H:%M}")
+        print(f"   GUID: {note.guid}\n")
     return deleted_notes
 
 
-if __name__ == '__main__':
-    list_trash()
+def positive_int(value):
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("必须是大于 0 的整数")
+    return parsed
+
+
+def main():
+    configure_utf8_output()
+    parser = argparse.ArgumentParser(description="只读列出印象笔记废纸篓")
+    parser.add_argument(
+        "--max-count",
+        type=positive_int,
+        default=500,
+        help="最多显示的笔记数（默认 500）",
+    )
+    args = parser.parse_args()
+    list_trash(max_count=args.max_count)
+
+
+if __name__ == "__main__":
+    main()

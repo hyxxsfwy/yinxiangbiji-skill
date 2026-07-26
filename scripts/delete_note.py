@@ -1,41 +1,22 @@
 #!/usr/bin/env python3
 """
 删除印象笔记（移至废纸篓）
-用法: python delete_note.py --guid "笔记GUID"
-       python delete_note.py --guid "笔记GUID" --confirm
 """
 
-import sys
+import argparse
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import evernote.edam.notestore.NoteStore as NoteStore
-import thrift.transport.THttpClient as THttpClient
-import thrift.protocol.TBinaryProtocol as TBinaryProtocol
-
-
-def load_config():
-    """从 .env 文件加载配置"""
-    script_dir = os.path.dirname(__file__)
-    skill_dir = os.path.dirname(script_dir)
-    skills_dir = os.path.dirname(skill_dir)
-    workspace_dir = os.path.dirname(skills_dir)
-    env_path = os.path.join(workspace_dir, '.env')
-
-    token = None
-    note_store_url = None
-
-    if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('EVERNOTE_TOKEN='):
-                    token = line.split('=', 1)[1].strip()
-                elif line.startswith('EVERNOTE_NOTESTORE_URL='):
-                    note_store_url = line.split('=', 1)[1].strip()
-
-    return token, note_store_url
+try:
+    from .runtime import (
+        configure_utf8_output,
+        create_note_store,
+        load_config,
+    )
+except ImportError:
+    from runtime import configure_utf8_output, create_note_store, load_config
 
 
 def get_note_title(note_store, token, guid):
@@ -47,23 +28,16 @@ def get_note_title(note_store, token, guid):
         return None
 
 
-def delete_note(guid, confirm=True):
+def delete_note(guid, confirm=False):
     """删除笔记（移至废纸篓，客户端清空废纸篓后永久删除）"""
     token, note_store_url = load_config()
 
-    if not token:
-        print("❌ 错误: 未找到 EVERNOTE_TOKEN")
+    if not token or not note_store_url:
+        print("❌ 错误: 未找到 EVERNOTE_TOKEN 或 EVERNOTE_NOTESTORE_URL")
         return False
 
-    if not note_store_url:
-        note_store_url = "https://app.yinxiang.com/shard/s16/notestore"
-
     print(f"🔄 正在连接印象笔记...")
-
-    transport = THttpClient.THttpClient(note_store_url)
-    transport.setCustomHeaders({"Authorization": f"Bearer {token}"})
-    protocol = TBinaryProtocol.TBinaryProtocol(transport)
-    note_store = NoteStore.Client(protocol)
+    note_store = create_note_store(note_store_url, token)
 
     print("✅ 连接成功")
     print()
@@ -79,8 +53,8 @@ def delete_note(guid, confirm=True):
     print()
 
     if not confirm:
-        print("⚠️ 未指定 --confirm 参数，取消删除")
-        return False
+        print("ℹ️ 预览完成；未指定 --confirm，不会删除")
+        return True
 
     print("🗑️  将笔记移至废纸篓...")
 
@@ -99,29 +73,21 @@ def delete_note(guid, confirm=True):
         return False
 
 
-if __name__ == '__main__':
-    args = sys.argv[1:]
+def main():
+    configure_utf8_output()
+    parser = argparse.ArgumentParser(
+        description="预览或将指定印象笔记移至废纸篓"
+    )
+    parser.add_argument("--guid", required=True, help="笔记 GUID")
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="确认移至废纸篓；省略时只预览",
+    )
+    args = parser.parse_args()
+    succeeded = delete_note(args.guid, args.confirm)
+    return 0 if succeeded else 1
 
-    guid = None
-    confirm = False
 
-    i = 0
-    while i < len(args):
-        if args[i] == '--guid' and i + 1 < len(args):
-            guid = args[i + 1]
-            i += 2
-        elif args[i] == '--confirm':
-            confirm = True
-            i += 1
-        else:
-            i += 1
-
-    if not guid:
-        print("用法: python delete_note.py --guid \"笔记GUID\" [--confirm]")
-        print()
-        print("示例:")
-        print("  python delete_note.py --guid \"xxx-yyy-zzz\"          # 预览（不删除）")
-        print("  python delete_note.py --guid \"xxx-yyy-zzz\" --confirm  # 确认删除")
-        sys.exit(1)
-
-    delete_note(guid, confirm)
+if __name__ == "__main__":
+    raise SystemExit(main())

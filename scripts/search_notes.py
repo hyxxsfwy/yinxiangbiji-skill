@@ -1,66 +1,65 @@
 #!/usr/bin/env python3
 """
 搜索印象笔记
-用法: python search_notes.py "关键词"
-       python search_notes.py "标题:关键词"
-       python search_notes.py "创建时间:2024-01-01"
-       python search_notes.py "any:关键词1 关键词2"
+支持原生印象笔记搜索语法，以及少量中文快捷写法。
 """
 
-import sys
+import argparse
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from .list_notebooks import load_config
+    from .runtime import (
+        configure_utf8_output,
+        create_note_store,
+        find_notes_metadata,
+        load_config,
+    )
 except ImportError:
-    from list_notebooks import load_config
+    from runtime import (
+        configure_utf8_output,
+        create_note_store,
+        find_notes_metadata,
+        load_config,
+    )
 
 import evernote.edam.notestore.NoteStore as NoteStore
-import thrift.transport.THttpClient as THttpClient
-import thrift.protocol.TBinaryProtocol as TBinaryProtocol
 
 
 def parse_query(query):
     """解析搜索语法"""
-    filter = NoteStore.NoteFilter()
+    note_filter = NoteStore.NoteFilter()
 
     if query.startswith('标题:'):
-        filter.words = f'intitle:{query[3:]}'
+        note_filter.words = f'intitle:{query[3:]}'
     elif query.startswith('创建时间:'):
-        filter.words = f"created:{query[5:].replace('-', '')}"
+        note_filter.words = f"created:{query[5:].replace('-', '')}"
     elif query.startswith('any:'):
         # any:关键词1 关键词2 -> 匹配任意关键词
         keywords = query[4:].strip()
-        filter.words = f'any: {keywords}'
+        note_filter.words = f'any: {keywords}'
     else:
         # 默认：搜索标题和正文
-        filter.words = query
+        note_filter.words = query
 
-    return filter
+    return note_filter
 
 
 def search_notes(query, max_results=50):
     """搜索笔记"""
     token, note_store_url = load_config()
 
-    if not token:
-        print("❌ 错误: 未找到 EVERNOTE_TOKEN")
+    if not token or not note_store_url:
+        print("❌ 错误: 未找到 EVERNOTE_TOKEN 或 EVERNOTE_NOTESTORE_URL")
         return []
 
-    if not note_store_url:
-        note_store_url = "https://app.yinxiang.com/shard/s16/notestore"
-
     print(f"🔄 正在连接印象笔记...")
-    print(f"✅ Token: {token[:25]}...")
     print(f"🔍 搜索: {query}")
     print()
 
-    transport = THttpClient.THttpClient(note_store_url)
-    transport.setCustomHeaders({"Authorization": f"Bearer {token}"})
-    protocol = TBinaryProtocol.TBinaryProtocol(transport)
-    note_store = NoteStore.Client(protocol)
+    note_store = create_note_store(note_store_url, token)
 
     print("✅ 连接成功")
     print()
@@ -78,14 +77,20 @@ def search_notes(query, max_results=50):
     )
 
     try:
-        result = note_store.findNotesMetadata(token, note_filter, 0, max_results, result_spec)
+        notes, total_notes = find_notes_metadata(
+            note_store,
+            token,
+            note_filter,
+            max_results,
+            result_spec,
+        )
 
         print(f"{'='*60}")
-        print(f"📋 搜索结果 (共 {result.totalNotes} 条，显示前 {len(result.notes)} 条)")
+        print(f"📋 搜索结果 (共 {total_notes} 条，显示前 {len(notes)} 条)")
         print(f"{'='*60}")
         print()
 
-        if not result.notes:
+        if not notes:
             print("未找到匹配的笔记")
             return []
 
@@ -93,7 +98,7 @@ def search_notes(query, max_results=50):
         notebooks = note_store.listNotebooks(token)
         notebook_map = {nb.guid: nb.name for nb in notebooks}
 
-        for i, note in enumerate(result.notes, 1):
+        for i, note in enumerate(notes, 1):
             nb_name = notebook_map.get(note.notebookGuid, '未知笔记本')
             created = note.created if hasattr(note, 'created') else 0
             # 印象笔记时间戳是毫秒
@@ -108,10 +113,10 @@ def search_notes(query, max_results=50):
                 print(f"   📏 内容长度: {note.contentLength} 字符")
             print()
 
-        if result.totalNotes > max_results:
-            print(f"⚠️ 还有 {result.totalNotes - max_results} 条结果未显示")
+        if total_notes > max_results:
+            print(f"⚠️ 还有 {total_notes - max_results} 条结果未显示")
 
-        return result.notes
+        return notes
 
     except Exception as e:
         print(f"❌ 搜索失败: {e}")
@@ -120,13 +125,32 @@ def search_notes(query, max_results=50):
         return []
 
 
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("用法: python search_notes.py \"关键词\"")
-        print("       python search_notes.py \"标题:关键词\"")
-        print("       python search_notes.py \"创建时间:2024-01-01\"")
-        print("       python search_notes.py \"any:关键词1 关键词2\"")
-        sys.exit(1)
+def positive_int(value):
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("必须是大于 0 的整数")
+    return parsed
 
-    query = ' '.join(sys.argv[1:])
-    search_notes(query)
+
+def main():
+    configure_utf8_output()
+    parser = argparse.ArgumentParser(
+        description="使用印象笔记搜索语法查询标题和正文",
+        epilog=(
+            '示例：search_notes.py "intitle:Agent" --max-results 10；'
+            '也支持“标题:关键词”“创建时间:2024-01-01”和“any:词1 词2”。'
+        ),
+    )
+    parser.add_argument("query", nargs="+", help="搜索表达式")
+    parser.add_argument(
+        "--max-results",
+        type=positive_int,
+        default=50,
+        help="最多显示的结果数（默认 50）",
+    )
+    args = parser.parse_args()
+    search_notes(" ".join(args.query), max_results=args.max_results)
+
+
+if __name__ == "__main__":
+    main()

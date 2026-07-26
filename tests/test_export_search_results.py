@@ -4,10 +4,12 @@ import hashlib
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 from types import SimpleNamespace
 
 from evernote.edam.type.ttypes import NoteSortOrder
+
+from scripts.sync_to_obsidian import save_attachments
+from tests.support import workspace_temp_dir
 
 
 class SearchQueryTests(unittest.TestCase):
@@ -155,17 +157,17 @@ class ExportNoteTests(unittest.TestCase):
             resources=[],
         )
 
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temp_dir:
+        with workspace_temp_dir() as temp_dir:
             exported_path = export_note_to_obsidian(
                 note,
                 notebook_name="2026",
-                target_dir=Path(temp_dir),
+                target_dir=temp_dir,
             )
             exported_content = exported_path.read_text(encoding="utf-8")
 
         self.assertEqual(exported_path.name, "AI 笔记.md")
-        self.assertIn("source_guid: note-guid", exported_content)
-        self.assertIn("notebook: 2026", exported_content)
+        self.assertIn('source_guid: "note-guid"', exported_content)
+        self.assertIn('notebook: "2026"', exported_content)
         self.assertIn("# AI 笔记", exported_content)
         self.assertIn("AI 内容", exported_content)
 
@@ -192,8 +194,8 @@ class ExportNoteTests(unittest.TestCase):
             resources=[resource],
         )
 
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temp_dir:
-            target_dir = Path(temp_dir)
+        with workspace_temp_dir() as temp_dir:
+            target_dir = temp_dir
             exported_path = export_note_to_obsidian(
                 note,
                 notebook_name="微信",
@@ -208,6 +210,201 @@ class ExportNoteTests(unittest.TestCase):
         self.assertIn(
             f"![{image_hash}.png](_attachments/{image_hash}.png)",
             exported_content,
+        )
+        self.assertEqual(
+            exported_content.count(
+                f"![{image_hash}.png](_attachments/{image_hash}.png)"
+            ),
+            1,
+        )
+
+    def test_exports_a_single_title_with_compact_article_layout(self):
+        from scripts.export_search_results import export_note_to_obsidian
+
+        image_data = b"article-image"
+        image_hash = hashlib.md5(image_data).hexdigest()
+        resource = SimpleNamespace(
+            data=SimpleNamespace(body=image_data),
+            mime="image/png",
+            attributes=SimpleNamespace(fileName="article.png"),
+        )
+        note = SimpleNamespace(
+            guid="article-guid",
+            title="删掉80%的Skill，Agent反而更听话了",
+            created=1753488000000,
+            updated=1753574400000,
+            content=(
+                "<en-note>"
+                "<h1>删掉80%的Skill，Agent反而更听话了</h1>"
+                "<div><br></div><div><br></div>"
+                "<h1>01</h1><div>为什么模型不遵循指令</div>"
+                "<div>正文</div>"
+                f'<en-media type="image/png" hash="{image_hash}"/>'
+                "</en-note>"
+            ),
+            resources=[resource],
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            exported_path = export_note_to_obsidian(
+                note,
+                notebook_name="微信",
+                target_dir=temp_dir,
+            )
+            exported_content = exported_path.read_text(encoding="utf-8")
+
+        self.assertNotRegex(exported_content, r"(?m)^title:")
+        self.assertEqual(
+            exported_content.count(
+                "# 删掉80%的Skill，Agent反而更听话了"
+            ),
+            1,
+        )
+        self.assertIn("## 01 为什么模型不遵循指令", exported_content)
+        self.assertNotIn("\n\n\n", exported_content)
+        self.assertIn("![article.png](_attachments/article.png)", exported_content)
+
+
+class AttachmentSavingTests(unittest.TestCase):
+    def test_same_filename_with_different_content_gets_unique_paths(self):
+        first_data = b"first-image"
+        second_data = b"second-image"
+        first_hash = hashlib.md5(first_data).hexdigest()
+        second_hash = hashlib.md5(second_data).hexdigest()
+        resources = {
+            first_hash: {
+                "filename": "640.png",
+                "data": first_data,
+                "mime": "image/png",
+                "hash": first_hash,
+            },
+            second_hash: {
+                "filename": "640.png",
+                "data": second_data,
+                "mime": "image/png",
+                "hash": second_hash,
+            },
+        }
+
+        with workspace_temp_dir() as temp_dir:
+            saved = save_attachments(resources, temp_dir)
+            first_path = temp_dir / saved[first_hash]
+            second_path = temp_dir / saved[second_hash]
+
+            self.assertNotEqual(saved[first_hash], saved[second_hash])
+            self.assertEqual(saved[first_hash], "640.png")
+            self.assertEqual(
+                saved[second_hash],
+                f"640_{second_hash[:8]}.png",
+            )
+            self.assertEqual(first_path.read_bytes(), first_data)
+            self.assertEqual(second_path.read_bytes(), second_data)
+
+    def test_never_reuses_a_conflicting_hash_suffixed_filename(self):
+        image_data = b"expected-image"
+        image_hash = hashlib.md5(image_data).hexdigest()
+        resources = {
+            image_hash: {
+                "filename": "640.png",
+                "data": image_data,
+                "mime": "image/png",
+                "hash": image_hash,
+            },
+        }
+
+        with workspace_temp_dir() as temp_dir:
+            (temp_dir / "640.png").write_bytes(b"conflict-1")
+            (temp_dir / f"640_{image_hash[:8]}.png").write_bytes(
+                b"conflict-2"
+            )
+            (temp_dir / f"640_{image_hash}.png").write_bytes(
+                b"conflict-3"
+            )
+
+            saved = save_attachments(resources, temp_dir)
+            saved_path = temp_dir / saved[image_hash]
+
+            self.assertEqual(
+                saved[image_hash],
+                f"640_{image_hash}_2.png",
+            )
+            self.assertEqual(saved_path.read_bytes(), image_data)
+
+
+class HtmlConversionTests(unittest.TestCase):
+    def test_converts_more_than_one_hundred_inline_resources(self):
+        from scripts.sync_to_obsidian import html_to_md
+
+        hashes = [f"{index:032x}" for index in range(101)]
+        mapping = {value: f"{value}.png" for value in hashes}
+        enml = (
+            "<en-note>"
+            + "".join(
+                f'<en-media type="image/png" hash="{value}"/>'
+                for value in hashes
+            )
+            + "</en-note>"
+        )
+
+        markdown = html_to_md(enml, mapping)
+
+        self.assertNotIn("<en-media", markdown)
+        self.assertEqual(markdown.count("_attachments/"), 101)
+
+    def test_simplifies_body_headings_without_losing_rich_content(self):
+        from scripts.sync_to_obsidian import simplify_markdown
+
+        body = (
+            "# 示例标题\n\n\n\n"
+            "# 01\n\n为什么模型不遵循指令\n\n\n"
+            "1.1 原因一：注意力分散\n\n"
+            "# 其他一级标题\n\n"
+            "* 列表项\n\n"
+            "| 列 | 值 |\n| --- | --- |\n| A | 1 |\n\n"
+            "![图](_attachments/image.png)\n"
+        )
+
+        simplified = simplify_markdown(body, "示例标题")
+
+        self.assertNotIn("# 示例标题", simplified)
+        self.assertIn("## 01 为什么模型不遵循指令", simplified)
+        self.assertIn("### 1.1 原因一：注意力分散", simplified)
+        self.assertIn("## 其他一级标题", simplified)
+        self.assertIn("* 列表项", simplified)
+        self.assertIn("| A | 1 |", simplified)
+        self.assertIn("![图](_attachments/image.png)", simplified)
+        self.assertNotIn("\n\n\n", simplified)
+
+    def test_preserves_evernote_codeblock_line_breaks(self):
+        from scripts.sync_to_obsidian import html_to_md, simplify_markdown
+
+        enml = (
+            "<en-note><div>正文</div>"
+            '<div style="--en-codeblock:true;color:#333">'
+            "[第 1 层] 全局规则\n"
+            "[第 2 层] 核心方法\n"
+            "</div><div>结尾</div></en-note>"
+        )
+
+        markdown = simplify_markdown(html_to_md(enml, {}), "示例")
+
+        self.assertIn(
+            "    [第 1 层] 全局规则\n    [第 2 层] 核心方法",
+            markdown,
+        )
+        self.assertIn("正文", markdown)
+        self.assertIn("结尾", markdown)
+
+
+class AttachmentLinkTests(unittest.TestCase):
+    def test_special_filename_characters_are_url_encoded(self):
+        from scripts.sync_to_obsidian import make_attachment_link
+
+        link = make_attachment_link("报告 (最终)#1.png")
+
+        self.assertIn(
+            "_attachments/%E6%8A%A5%E5%91%8A%20%28%E6%9C%80%E7%BB%88%29%231.png",
+            link,
         )
 
 
@@ -229,6 +426,20 @@ class CommandLineTests(unittest.TestCase):
             "搜索最近一段时间内的相关笔记并导出到 Obsidian",
             result.stdout,
         )
+
+    def test_export_counts_must_be_positive(self):
+        from argparse import ArgumentTypeError
+
+        try:
+            from scripts.export_search_results import positive_int
+        except ImportError:
+            self.fail("尚未实现导出数量正整数校验")
+
+        self.assertEqual(positive_int("3"), 3)
+        with self.assertRaises(ArgumentTypeError):
+            positive_int("0")
+        with self.assertRaises(ArgumentTypeError):
+            positive_int("-1")
 
 
 if __name__ == "__main__":

@@ -1,93 +1,155 @@
-# yinxiang-notes
+# 印象笔记中国版 Skill
 
-Evernote China (印象笔记) integration skill for OpenClaw.
+通过印象笔记中国版 NoteStore API 搜索、读取和整理笔记，并把正文、图片和附件导出为 Obsidian 可用的 Markdown。仓库同时提供创建、更新、移入废纸篓等写操作；永久删除设有独立的强确认参数。
 
-印象笔记（中国版）集成 skill，用于 OpenClaw。
+## 环境准备
 
-## Features / 功能
+需要 Python 3.9+ 和印象笔记 Developer Token：
 
-| Feature | 功能 |
-|---------|------|
-| **List Notebooks** | 获取笔记本列表（支持显示笔记数量） |
-| **List Tags** | 查看所有标签 |
-| **Create Notes** | 创建笔记（支持标题、内容 ENML、笔记本、标签） |
-| **Update Notes** | 更新笔记（标题、内容、添加/移除标签） |
-| **Delete Notes** | 删除笔记（移至废纸篓，可恢复） |
-| **Search Notes** | 搜索笔记（关键词、标题、日期等） |
-| **Sync to Obsidian** | 增量同步到本地 Obsidian vault |
-| **Trash Management** | 查看和清空废纸篓 |
-
-## Prerequisites / 前置条件
-
-1. **Developer Token**: https://app.yinxiang.com/api/DeveloperToken.action
-2. **Python 3.7+**
-3. **SDK**: `pip install evernote3 thrift html2text`
-
-## Configuration / 配置
-
-Create a `.env` file:
-
-创建 `.env` 文件：
-
-```
-EVERNOTE_TOKEN=S=s16:U=xxx:E=xxx:C=xxx:P=xxx:A=en-devtoken:V=2:H=xxx
-EVERNOTE_NOTESTORE_URL=https://app.yinxiang.com/shard/s16/notestore
+```powershell
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-## Quick Start / 快速开始
+编辑仓库根目录的 `.env`：
 
-```bash
-# List notebooks / 列出笔记本
+```dotenv
+EVERNOTE_TOKEN=your-developer-token
+EVERNOTE_NOTESTORE_URL=https://app.yinxiang.com/shard/sXX/notestore
+OBSIDIAN_VAULT_PATH=D:\path\to\ObsidianVault
+```
+
+`EVERNOTE_NOTESTORE_URL` 必须使用令牌页面显示的实际 shard。环境变量优先于 `.env`。真实令牌会获得账户访问权限，`.env` 已被 Git 忽略，不要把令牌写入命令、文档、日志或提交记录。
+
+## 常用命令
+
+所有脚本都可以在仓库根目录直接执行；使用 `--help` 查看完整参数。
+
+### 只读查询
+
+```powershell
+# 笔记本与标签
 python scripts/list_notebooks.py
+python scripts/list_notebooks.py --verbose
+python scripts/list_tags.py
 
-# Create a note / 创建笔记
-python scripts/create_note.py --title "My Note" --content "<en-note>Content</en-note>"
+# 搜索；支持原生语法及“标题:”“创建时间:”“any:”中文快捷写法
+python scripts/search_notes.py "intitle:Agent" --max-results 10
 
-# Search notes / 搜索笔记
-python scripts/search_notes.py "keyword"
+# 查看废纸篓，不修改数据
+python scripts/list_trash.py --max-count 20
 
-# Sync to Obsidian / 同步到 Obsidian
-python scripts/sync_to_obsidian.py
+# 下载一篇笔记的原始 ENML
+python scripts/get_note_enml.py --guid "NOTE_GUID" --output ".\note.xml"
 ```
 
-## Scripts / 脚本列表
+### 搜索并导出到 Obsidian
 
-| Script | 描述 |
-|--------|------|
-| `list_notebooks.py` | 列出所有笔记本 |
-| `list_tags.py` | 列出所有标签 |
-| `create_note.py` | 创建新笔记 |
-| `update_note.py` | 更新笔记（标题/内容/标签） |
-| `delete_note.py` | 删除笔记（移至废纸篓） |
-| `search_notes.py` | 搜索笔记 |
-| `sync_to_obsidian.py` | 增量同步到 Obsidian vault |
-| `list_trash.py` | 查看废纸篓 |
-| `empty_trash.py` | 永久删除废纸篓 |
+以下命令分别搜索 AI、Agent、人工智能，按 GUID 去重并优先选择标题匹配且最近更新的前三篇：
 
-## Sync to Obsidian / 同步到 Obsidian
+```powershell
+python scripts/export_search_results.py `
+  --since 2025-07-26 `
+  --keywords AI Agent 人工智能 `
+  --limit 3 `
+  --target "D:\path\to\vault\AI相关知识库"
+```
 
-Syncs notes to your local vault.
+每篇笔记生成一个 Markdown 文件；图片和附件保存在同目录的 `_attachments/`。同名附件内容不同时会自动追加内容哈希，同标题但不同 GUID 的笔记会使用 `标题_GUID前八位.md`，不会互相覆盖。正文已经引用的图片不会在文末重复展示。
 
-将笔记同步到本地 Obsidian vault（默认路径 `C:\Users\adun\Documents\印象笔记同步`）。
+导出的文章只保留一个一级标题，frontmatter 不再重复写 `title` 属性；正文标题从二级开始，连续空行会压缩为一个空行。印象笔记代码块中的原始换行会保留，图片、链接、列表和表格仍使用标准 Markdown。
 
-**Note types handled / 支持的笔记类型**:
-- Attachments (files with extension) / 附件（带扩展名的文件）
-- Embedded images / 内嵌图片
-- Plain text notes / 纯文本笔记
-- Web clips (converted to Markdown or stored as HTML) / 网页裁剪（转为 Markdown 或存储 HTML）
+### 增量同步整个 vault
 
-**Frontmatter added / 添加的 frontmatter**:
+```powershell
+python scripts/sync_to_obsidian.py `
+  --vault "D:\path\to\vault" `
+  --max-sync 50 `
+  --api-delay 1
+
+# 仅同步一个笔记本，并自定义状态文件
+python scripts/sync_to_obsidian.py `
+  --vault "D:\path\to\vault" `
+  --notebook "笔记本名" `
+  --state-file "D:\path\to\sync-state.json"
+```
+
+未传 `--vault` 时读取 `OBSIDIAN_VAULT_PATH`。默认状态文件为 `<vault>/.yinxiang_sync_state.json`。同步按 NoteStore 元数据分页拉取，不按标题丢弃笔记；每个笔记本下分别创建 `_attachments/` 和 `_clips/`。超过 200 KB 的网页裁剪可保存为 HTML，其余正文转为 Markdown。
+
+生成的 frontmatter 示例：
+
 ```yaml
 ---
-title: Note Title
-created: 2026-03-19 10:30:00
-updated: 2026-03-19 14:22:00
-source: Evernote
-source_guid: xxx-xxx-xxx
-notebook: Notebook Name
+created: "2026-07-26 08:30:00"
+updated: "2026-07-26 09:45:00"
+source: "Evernote"
+source_guid: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+notebook: "AI 知识库"
+type: "inline-images"
 ---
 ```
 
-## License / 许可证
+## 写操作与安全边界
+
+只有在明确需要修改账户数据时才运行这些命令：
+
+```powershell
+# 创建
+python scripts/create_note.py `
+  --title "标题" `
+  --content "<en-note>内容</en-note>" `
+  --notebook "笔记本名" `
+  --tags "标签1,标签2"
+
+# 更新；必须至少指定一项变化
+python scripts/update_note.py `
+  --guid "NOTE_GUID" `
+  --title "新标题" `
+  --add-tags "标签1"
+
+# 省略 --confirm 时只预览；加上后移入废纸篓，仍可恢复
+python scripts/delete_note.py --guid "NOTE_GUID"
+python scripts/delete_note.py --guid "NOTE_GUID" --confirm
+```
+
+永久清空废纸篓必须完整输入固定确认词，执行后无法恢复：
+
+```powershell
+python scripts/empty_trash.py --confirm DELETE_ALL
+```
+
+## 脚本一览
+
+| 脚本 | 功能 | 数据影响 |
+|---|---|---|
+| `list_notebooks.py` | 列出笔记本，可选逐本计数 | 只读 |
+| `list_tags.py` | 列出标签 | 只读 |
+| `search_notes.py` | 搜索笔记元数据 | 只读 |
+| `get_note_enml.py` | 下载原始 ENML 到本地 | 只读账户；写本地文件 |
+| `export_search_results.py` | 搜索并导出 Markdown、图片、附件 | 只读账户；写本地文件 |
+| `sync_to_obsidian.py` | 增量同步全部或指定笔记本 | 只读账户；写本地 vault |
+| `create_note.py` | 创建笔记 | 修改账户 |
+| `update_note.py` | 更新标题、内容、标签 | 修改账户 |
+| `delete_note.py` | 预览或移入废纸篓 | `--confirm` 时修改账户 |
+| `list_trash.py` | 查看废纸篓 | 只读 |
+| `empty_trash.py` | 永久清空废纸篓 | 不可恢复 |
+
+## 测试
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+python -m compileall -q scripts tests
+git diff --check
+```
+
+真实账号验证只应运行只读命令。创建、更新、删除和清空废纸篓使用假客户端和命令行测试验证，避免破坏账户数据。
+
+## 已知边界
+
+- Developer Token 可能过期或被撤销；遇到鉴权错误时重新生成，并同步更新对应的 NoteStore URL。
+- API 有调用频率限制。`--api-delay` 和 `--max-sync` 用于主动控制请求节奏，但脚本不会替服务端保证“不限流”。
+- `update_note.py --content` 接收完整 ENML，不是 Markdown；无效 ENML 会由服务端拒绝。
+
+## 许可证
 
 MIT

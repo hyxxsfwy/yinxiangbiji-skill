@@ -6,3 +6,6 @@ __pycache__/
 dist/
 build/
 scripts/.sync_state.json
+.yinxiang_sync_state.json
+note_enml_output.xml
+tests/.tmp-*

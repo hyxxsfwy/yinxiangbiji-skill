@@ -1,211 +1,73 @@
 ---
 name: yinxiang-notes
-description: 印象笔记（中国版）集成 skill。使用 Developer Token 在印象笔记中创建、整理和搜索笔记。支持笔记本列表、创建笔记、更新笔记内容/标签、移动笔记到废纸篓、查看/清空废纸篓、搜索内容、增量同步到 Obsidian vault。适用于使用 app.yinxiang.com 的用户。
+description: Use when a user needs to search, filter, read, export, synchronize, create, update, or delete notes in 印象笔记中国版 at app.yinxiang.com, especially when migrating Markdown, images, and attachments to Obsidian.
 ---
 
-# 印象笔记集成
+# 印象笔记中国版
 
-## 快速开始
+## 使用原则
 
-### 前置条件
+用仓库内的脚本访问中国版 NoteStore API。先判定操作是否只读；只有用户明确要求修改账户数据时，才运行创建、更新或删除命令。不得输出、转述或提交 Developer Token。
 
-1. **Developer Token**：从 https://app.yinxiang.com/api/DeveloperToken.action 获取
-2. **Python 环境**：需要 Python 3.7+
-3. **SDK 安装**：
-   ```bash
-   pip install evernote3 thrift html2text
-   ```
+## 准备
 
-### 配置
-
-在 `.env` 文件中设置：
-```
-EVERNOTE_TOKEN=S=s16:U=xxx:E=xxx:C=xxx:P=xxx:A=en-devtoken:V=2:H=xxx
-EVERNOTE_NOTESTORE_URL=https://app.yinxiang.com/shard/s16/notestore
+```powershell
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-## 核心功能
+在 `.env` 中填写令牌页面显示的 `EVERNOTE_TOKEN` 和 `EVERNOTE_NOTESTORE_URL`。可用 `OBSIDIAN_VAULT_PATH` 设置默认 vault。环境变量优先。
 
-### 1. 获取笔记本列表
+## 快速参考
 
-```bash
-python skills/yinxiang-notes/scripts/list_notebooks.py
-python skills/yinxiang-notes/scripts/list_notebooks.py --verbose  # 显示每个笔记本的笔记数量
+| 需求 | 命令 | 账户影响 |
+|---|---|---|
+| 列笔记本 | `python scripts/list_notebooks.py` | 只读 |
+| 列标签 | `python scripts/list_tags.py` | 只读 |
+| 搜索 | `python scripts/search_notes.py "intitle:Agent" --max-results 10` | 只读 |
+| 查看废纸篓 | `python scripts/list_trash.py --max-count 20` | 只读 |
+| 下载 ENML | `python scripts/get_note_enml.py --guid "GUID" --output ".\note.xml"` | 只读账户 |
+| 同步 vault | `python scripts/sync_to_obsidian.py --vault "D:\vault"` | 只读账户 |
+| 创建 | `python scripts/create_note.py --title "标题" --content "<en-note>内容</en-note>"` | 修改账户 |
+| 更新 | `python scripts/update_note.py --guid "GUID" --title "新标题"` | 修改账户 |
+| 移入废纸篓 | `python scripts/delete_note.py --guid "GUID" --confirm` | 修改账户 |
+| 永久清空 | `python scripts/empty_trash.py --confirm DELETE_ALL` | 不可恢复 |
+
+## 搜索并导出
+
+涉及“最近一年、多个关键词、导出前 N 篇”时，直接使用组合命令：
+
+```powershell
+python scripts/export_search_results.py `
+  --since 2025-07-26 `
+  --keywords AI Agent 人工智能 `
+  --limit 3 `
+  --target "D:\vault\AI相关知识库"
 ```
 
-### 2. 获取标签列表
+脚本按 GUID 去重，导出 Markdown、图片和附件。完成后核对：
 
-```bash
-python skills/yinxiang-notes/scripts/list_tags.py
-```
+1. Markdown 数量等于预期导出数。
+2. `_attachments/` 中的文件存在且非空。
+3. 每个 `_attachments/...` 引用都有对应文件。
+4. 同标题不同 GUID、同名不同内容附件均未被覆盖。
 
-### 3. 创建笔记
+## 安全边界
 
-```bash
-python skills/yinxiang-notes/scripts/create_note.py --title "标题" --content "<en-note>内容</en-note>"
-# 指定笔记本
-python skills/yinxiang-notes/scripts/create_note.py --title "标题" --content "<en-note>内容</en-note>" --notebook "笔记本名"
-# 添加标签
-python skills/yinxiang-notes/scripts/create_note.py --title "标题" --content "<en-note>内容</en-note>" --tags "标签1,标签2"
-```
+- 未明确授权写操作：只运行列表、搜索、读取、导出和同步命令。
+- `delete_note.py` 省略 `--confirm` 时仅预览。
+- `empty_trash.py` 只有固定确认词 `DELETE_ALL` 才会调用永久删除；仍须获得用户明确授权。
+- 真实账号不用于创建、更新、删除的回归测试。
+- API 限流时保留状态并稍后重试，不声称脚本能自动消除服务端限流。
 
-ENML 格式说明：
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE en-note SYSTEM "http://xml.evernote.com/pub/enml2.dtd">
-<en-note>
-    笔记内容...
-    <en-todo checked="false">待办事项</en-todo>
-</en-note>
-```
+## 常见问题
 
-### 4. 更新笔记
+| 症状 | 检查 |
+|---|---|
+| 鉴权失败 | Token 是否过期；URL 的 shard 是否与令牌页面一致 |
+| Markdown 没图片 | `getNote` 是否请求资源数据；引用路径与 `_attachments/` 是否一致 |
+| 同名笔记被覆盖 | frontmatter 中 `source_guid` 是否不同；输出名是否带 GUID 后缀 |
+| 同名附件只剩一个 | 文件名冲突时是否追加内容哈希 |
+| 同步漏笔记 | 是否分页读取元数据；不要按标题去重 |
 
-```bash
-# 更新标题
-python skills/yinxiang-notes/scripts/update_note.py --guid "笔记GUID" --title "新标题"
-# 更新内容
-python skills/yinxiang-notes/scripts/update_note.py --guid "笔记GUID" --content "<en-note>新内容</en-note>"
-# 添加标签
-python skills/yinxiang-notes/scripts/update_note.py --guid "笔记GUID" --add-tags "标签1,标签2"
-# 移除标签
-python skills/yinxiang-notes/scripts/update_note.py --guid "笔记GUID" --remove-tags "标签3"
-# 组合操作
-python skills/yinxiang-notes/scripts/update_note.py --guid "笔记GUID" --title "新标题" --add-tags "标签1"
-```
-
-### 5. 删除笔记（移至废纸篓）
-
-```bash
-# 预览（不实际删除）
-python skills/yinxiang-notes/scripts/delete_note.py --guid "笔记GUID"
-# 确认删除（移至废纸篓，可在客户端恢复）
-python skills/yinxiang-notes/scripts/delete_note.py --guid "笔记GUID" --confirm
-```
-
-**删除行为说明**：
-- `delete_note.py` 使用 `deleteNote` API，将笔记移至废纸篓，可在印象笔记客户端中恢复
-- 清空废纸篓后笔记才永久删除（见下方"清空废纸篓"）
-
-### 6. 搜索笔记
-
-```bash
-python skills/yinxiang-notes/scripts/search_notes.py "关键词"
-python skills/yinxiang-notes/scripts/search_notes.py "标题:关键词"
-python skills/yinxiang-notes/scripts/search_notes.py "any:关键词1 关键词2"
-```
-
-搜索语法：
-- `关键词` — 在标题和正文中搜索
-- `标题:关键词` — 仅搜索标题
-- `创建时间:2024-01-01` — 按创建时间筛选
-- `any:关键词1 关键词2` — 匹配任一关键词
-
-### 7. 同步到 Obsidian（增量同步）
-
-将印象笔记增量同步到本地 Obsidian vault，保持笔记本层级结构。
-
-**目标 vault**：`C:\Users\adun\Documents\印象笔记同步`
-
-```bash
-# 同步全部笔记本
-python skills/yinxiang-notes/scripts/sync_to_obsidian.py
-
-# 只同步指定笔记本
-python skills/yinxiang-notes/scripts/sync_to_obsidian.py --notebook "笔记本名"
-python skills/yinxiang-notes/scripts/sync_to_obsidian.py -n "笔记本名"
-```
-
-**同步规则**：
-
-| 笔记类型 | 判断条件 | 处理方式 |
-|----------|----------|----------|
-| 📎 附件笔记 | 资源有 fileName+扩展名 | enml_to_markdown + 附件 section |
-| 🖼 内嵌图片笔记 | 有 en-media 但无 fileName | html2text 转 Markdown + 附件 section |
-| 📝 纯文本笔记 | 无大量 HTML 标签和 en-media | 直接转为 Markdown |
-| 📄 网页裁剪（短） | HTML ≥3个标签且 < 200KB | html2text 转为 Markdown |
-| 🔗 网页裁剪（长） | HTML ≥3个标签且 ≥ 200KB 且纯 HTML（无用户手写内容） | 存 HTML 进 `_clips/` |
-
-**附件存储**：每个笔记本有独立的附件和裁剪目录
-```
-印象笔记同步/
-├── 笔记本A/
-│   ├── 笔记.md
-│   ├── _attachments/   ← 该笔记本附件（hash 去重）
-│   └── _clips/         ← 该笔记本 HTML 裁剪（≥5KB）
-├── 笔记本B/
-│   ├── 笔记.md
-│   ├── _attachments/
-│   └── _clips/
-└── .obsidian/
-```
-
-**同步后笔记的 frontmatter**：
-```yaml
----
-title: 笔记标题
-created: 2026-03-19 10:30:00
-updated: 2026-03-19 14:22:00
-source: Evernote
-source_guid: xxx-xxx-xxx
-notebook: 笔记本名
-type: webclip  # 仅网页裁剪（≥200KB）和内嵌图片笔记有此字段
----
-```
-
-**特性**：
-- 增量同步：仅同步新增和变化的笔记
-- 断点续传：遇到 API 频率限制自动保存进度
-- 每次最多同步 50 条，避免触发限流
-- 支持命令行参数控制同步行为（`--notebook` 指定笔记本）
-- 使用 html2text 库进行 HTML 转 Markdown 转换
-
-### 8. 查看废纸篓
-
-```bash
-python skills/yinxiang-notes/scripts/list_trash.py
-```
-
-### 9. 清空废纸篓（永久删除）
-
-```bash
-python skills/yinxiang-notes/scripts/empty_trash.py
-```
-
-⚠️ **警告**：此操作会永久删除废纸篓中的所有笔记，**无法恢复**！
-
-## 完整脚本列表
-
-| 脚本 | 功能 |
-|------|------|
-| `list_notebooks.py` | 获取笔记本列表（支持 --verbose 显示笔记数） |
-| `list_tags.py` | 获取标签列表 |
-| `create_note.py` | 创建笔记 |
-| `update_note.py` | 更新笔记（标题/内容/标签） |
-| `delete_note.py` | 删除笔记（移至废纸篓） |
-| `search_notes.py` | 搜索笔记 |
-| `sync_to_obsidian.py` | 增量同步印象笔记到 Obsidian vault |
-| `list_trash.py` | 查看废纸篓中的笔记 |
-| `empty_trash.py` | 清空废纸篓（永久删除） |
-
-## API 端点
-
-| 环境 | NoteStore URL |
-|------|---------------|
-| 生产环境 | https://app.yinxiang.com/shard/s16/notestore |
-| 沙盒环境 | https://sandbox.yinxiang.com/shard/s1/notestore |
-
-## 错误处理
-
-| 错误码 | 说明 | 解决方案 |
-|--------|------|----------|
-| EDAMUserException (errorCode=2) | Token 无效或过期 | 重新申请 Developer Token |
-| EDAMNotFoundException | 资源不存在 | 检查笔记 GUID 或笔记本名 |
-| EDAMSystemException (errorCode=19) | API 频率限制 | 等待限流窗口后重试，脚本会自动处理 |
-
-## 注意事项
-
-- Token 仅显示一次，请妥善保存
-- **API 频率限制**：Evernote API 有每小时调用次数限制，同步脚本内置限流保护（每次获取笔记间隔 1 秒），避免触发限制
-- **删除**：调用 `deleteNote` 移至废纸篓；调用 `expungeNote` 或清空废纸篓会永久删除
-- **网页裁剪（≥200KB）**：Obsidian 中点击笔记内的嵌入链接查看原始 HTML，建议安装 HTML Reader 插件以获得更好渲染效果
+完整参数和实现说明见 `python scripts/<脚本>.py --help` 与 `README.md`。

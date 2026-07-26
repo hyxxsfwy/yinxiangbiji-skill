@@ -4,37 +4,36 @@
 直接使用 NoteStore URL
 """
 
-import sys
+import argparse
 import os
-from pathlib import Path
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    from .runtime import (
+        configure_utf8_output,
+        create_note_store,
+        load_config,
+    )
+except ImportError:
+    from runtime import configure_utf8_output, create_note_store, load_config
+
 import evernote.edam.notestore.NoteStore as NoteStore
-import thrift.transport.THttpClient as THttpClient
-import thrift.protocol.TBinaryProtocol as TBinaryProtocol
 
 
-def load_config(env_path=None):
-    """从 .env 文件加载配置"""
-    if env_path is None:
-        env_path = Path(__file__).resolve().parent.parent / '.env'
-    else:
-        env_path = Path(env_path)
-    
-    token = None
-    note_store_url = None
-
-    if env_path.exists():
-        with env_path.open('r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('EVERNOTE_TOKEN='):
-                    token = line.split('=', 1)[1].strip()
-                elif line.startswith('EVERNOTE_NOTESTORE_URL='):
-                    note_store_url = line.split('=', 1)[1].strip()
-
-    return token, note_store_url
+def count_notebook_notes(note_store, token, notebook_guid):
+    """返回指定笔记本的笔记总数。"""
+    note_filter = NoteStore.NoteFilter(notebookGuid=notebook_guid)
+    result_spec = NoteStore.NotesMetadataResultSpec(includeTitle=True)
+    result = note_store.findNotesMetadata(
+        token,
+        note_filter,
+        0,
+        1,
+        result_spec,
+    )
+    return result.totalNotes
 
 
 def list_notebooks(verbose=False):
@@ -54,15 +53,10 @@ def list_notebooks(verbose=False):
             print("请在 .env 文件中设置: EVERNOTE_NOTESTORE_URL=https://app.yinxiang.com/shard/s16/notestore")
             sys.exit(1)
         
-        print(f"✅ Token 已加载: {token[:25]}...")
         print(f"✅ NoteStore URL: {note_store_url}")
         print()
 
-        # 直接连接 NoteStore
-        transport = THttpClient.THttpClient(note_store_url)
-        transport.setCustomHeaders({"Authorization": f"Bearer {token}"})
-        protocol = TBinaryProtocol.TBinaryProtocol(transport)
-        note_store = NoteStore.Client(protocol)
+        note_store = create_note_store(note_store_url, token)
 
         print("✅ 成功连接到 NoteStore")
         print()
@@ -77,11 +71,12 @@ def list_notebooks(verbose=False):
             
             if verbose:
                 try:
-                    # 获取笔记数量
-                    filter = NoteStore.NoteFilter(notebookGuid=notebook.guid)
-                    result = note_store.findNotesMetadata(token, filter,
-                        NoteStore.NotesMetadataResultSpec(includeTitle=True), 0, 1)
-                    print(f"   └─ 笔记数量: {result.totalNotes}")
+                    note_count = count_notebook_notes(
+                        note_store,
+                        token,
+                        notebook.guid,
+                    )
+                    print(f"   └─ 笔记数量: {note_count}")
                 except Exception as e:
                     print(f"   └─ 无法获取笔记数量: {e}")
 
@@ -95,6 +90,18 @@ def list_notebooks(verbose=False):
         sys.exit(1)
 
 
-if __name__ == '__main__':
-    verbose = '--verbose' in sys.argv or '-v' in sys.argv
-    list_notebooks(verbose=verbose)
+def main():
+    configure_utf8_output()
+    parser = argparse.ArgumentParser(description="列出印象笔记中的笔记本")
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="逐个查询并显示笔记数量",
+    )
+    args = parser.parse_args()
+    list_notebooks(verbose=args.verbose)
+
+
+if __name__ == "__main__":
+    main()

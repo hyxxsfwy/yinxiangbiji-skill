@@ -1,45 +1,24 @@
 #!/usr/bin/env python3
 """
 更新印象笔记
-用法: python update_note.py --guid "笔记GUID" --title "新标题"
-       python update_note.py --guid "笔记GUID" --content "<en-note>新内容</en-note>"
-       python update_note.py --guid "笔记GUID" --add-tags "标签1,标签2"
-       python update_note.py --guid "笔记GUID" --remove-tags "标签3"
-       python update_note.py --guid "笔记GUID" --title "新标题" --content "<en-note>新内容</en-note>" --add-tags "标签1,标签2"
 """
 
-import sys
+import argparse
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import evernote.edam.notestore.NoteStore as NoteStore
+try:
+    from .runtime import (
+        configure_utf8_output,
+        create_note_store,
+        load_config,
+    )
+except ImportError:
+    from runtime import configure_utf8_output, create_note_store, load_config
+
 import evernote.edam.type.ttypes as Types
-import thrift.transport.THttpClient as THttpClient
-import thrift.protocol.TBinaryProtocol as TBinaryProtocol
-
-
-def load_config():
-    """从 .env 文件加载配置"""
-    script_dir = os.path.dirname(__file__)
-    skill_dir = os.path.dirname(script_dir)
-    skills_dir = os.path.dirname(skill_dir)
-    workspace_dir = os.path.dirname(skills_dir)
-    env_path = os.path.join(workspace_dir, '.env')
-
-    token = None
-    note_store_url = None
-
-    if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('EVERNOTE_TOKEN='):
-                    token = line.split('=', 1)[1].strip()
-                elif line.startswith('EVERNOTE_NOTESTORE_URL='):
-                    note_store_url = line.split('=', 1)[1].strip()
-
-    return token, note_store_url
 
 
 def get_note(note_store, token, guid):
@@ -47,32 +26,31 @@ def get_note(note_store, token, guid):
     return note_store.getNote(token, guid, True, False, False, False)
 
 
-def get_tag_guid_by_name(note_store, token, tag_name):
-    """根据标签名获取 GUID"""
-    tags = note_store.listTags(token)
-    for tag in tags:
-        if tag.name == tag_name:
-            return tag.guid
-    return None
+def has_requested_updates(title, content, add_tags, remove_tags):
+    return any(
+        (
+            title is not None,
+            content is not None,
+            bool(add_tags),
+            bool(remove_tags),
+        )
+    )
 
 
 def update_note(guid, title=None, content=None, add_tags=None, remove_tags=None):
     """更新笔记"""
-    token, note_store_url = load_config()
-
-    if not token:
-        print("❌ 错误: 未找到 EVERNOTE_TOKEN")
+    if not has_requested_updates(title, content, add_tags, remove_tags):
+        print("❌ 未指定任何更新内容")
         return None
 
-    if not note_store_url:
-        note_store_url = "https://app.yinxiang.com/shard/s16/notestore"
+    token, note_store_url = load_config()
+
+    if not token or not note_store_url:
+        print("❌ 错误: 未找到 EVERNOTE_TOKEN 或 EVERNOTE_NOTESTORE_URL")
+        return None
 
     print(f"🔄 正在连接印象笔记...")
-
-    transport = THttpClient.THttpClient(note_store_url)
-    transport.setCustomHeaders({"Authorization": f"Bearer {token}"})
-    protocol = TBinaryProtocol.TBinaryProtocol(transport)
-    note_store = NoteStore.Client(protocol)
+    note_store = create_note_store(note_store_url, token)
 
     print("✅ 连接成功")
     print()
@@ -91,13 +69,22 @@ def update_note(guid, title=None, content=None, add_tags=None, remove_tags=None)
     update_note.title = original.title
     update_note.content = original.content if content is None else content
     update_note.tagGuids = list(original.tagGuids) if original.tagGuids else []
+    changed = False
+
+    tag_map = {}
+    if add_tags or remove_tags:
+        tag_map = {
+            tag.name: tag.guid
+            for tag in note_store.listTags(token)
+        }
 
     # 添加标签
     if add_tags:
         for tag_name in add_tags:
-            tag_guid = get_tag_guid_by_name(note_store, token, tag_name)
+            tag_guid = tag_map.get(tag_name)
             if tag_guid and tag_guid not in update_note.tagGuids:
                 update_note.tagGuids.append(tag_guid)
+                changed = True
                 print(f"   🏷️ +添加标签: {tag_name}")
             elif not tag_guid:
                 print(f"   ⚠️ 标签不存在: {tag_name}")
@@ -105,17 +92,24 @@ def update_note(guid, title=None, content=None, add_tags=None, remove_tags=None)
     # 移除标签
     if remove_tags:
         for tag_name in remove_tags:
-            tag_guid = get_tag_guid_by_name(note_store, token, tag_name)
+            tag_guid = tag_map.get(tag_name)
             if tag_guid and tag_guid in update_note.tagGuids:
                 update_note.tagGuids.remove(tag_guid)
+                changed = True
                 print(f"   🏷️ -移除标签: {tag_name}")
 
-    if title:
+    if title is not None:
         update_note.title = title
+        changed = changed or title != original.title
         print(f"   📝 新标题: {title}")
 
-    if content:
+    if content is not None:
+        changed = changed or content != original.content
         print(f"   📄 内容已更新")
+
+    if not changed:
+        print("❌ 请求不会产生实际变化，已取消更新")
+        return None
 
     try:
         result = note_store.updateNote(token, update_note)
@@ -130,37 +124,43 @@ def update_note(guid, title=None, content=None, add_tags=None, remove_tags=None)
         return None
 
 
-if __name__ == '__main__':
-    args = sys.argv[1:]
+def comma_separated(value):
+    return [item.strip() for item in value.split(",") if item.strip()]
 
-    guid = None
-    title = None
-    content = None
-    add_tags = None
-    remove_tags = None
 
-    i = 0
-    while i < len(args):
-        if args[i] == '--guid' and i + 1 < len(args):
-            guid = args[i + 1]
-            i += 2
-        elif args[i] == '--title' and i + 1 < len(args):
-            title = args[i + 1]
-            i += 2
-        elif args[i] == '--content' and i + 1 < len(args):
-            content = args[i + 1]
-            i += 2
-        elif args[i] == '--add-tags' and i + 1 < len(args):
-            add_tags = [t.strip() for t in args[i + 1].split(',')]
-            i += 2
-        elif args[i] == '--remove-tags' and i + 1 < len(args):
-            remove_tags = [t.strip() for t in args[i + 1].split(',')]
-            i += 2
-        else:
-            i += 1
+def main():
+    configure_utf8_output()
+    parser = argparse.ArgumentParser(description="更新指定的印象笔记")
+    parser.add_argument("--guid", required=True, help="笔记 GUID")
+    parser.add_argument("--title", help="新标题")
+    parser.add_argument("--content", help="新的完整 ENML 内容")
+    parser.add_argument(
+        "--add-tags",
+        type=comma_separated,
+        help="要添加的现有标签，使用逗号分隔",
+    )
+    parser.add_argument(
+        "--remove-tags",
+        type=comma_separated,
+        help="要移除的标签，使用逗号分隔",
+    )
+    args = parser.parse_args()
+    if not has_requested_updates(
+        args.title,
+        args.content,
+        args.add_tags,
+        args.remove_tags,
+    ):
+        parser.error("至少指定 --title、--content、--add-tags 或 --remove-tags 之一")
+    result = update_note(
+        args.guid,
+        args.title,
+        args.content,
+        args.add_tags,
+        args.remove_tags,
+    )
+    return 0 if result is not None else 1
 
-    if not guid:
-        print("用法: python update_note.py --guid \"笔记GUID\" [--title \"新标题\"] [--content \"<en-note>内容</en-note>\"] [--add-tags \"标签1,标签2\"] [--remove-tags \"标签3\"]")
-        sys.exit(1)
 
-    update_note(guid, title, content, add_tags, remove_tags)
+if __name__ == "__main__":
+    raise SystemExit(main())

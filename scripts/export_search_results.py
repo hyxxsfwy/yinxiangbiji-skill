@@ -4,17 +4,24 @@
 import argparse
 from datetime import date, datetime
 from pathlib import Path
-import sys
 
 import evernote.edam.notestore.NoteStore as NoteStore
 from evernote.edam.type.ttypes import NoteSortOrder
-import thrift.protocol.TBinaryProtocol as TBinaryProtocol
-import thrift.transport.THttpClient as THttpClient
 
 try:
-    from .list_notebooks import load_config
+    from .runtime import (
+        configure_utf8_output,
+        create_note_store,
+        find_notes_metadata,
+        load_config,
+    )
 except ImportError:
-    from list_notebooks import load_config
+    from runtime import (
+        configure_utf8_output,
+        create_note_store,
+        find_notes_metadata,
+        load_config,
+    )
 
 try:
     from .sync_to_obsidian import (
@@ -26,8 +33,10 @@ try:
         is_enml_clip,
         is_web_clip_by_content,
         make_attachments_section,
-        safe_filename,
+        referenced_attachment_filenames,
+        resolve_note_path,
         save_attachments,
+        simplify_markdown,
     )
 except ImportError:
     from sync_to_obsidian import (
@@ -39,14 +48,23 @@ except ImportError:
         is_enml_clip,
         is_web_clip_by_content,
         make_attachments_section,
-        safe_filename,
+        referenced_attachment_filenames,
+        resolve_note_path,
         save_attachments,
+        simplify_markdown,
     )
 
 
 def build_keyword_queries(keywords, since):
     since_text = since.strftime("%Y%m%d")
     return [f"created:{since_text} {keyword}" for keyword in keywords]
+
+
+def positive_int(value):
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("必须是大于 0 的整数")
+    return parsed
 
 
 def select_top_notes(search_batches, keywords, limit):
@@ -95,15 +113,15 @@ def search_metadata_batches(
             order=NoteSortOrder.UPDATED,
             ascending=False,
         )
-        result = note_store.findNotesMetadata(
+        notes, total_notes = find_notes_metadata(
+            note_store,
             token,
             note_filter,
-            0,
             max_per_keyword,
             result_spec,
         )
-        batches.append(list(result.notes or []))
-        totals.append(result.totalNotes)
+        batches.append(notes)
+        totals.append(total_notes)
     return batches, totals
 
 
@@ -133,6 +151,7 @@ def export_note_to_obsidian(note, notebook_name, target_dir):
         extra = "type: inline-images"
     else:
         body = enml_to_markdown(content)
+    body = simplify_markdown(body, note.title)
 
     markdown = frontmatter(
         note.title,
@@ -141,19 +160,29 @@ def export_note_to_obsidian(note, notebook_name, target_dir):
         created,
         updated,
         extra,
+        include_title=False,
     )
-    markdown += f"# {note.title}\n\n{body}\n"
+    markdown += f"# {note.title}\n"
+    if body:
+        markdown += f"\n{body}\n"
     if resources:
-        markdown += make_attachments_section(hash_to_file)
+        markdown += make_attachments_section(
+            hash_to_file,
+            referenced_attachment_filenames(body, hash_to_file),
+        )
 
-    output_path = target_dir / f"{safe_filename(note.title)}.md"
+    output_path = resolve_note_path(
+        target_dir,
+        note.title,
+        note.guid,
+        {},
+    )
     output_path.write_text(markdown, encoding="utf-8")
     return output_path
 
 
 def main():
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    configure_utf8_output()
 
     parser = argparse.ArgumentParser(
         description="搜索最近一段时间内的相关笔记并导出到 Obsidian"
@@ -170,10 +199,15 @@ def main():
         default=["AI", "Agent", "人工智能"],
         help="任一匹配的关键词",
     )
-    parser.add_argument("--limit", type=int, default=3, help="导出数量")
+    parser.add_argument(
+        "--limit",
+        type=positive_int,
+        default=3,
+        help="导出数量",
+    )
     parser.add_argument(
         "--max-per-keyword",
-        type=int,
+        type=positive_int,
         default=250,
         help="每个关键词最多拉取的候选数",
     )
@@ -189,10 +223,7 @@ def main():
     if not token or not note_store_url:
         parser.error("未找到 EVERNOTE_TOKEN 或 EVERNOTE_NOTESTORE_URL")
 
-    transport = THttpClient.THttpClient(note_store_url)
-    transport.setCustomHeaders({"Authorization": f"Bearer {token}"})
-    protocol = TBinaryProtocol.TBinaryProtocol(transport)
-    note_store = NoteStore.Client(protocol)
+    note_store = create_note_store(note_store_url, token)
 
     batches, totals = search_metadata_batches(
         note_store,
