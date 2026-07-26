@@ -88,6 +88,7 @@ class SkillDocumentationTests(unittest.TestCase):
             "LLM Wiki",
             "`llm_policy: off`",
             "自动审批",
+            "链接消歧",
             "人工审批",
             "references/obsidian-knowledge-management.md",
             "templates/obsidian-source-note.md",
