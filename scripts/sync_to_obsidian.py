@@ -12,6 +12,7 @@
 
 import argparse
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,185 @@ EN_MEDIA_PATTERN = re.compile(
 
 
 # ─── 工具函数 ──────────────────────────────────────────────
+
+class _StartTagAttributeParser(HTMLParser):
+    """读取一个 HTML/ENML 起始标签的属性。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.attributes = {}
+
+    def handle_starttag(self, _tag, attrs):
+        self.attributes = {
+            str(name).casefold(): value
+            for name, value in attrs
+        }
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+
+def _tag_attributes(tag_text):
+    parser = _StartTagAttributeParser()
+    parser.feed(tag_text)
+    return parser.attributes
+
+
+def _find_start_tag(lowered_text, tag_name, start):
+    marker = f"<{tag_name}"
+    position = lowered_text.find(marker, start)
+    while position >= 0:
+        boundary = position + len(marker)
+        if (
+            boundary >= len(lowered_text)
+            or lowered_text[boundary].isspace()
+            or lowered_text[boundary] in "/>"
+        ):
+            return position
+        position = lowered_text.find(marker, boundary)
+    return -1
+
+
+def _replace_anchors(content):
+    """线性扫描并把 HTML 链接转换为 Markdown 链接。"""
+    lowered = content.casefold()
+    converted = []
+    cursor = 0
+
+    while True:
+        start = _find_start_tag(lowered, "a", cursor)
+        if start < 0:
+            converted.append(content[cursor:])
+            break
+        open_end = content.find(">", start + 2)
+        close_start = lowered.find("</a", open_end + 1)
+        close_end = content.find(">", close_start + 3)
+        if open_end < 0 or close_start < 0 or close_end < 0:
+            converted.append(content[cursor:])
+            break
+
+        attributes = _tag_attributes(content[start:open_end + 1])
+        href = attributes.get("href")
+        if href is None:
+            converted.append(content[cursor:open_end + 1])
+            cursor = open_end + 1
+            continue
+
+        converted.append(content[cursor:start])
+        converted.append(
+            f"[{content[open_end + 1:close_start]}]({href})"
+        )
+        cursor = close_end + 1
+
+    return "".join(converted)
+
+
+def _remove_embedded_svg_images(content):
+    """移除 data URI SVG 占位图，避免把无意义图像写入 Markdown。"""
+    lowered = content.casefold()
+    cleaned = []
+    cursor = 0
+
+    while True:
+        start = _find_start_tag(lowered, "img", cursor)
+        if start < 0:
+            cleaned.append(content[cursor:])
+            break
+        tag_end = content.find(">", start + 4)
+        if tag_end < 0:
+            cleaned.append(content[cursor:])
+            break
+
+        attributes = _tag_attributes(content[start:tag_end + 1])
+        source = attributes.get("src") or ""
+        if not source.casefold().startswith("data:image/svg+xml"):
+            cleaned.append(content[cursor:tag_end + 1])
+            cursor = tag_end + 1
+            continue
+
+        removal_end = tag_end + 1
+        closing_start = removal_end
+        while (
+            closing_start < len(content)
+            and content[closing_start].isspace()
+        ):
+            closing_start += 1
+        if lowered.startswith("</img", closing_start):
+            closing_end = content.find(">", closing_start + 5)
+            if closing_end >= 0:
+                removal_end = closing_end + 1
+
+        cleaned.append(content[cursor:start])
+        cursor = removal_end
+
+    return "".join(cleaned)
+
+
+def _replace_en_todos(content):
+    """把 ENML 待办标签转换为 Markdown 复选框文本。"""
+    lowered = content.casefold()
+    converted = []
+    cursor = 0
+
+    while True:
+        start = _find_start_tag(lowered, "en-todo", cursor)
+        if start < 0:
+            converted.append(content[cursor:])
+            break
+        tag_end = content.find(">", start + len("<en-todo"))
+        if tag_end < 0:
+            converted.append(content[cursor:])
+            break
+
+        attributes = _tag_attributes(content[start:tag_end + 1])
+        checked = (attributes.get("checked") or "").casefold() == "true"
+        converted.append(content[cursor:start])
+        converted.append("[x] " if checked else "[ ] ")
+        cursor = tag_end + 1
+
+    return "".join(converted).replace("</en-todo>", "")
+
+
+def _strip_trailing_horizontal_whitespace(text):
+    return "\n".join(
+        line.rstrip(" \t")
+        for line in text.split("\n")
+    )
+
+
+def _parse_markdown_heading(line):
+    level = 0
+    while level < len(line) and level < 6 and line[level] == "#":
+        level += 1
+    if (
+        level == 0
+        or level >= len(line)
+        or not line[level].isspace()
+    ):
+        return None
+
+    heading_text = line[level:].strip().rstrip("#").rstrip()
+    if not heading_text:
+        return None
+    return level, heading_text
+
+
+def _evernote_resource_hash(resource):
+    """读取 Evernote 提供的 16 字节资源标识，不自行计算弱哈希。"""
+    body_hash = getattr(resource.data, "bodyHash", None)
+    if isinstance(body_hash, str):
+        normalized = body_hash.casefold()
+    elif body_hash is not None:
+        normalized = bytes(body_hash).hex()
+    else:
+        normalized = ""
+    if (
+        len(normalized) != 32
+        or any(char not in "0123456789abcdef" for char in normalized)
+    ):
+        raise ValueError("资源缺少有效的 Evernote bodyHash")
+    return normalized
+
 
 def safe_filename(name):
     cleaned = re.sub(r'[\x00-\x1f\\/:*?"<>|]', '_', str(name))
@@ -125,7 +305,8 @@ def extract_resources(note):
             continue
         mime = getattr(res, 'mime', 'application/octet-stream')
         data = res.data.body
-        h = hashlib.md5(data).hexdigest()
+        h = _evernote_resource_hash(res)
+        content_hash = hashlib.sha256(data).hexdigest()
 
         # 优先用原始文件名，否则用 hash
         orig_name = get_resource_filename(res)
@@ -143,8 +324,13 @@ def extract_resources(note):
             ext = MIME_EXT_MAP.get(mime, '')
             filename = h + ext
 
-        h = hashlib.md5(data).hexdigest()
-        resources[h] = {'filename': filename, 'data': data, 'mime': mime, 'hash': h}
+        resources[h] = {
+            'filename': filename,
+            'data': data,
+            'mime': mime,
+            'hash': h,
+            'content_hash': content_hash,
+        }
     return resources
 
 
@@ -154,6 +340,9 @@ def save_attachments(resources, attachments_dir):
     saved = {}
     for h, res in resources.items():
         original = res['filename']
+        expected_hash = res.get("content_hash") or hashlib.sha256(
+            res["data"]
+        ).hexdigest()
         stem, ext = os.path.splitext(original)
         candidates = [
             original,
@@ -176,8 +365,8 @@ def save_attachments(resources, attachments_dir):
                 break
             if os.path.isfile(fp):
                 with open(fp, 'rb') as f:
-                    existing_hash = hashlib.md5(f.read()).hexdigest()
-                if existing_hash == h:
+                    existing_hash = hashlib.sha256(f.read()).hexdigest()
+                if existing_hash == expected_hash:
                     break
         saved[h] = filename
     return saved
@@ -268,18 +457,18 @@ def enml_to_markdown(enml_content):
     c = re.sub(r'<\?xml[^?]*\?>', '', c)
     c = re.sub(r'<!DOCTYPE[^>]*>', '', c)
     c = re.sub(r'<en-note[^>]*>', '', c)
-    c = re.sub(r'</en-note>', '', c)
+    c = c.replace('</en-note>', '')
     c = re.sub(r'<br\/?>', '\n', c)
     c = re.sub(r'<p[^>]*>', '', c)
-    c = re.sub(r'</p>', '\n\n', c)
+    c = c.replace('</p>', '\n\n')
     c = re.sub(r'<li[^>]*>', '- ', c)
-    c = re.sub(r'</li>', '\n', c)
+    c = c.replace('</li>', '\n')
     for tag in ['b', 'strong', 'i', 'em', 'u']:
         c = re.sub(f'<{tag}[^>]*>(.*?)</{tag}>', r'\1', c, flags=re.DOTALL)
     c = re.sub(r'<h1[^>]*>(.*?)</h1>', r'# \1\n', c, flags=re.DOTALL)
     c = re.sub(r'<h2[^>]*>(.*?)</h2>', r'## \1\n', c, flags=re.DOTALL)
     c = re.sub(r'<h3[^>]*>(.*?)</h3>', r'### \1\n', c, flags=re.DOTALL)
-    c = re.sub(r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', r'[\2](\1)', c, flags=re.DOTALL)
+    c = _replace_anchors(c)
     c = html_module.unescape(c)
     c = re.sub(r'\n{3,}', '\n\n', c)
     return c.strip()
@@ -289,7 +478,7 @@ def _normalized_markdown_title(value):
     """移除 Markdown 标题/强调标记，便于识别正文中的重复标题。"""
     text = html_module.unescape(str(value or "")).strip()
     text = re.sub(r"^#{1,6}\s*", "", text)
-    text = re.sub(r"\s*#+\s*$", "", text)
+    text = text.rstrip().rstrip("#").rstrip()
     for marker in ("**", "__", "*", "_", "`"):
         if text.startswith(marker) and text.endswith(marker):
             text = text[len(marker):-len(marker)].strip()
@@ -333,9 +522,9 @@ def simplify_markdown(markdown, document_title=None):
             index += 1
             continue
 
-        is_indented_code = line.startswith("    ") or line.startswith("\t")
+        is_indented_code = line.startswith(("    ", "\t"))
         if not in_fence and not is_indented_code:
-            heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", stripped)
+            heading = _parse_markdown_heading(stripped)
             line_title = _normalized_markdown_title(stripped)
 
             if expected_title and line_title == expected_title:
@@ -343,8 +532,7 @@ def simplify_markdown(markdown, document_title=None):
                 continue
 
             if heading:
-                level = len(heading.group(1))
-                heading_text = heading.group(2).strip()
+                level, heading_text = heading
                 section_number = re.fullmatch(
                     r"(\d{1,2})[.、]?",
                     heading_text,
@@ -381,7 +569,7 @@ def simplify_markdown(markdown, document_title=None):
         index += 1
 
     compact = "\n".join(simplified)
-    compact = re.sub(r"[ \t]+\n", "\n", compact)
+    compact = _strip_trailing_horizontal_whitespace(compact)
     compact = re.sub(r"\n{3,}", "\n\n", compact)
     return compact.strip()
 
@@ -438,16 +626,13 @@ def html_to_md(content, hash_to_file, attachment_prefix="_attachments"):
         )
 
     c = _evernote_codeblocks_to_html(content)
-    c = re.sub(r'<img[^>]*src="data:image/svg\+xml[^"]*"[^>]*/?\s*>', '', c)
-    c = re.sub(r'<img[^>]*src="data:image/svg\+xml[^"]*"[^>]*>\s*</img>', '', c)
+    c = _remove_embedded_svg_images(c)
     c = EN_MEDIA_PATTERN.sub(en_media_to_img, c)
     c = re.sub(r'<\?xml[^?]*\?>', '', c)
     c = re.sub(r'<!DOCTYPE[^>]*>', '', c)
     c = re.sub(r'<en-note[^>]*>', '<div>', c)
-    c = re.sub(r'</en-note>', '</div>', c)
-    c = re.sub(r'<en-todo[^>]*checked="true"[^>]*>', '[x] ', c)
-    c = re.sub(r'<en-todo[^>]*>', '[ ] ', c)
-    c = re.sub(r'</en-todo>', '', c)
+    c = c.replace('</en-note>', '</div>')
+    c = _replace_en_todos(c)
 
     h2t = html2text.HTML2Text()
     h2t.body_width = 0
@@ -458,7 +643,7 @@ def html_to_md(content, hash_to_file, attachment_prefix="_attachments"):
     md = re.sub(r'\n{3,}', '\n\n', md)
     md = re.sub(r'(\]\([\s\S]*?\))([^)\n]*)\!\[' , r'\1\2\n\n![' , md)
     md = re.sub(r'(\]\([\s\S]*?\))([^\n])', r'\1\n\n\2', md)
-    md = re.sub(r'[ \t]+\n', '\n', md)
+    md = _strip_trailing_horizontal_whitespace(md)
     md = re.sub(r'\n[ \t]+\n', '\n\n', md)
     md = re.sub(r'\n{3,}', '\n\n', md)
     return md.strip()
@@ -491,7 +676,7 @@ def make_clip_html(enml_content, hash_to_file=None):
     c = re.sub(r'<\?xml[^?]*\?>', '', c)
     c = re.sub(r'<!DOCTYPE[^>]*>', '', c)
     c = re.sub(r'<en-note[^>]*>', '<div>', c)
-    c = re.sub(r'</en-note>', '</div>', c)
+    c = c.replace('</en-note>', '</div>')
     return c.strip()
 
 
@@ -553,13 +738,14 @@ def extract_source_guid(markdown_path):
     except StopIteration:
         return None
     frontmatter_content = "\n".join(lines[1:closing_index])
-    match = re.search(
-        r"(?m)^source_guid:\s*(.+?)\s*$",
-        frontmatter_content,
-    )
-    if not match:
+    raw_value = None
+    for line in frontmatter_content.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == "source_guid":
+            raw_value = value.strip()
+            break
+    if raw_value is None:
         return None
-    raw_value = match.group(1).strip()
     if raw_value.startswith('"'):
         try:
             return str(json.loads(raw_value))
@@ -822,17 +1008,16 @@ def sync_to_obsidian(
                 return replacer
 
             # 自闭合 en-media
-            note.content = re.sub(
-                r'<en-media[^>]*hash="([^"]*)"[^>]*/>',
+            note.content = EN_MEDIA_PATTERN.sub(
                 make_replacer(),
                 note.content or ''
             )
 
             # ── 清理 ENML 结构 ──
-            raw = re.sub(r'<\?xml[^?]*\?>', '',
-                re.sub(r'<!DOCTYPE[^>]*>', '',
-                    re.sub(r'<en-note[^>]*>', '',
-                        re.sub(r'</en-note>', '', original_content or ''))))
+            raw = (original_content or '').replace('</en-note>', '')
+            raw = re.sub(r'<en-note[^>]*>', '', raw)
+            raw = re.sub(r'<!DOCTYPE[^>]*>', '', raw)
+            raw = re.sub(r'<\?xml[^?]*\?>', '', raw)
 
             # ── 判断笔记类型 ──
             has_named_resource = any(resource_has_filename(r) for r in (note.resources or []))

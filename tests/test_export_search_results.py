@@ -240,9 +240,12 @@ class ExportNoteTests(unittest.TestCase):
         from scripts.export_search_results import export_note_to_obsidian
 
         image_data = b"test-image"
-        image_hash = hashlib.md5(image_data).hexdigest()
+        image_hash = "0123456789abcdef0123456789abcdef"
         resource = SimpleNamespace(
-            data=SimpleNamespace(body=image_data),
+            data=SimpleNamespace(
+                body=image_data,
+                bodyHash=bytes.fromhex(image_hash),
+            ),
             mime="image/png",
             attributes=SimpleNamespace(fileName=None),
         )
@@ -288,9 +291,12 @@ class ExportNoteTests(unittest.TestCase):
         from scripts.export_search_results import export_note_to_obsidian
 
         image_data = b"article-image"
-        image_hash = hashlib.md5(image_data).hexdigest()
+        image_hash = "fedcba9876543210fedcba9876543210"
         resource = SimpleNamespace(
-            data=SimpleNamespace(body=image_data),
+            data=SimpleNamespace(
+                body=image_data,
+                bodyHash=bytes.fromhex(image_hash),
+            ),
             mime="image/png",
             attributes=SimpleNamespace(fileName="article.png"),
         )
@@ -338,20 +344,22 @@ class AttachmentSavingTests(unittest.TestCase):
     def test_same_filename_with_different_content_gets_unique_paths(self):
         first_data = b"first-image"
         second_data = b"second-image"
-        first_hash = hashlib.md5(first_data).hexdigest()
-        second_hash = hashlib.md5(second_data).hexdigest()
+        first_hash = "11111111111111111111111111111111"
+        second_hash = "22222222222222222222222222222222"
         resources = {
             first_hash: {
                 "filename": "640.png",
                 "data": first_data,
                 "mime": "image/png",
                 "hash": first_hash,
+                "content_hash": hashlib.sha256(first_data).hexdigest(),
             },
             second_hash: {
                 "filename": "640.png",
                 "data": second_data,
                 "mime": "image/png",
                 "hash": second_hash,
+                "content_hash": hashlib.sha256(second_data).hexdigest(),
             },
         }
 
@@ -371,13 +379,14 @@ class AttachmentSavingTests(unittest.TestCase):
 
     def test_never_reuses_a_conflicting_hash_suffixed_filename(self):
         image_data = b"expected-image"
-        image_hash = hashlib.md5(image_data).hexdigest()
+        image_hash = "33333333333333333333333333333333"
         resources = {
             image_hash: {
                 "filename": "640.png",
                 "data": image_data,
                 "mime": "image/png",
                 "hash": image_hash,
+                "content_hash": hashlib.sha256(image_data).hexdigest(),
             },
         }
 
@@ -398,6 +407,32 @@ class AttachmentSavingTests(unittest.TestCase):
                 f"640_{image_hash}_2.png",
             )
             self.assertEqual(saved_path.read_bytes(), image_data)
+
+
+class ResourceExtractionTests(unittest.TestCase):
+    def test_uses_evernote_body_hash_as_en_media_identity(self):
+        from scripts.sync_to_obsidian import extract_resources
+
+        body = b"inline-image"
+        evernote_hash = "0123456789abcdef0123456789abcdef"
+        resource = SimpleNamespace(
+            data=SimpleNamespace(
+                body=body,
+                bodyHash=bytes.fromhex(evernote_hash),
+            ),
+            mime="image/png",
+            attributes=SimpleNamespace(fileName=None),
+        )
+
+        extracted = extract_resources(
+            SimpleNamespace(resources=[resource])
+        )
+
+        self.assertIn(evernote_hash, extracted)
+        self.assertEqual(
+            extracted[evernote_hash]["content_hash"],
+            hashlib.sha256(body).hexdigest(),
+        )
 
 
 class HtmlConversionTests(unittest.TestCase):
@@ -463,6 +498,30 @@ class HtmlConversionTests(unittest.TestCase):
         )
         self.assertIn("正文", markdown)
         self.assertIn("结尾", markdown)
+
+    def test_converts_links_todos_and_discards_embedded_svg_placeholders(self):
+        from scripts.sync_to_obsidian import enml_to_markdown, html_to_md
+
+        plain_markdown = enml_to_markdown(
+            '<en-note><a class="source" href="https://example.com">'
+            "示例链接</a></en-note>"
+        )
+        rich_markdown = html_to_md(
+            '<en-note><img alt="placeholder" '
+            'src="data:image/svg+xml;base64,PHN2Zy8+"></img>'
+            '<en-todo checked="true"></en-todo>完成'
+            '<en-todo checked="false"></en-todo>待办</en-note>',
+            {},
+        )
+
+        self.assertEqual(
+            plain_markdown,
+            "[示例链接](https://example.com)",
+        )
+        self.assertNotIn("placeholder", rich_markdown)
+        self.assertNotIn("data:image/svg+xml", rich_markdown)
+        self.assertIn("[x] 完成", rich_markdown)
+        self.assertIn("[ ] 待办", rich_markdown)
 
 
 class AttachmentLinkTests(unittest.TestCase):
