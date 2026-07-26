@@ -45,6 +45,38 @@ class SkillDocumentationTests(unittest.TestCase):
         token_pattern = r"S=s[0-9]+:U=[0-9a-f]+:E=[0-9a-f]+:"
         self.assertIsNone(re.search(token_pattern, combined))
 
+    def test_obsidian_knowledge_management_assets_exist(self):
+        asset_paths = [
+            "references/obsidian-knowledge-management.md",
+            "templates/obsidian-source-note.md",
+            "templates/obsidian-knowledge-note.md",
+            "templates/obsidian-knowledge-map.md",
+        ]
+        for relative_path in asset_paths:
+            with self.subTest(path=relative_path):
+                self.assertTrue((REPO_ROOT / relative_path).is_file())
+
+    def test_obsidian_templates_expose_manual_and_llm_contract(self):
+        source = (
+            REPO_ROOT / "templates/obsidian-source-note.md"
+        ).read_text(encoding="utf-8")
+        knowledge = (
+            REPO_ROOT / "templates/obsidian-knowledge-note.md"
+        ).read_text(encoding="utf-8")
+        knowledge_map = (
+            REPO_ROOT / "templates/obsidian-knowledge-map.md"
+        ).read_text(encoding="utf-8")
+
+        for field in ("type: 资料", "status: 待提炼", "source_guid:",
+                      "llm_policy: strict"):
+            self.assertIn(field, source)
+        for field in ("type: 知识", "status: 常青", "summary:",
+                      "review_status: pending", "llm_policy: standard"):
+            self.assertIn(field, knowledge)
+        self.assertIn("type: 索引", knowledge_map)
+        self.assertIn("<!-- llmwiki:auto:start -->", knowledge_map)
+        self.assertIn("<!-- llmwiki:auto:end -->", knowledge_map)
+
     def test_every_user_command_has_non_mutating_help(self):
         command_scripts = [
             "create_note.py",
