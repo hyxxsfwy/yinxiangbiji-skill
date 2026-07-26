@@ -82,6 +82,70 @@ class SearchQueryTests(unittest.TestCase):
         self.assertEqual([note.guid for note in selected], ["ai", "agent", "cn"])
         self.assertEqual(selected[0].updated, 300)
 
+    def test_deduplicates_exact_titles_before_applying_limit(self):
+        from scripts.export_search_results import select_top_notes
+
+        older = SimpleNamespace(
+            guid="same-old",
+            title="Agent 重复剪藏",
+            created=100,
+            updated=200,
+        )
+        newer = SimpleNamespace(
+            guid="same-new",
+            title="Agent 重复剪藏",
+            created=150,
+            updated=300,
+        )
+        same_updated_newer_created = SimpleNamespace(
+            guid="same-created",
+            title="Agent 重复剪藏",
+            created=180,
+            updated=300,
+        )
+        unique = SimpleNamespace(
+            guid="unique",
+            title="AI 唯一文章",
+            created=120,
+            updated=250,
+        )
+
+        selected = select_top_notes(
+            [[older, newer, unique, same_updated_newer_created]],
+            keywords=["AI", "Agent"],
+            limit=2,
+        )
+
+        self.assertEqual(
+            [note.guid for note in selected],
+            ["same-created", "unique"],
+        )
+        self.assertEqual(len({note.title for note in selected}), 2)
+
+    def test_uses_guid_to_break_a_same_title_timestamp_tie(self):
+        from scripts.export_search_results import select_top_notes
+
+        first = SimpleNamespace(
+            guid="aaa-guid",
+            title="AI 完全重复",
+            created=100,
+            updated=200,
+        )
+        second = SimpleNamespace(
+            guid="zzz-guid",
+            title="AI 完全重复",
+            created=100,
+            updated=200,
+        )
+
+        selected = select_top_notes(
+            [[first, second]],
+            keywords=["AI"],
+            limit=1,
+        )
+
+        self.assertEqual([note.guid for note in selected], ["zzz-guid"])
+
     def test_searches_each_keyword_with_updated_descending_order(self):
         try:
             from scripts.export_search_results import search_metadata_batches

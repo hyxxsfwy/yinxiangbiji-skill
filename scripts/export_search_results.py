@@ -67,6 +67,28 @@ def positive_int(value):
     return parsed
 
 
+def note_freshness_key(note):
+    """按更新时间、创建时间和 GUID 判断同标题笔记的新旧。"""
+    return (
+        getattr(note, "updated", 0) or 0,
+        getattr(note, "created", 0) or 0,
+        str(getattr(note, "guid", "") or ""),
+    )
+
+
+def deduplicate_notes_by_title(notes):
+    """标题完全一致时只保留最新的一篇。"""
+    winners = {}
+    for note in notes:
+        title_key = (getattr(note, "title", "") or "").strip()
+        existing = winners.get(title_key)
+        if existing is None or note_freshness_key(note) > note_freshness_key(
+            existing
+        ):
+            winners[title_key] = note
+    return list(winners.values())
+
+
 def select_top_notes(search_batches, keywords, limit):
     notes_by_guid = {}
     for batch in search_batches:
@@ -88,7 +110,8 @@ def select_top_notes(search_batches, keywords, limit):
             getattr(note, "created", 0) or 0,
         )
 
-    return sorted(notes_by_guid.values(), key=sort_key, reverse=True)[:limit]
+    unique_titles = deduplicate_notes_by_title(notes_by_guid.values())
+    return sorted(unique_titles, key=sort_key, reverse=True)[:limit]
 
 
 def search_metadata_batches(
