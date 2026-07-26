@@ -1,6 +1,11 @@
 """AI 知识库的月度归档与目录索引工具。"""
 
+from dataclasses import dataclass
 from datetime import datetime
+import json
+from pathlib import Path
+import re
+from urllib.parse import quote
 
 
 INDEX_FILENAME = "目录索引.md"
@@ -9,3 +14,216 @@ INDEX_FILENAME = "目录索引.md"
 def month_folder_name(created: datetime) -> str:
     """把笔记创建时间转换为稳定的中文月份目录名。"""
     return created.strftime("%Y年%m月")
+
+
+@dataclass(frozen=True)
+class KnowledgeBaseNote:
+    path: Path
+    title: str
+    created: datetime
+    updated: datetime
+    guid: str
+
+
+def _split_frontmatter(markdown_text):
+    lines = str(markdown_text or "").replace("\r\n", "\n").split("\n")
+    if not lines or lines[0].strip() != "---":
+        return {}, lines
+    try:
+        closing_index = next(
+            index
+            for index, line in enumerate(lines[1:], 1)
+            if line.strip() == "---"
+        )
+    except StopIteration:
+        return {}, lines
+
+    fields = {}
+    for line in lines[1:closing_index]:
+        key, separator, raw_value = line.partition(":")
+        if not separator:
+            continue
+        raw_value = raw_value.strip()
+        if raw_value.startswith('"'):
+            try:
+                value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = raw_value.strip('"')
+        else:
+            value = raw_value.strip("'")
+        fields[key.strip()] = str(value)
+    return fields, lines[closing_index + 1:]
+
+
+def _parse_datetime(value, field_name, markdown_path):
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{markdown_path} 的 {field_name} 时间无效: {value!r}"
+        ) from exc
+
+
+def extract_note_metadata(markdown_path):
+    """读取月度归档和索引所需的 Markdown 元数据。"""
+    markdown_path = Path(markdown_path)
+    markdown_text = markdown_path.read_text(encoding="utf-8")
+    fields, body_lines = _split_frontmatter(markdown_text)
+    if not fields.get("created"):
+        raise ValueError(f"{markdown_path} 缺少 created")
+    if not fields.get("source_guid"):
+        raise ValueError(f"{markdown_path} 缺少 source_guid")
+
+    title = next(
+        (
+            match.group(1).strip()
+            for line in body_lines
+            if (match := re.match(r"^#\s+(.+?)\s*$", line.strip()))
+        ),
+        markdown_path.stem,
+    )
+    created = _parse_datetime(
+        fields["created"],
+        "created",
+        markdown_path,
+    )
+    updated = _parse_datetime(
+        fields.get("updated") or fields["created"],
+        "updated",
+        markdown_path,
+    )
+    return KnowledgeBaseNote(
+        path=markdown_path,
+        title=title,
+        created=created,
+        updated=updated,
+        guid=fields["source_guid"],
+    )
+
+
+def _plain_markdown_text(value):
+    text = re.sub(r"!\[[^\]]*]\([^)]*\)", "", value)
+    text = re.sub(r"\[([^\]]+)]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[*_`~]+", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_effective_paragraph(line):
+    stripped = line.strip()
+    if len(stripped) < 12:
+        return False
+    if re.match(r"^#{1,6}\s", stripped):
+        return False
+    if re.match(r"^(?:原文链接|原创|作者|来源)[:：]?", stripped):
+        return False
+    if re.match(r"^(?:引言|前言|序言)[:：]", stripped):
+        return False
+    if "关注" in stripped and any(
+        marker in stripped
+        for marker in ("公众号", "开发者", "获取", "解锁")
+    ):
+        return False
+    if re.match(r"^(?:!\[|\||[-*+]\s|>\s|---+$|___+$)", stripped):
+        return False
+    if line.startswith("    ") or line.startswith("\t"):
+        return False
+    return True
+
+
+def _first_sentence(paragraph, max_length=180):
+    paragraph = _plain_markdown_text(paragraph)
+    match = re.match(r"^(.+?[。！？!?])(?:\s|$|.)", paragraph)
+    sentence = match.group(1) if match else paragraph
+    if len(sentence) > max_length:
+        sentence = sentence[:max_length].rstrip("，,；;：:。！？!? ") + "。"
+    elif sentence and sentence[-1] not in "。！？!?":
+        sentence += "。"
+    return sentence
+
+
+def _outline_titles(body_lines, limit=4):
+    titles = []
+    for line in body_lines:
+        match = re.match(r"^#{2,3}\s+(.+?)\s*#*\s*$", line.strip())
+        if not match:
+            continue
+        title = re.sub(
+            r"^\d+(?:\.\d+)*[.、]?\s*",
+            "",
+            _plain_markdown_text(match.group(1)),
+        )
+        if not title or title == "附件" or title in titles:
+            continue
+        titles.append(title)
+        if len(titles) == limit:
+            break
+    return titles
+
+
+def build_note_summary(markdown_text, title):
+    """用首段有效正文和二、三级标题生成一到两句话简介。"""
+    _, body_lines = _split_frontmatter(markdown_text)
+    paragraph = next(
+        (
+            _plain_markdown_text(line)
+            for line in body_lines
+            if _is_effective_paragraph(line)
+        ),
+        "",
+    )
+    if not paragraph:
+        return f"该笔记主要以图片形式呈现“{title}”相关内容。"
+
+    summary = _first_sentence(paragraph)
+    outline = _outline_titles(body_lines)
+    if outline:
+        quoted = "、".join(f"“{heading}”" for heading in outline)
+        summary += f"本文目录包括{quoted}等内容。"
+    return summary
+
+
+def write_knowledge_base_index(root):
+    """完整重建知识库根目录的 Markdown 索引。"""
+    root = Path(root)
+    notes = []
+    month_pattern = re.compile(r"^\d{4}年\d{2}月$")
+    for month_dir in root.iterdir():
+        if not month_dir.is_dir() or not month_pattern.fullmatch(
+            month_dir.name
+        ):
+            continue
+        notes.extend(
+            extract_note_metadata(path)
+            for path in month_dir.glob("*.md")
+            if path.name != INDEX_FILENAME
+        )
+
+    grouped = {}
+    for note in notes:
+        grouped.setdefault(note.path.parent.name, []).append(note)
+
+    lines = ["# AI 相关知识库目录", ""]
+    for month in sorted(grouped, reverse=True):
+        lines.extend([f"## {month}", ""])
+        month_notes = sorted(grouped[month], key=lambda note: note.title)
+        month_notes.sort(key=lambda note: note.created, reverse=True)
+        for note in month_notes:
+            relative = note.path.relative_to(root).as_posix()
+            encoded = quote(relative, safe="/-._~")
+            markdown_text = note.path.read_text(encoding="utf-8")
+            summary = build_note_summary(markdown_text, note.title)
+            lines.extend(
+                [
+                    f"- [{note.title}]({encoded})",
+                    f"  - 位置：`{relative}`",
+                    f"  - 简介：{summary}",
+                ]
+            )
+        lines.append("")
+
+    rendered = "\n".join(lines).rstrip() + "\n"
+    temporary = root / f".{INDEX_FILENAME}.tmp"
+    temporary.write_text(rendered, encoding="utf-8")
+    index_path = root / INDEX_FILENAME
+    temporary.replace(index_path)
+    return index_path
