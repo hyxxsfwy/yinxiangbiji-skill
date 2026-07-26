@@ -230,6 +230,7 @@ class ExportNoteTests(unittest.TestCase):
             exported_content = exported_path.read_text(encoding="utf-8")
 
         self.assertEqual(exported_path.name, "AI 笔记.md")
+        self.assertEqual(exported_path.parent.name, "2025年07月")
         self.assertIn('source_guid: "note-guid"', exported_content)
         self.assertIn('notebook: "2026"', exported_content)
         self.assertIn("# AI 笔记", exported_content)
@@ -272,15 +273,16 @@ class ExportNoteTests(unittest.TestCase):
             self.assertEqual(image_path.read_bytes(), image_data)
 
         self.assertIn(
-            f"![{image_hash}.png](_attachments/{image_hash}.png)",
+            f"![{image_hash}.png](../_attachments/{image_hash}.png)",
             exported_content,
         )
         self.assertEqual(
             exported_content.count(
-                f"![{image_hash}.png](_attachments/{image_hash}.png)"
+                f"![{image_hash}.png](../_attachments/{image_hash}.png)"
             ),
             1,
         )
+        self.assertEqual(exported_path.parent.name, "2025年07月")
 
     def test_exports_a_single_title_with_compact_article_layout(self):
         from scripts.export_search_results import export_note_to_obsidian
@@ -326,7 +328,10 @@ class ExportNoteTests(unittest.TestCase):
         )
         self.assertIn("## 01 为什么模型不遵循指令", exported_content)
         self.assertNotIn("\n\n\n", exported_content)
-        self.assertIn("![article.png](_attachments/article.png)", exported_content)
+        self.assertIn(
+            "![article.png](../_attachments/article.png)",
+            exported_content,
+        )
 
 
 class AttachmentSavingTests(unittest.TestCase):

@@ -183,11 +183,11 @@ def save_attachments(resources, attachments_dir):
     return saved
 
 
-def make_attachment_link(fname):
+def make_attachment_link(fname, prefix="_attachments"):
     """根据文件类型生成正确的 Markdown 链接格式"""
     ext = os.path.splitext(fname)[1].lower()
     label = fname.replace("[", r"\[").replace("]", r"\]")
-    url = attachment_url(fname)
+    url = attachment_url(fname, prefix=prefix)
     if ext in IMAGE_EXTS:
         return f'![{label}]({url})'
     else:
@@ -200,7 +200,11 @@ def attachment_url(fname, prefix="_attachments"):
     return f"{prefix}/{encoded_name}"
 
 
-def make_attachments_section(hash_to_file, exclude_filenames=None):
+def make_attachments_section(
+    hash_to_file,
+    exclude_filenames=None,
+    prefix="_attachments",
+):
     """生成附件列表 section"""
     if not hash_to_file:
         return ''
@@ -213,20 +217,24 @@ def make_attachments_section(hash_to_file, exclude_filenames=None):
         seen_filenames.add(fname)
         ext = os.path.splitext(fname)[1].lower()
         if ext in IMAGE_EXTS:
-            lines.append(make_attachment_link(fname))
+            lines.append(make_attachment_link(fname, prefix=prefix))
         else:
-            lines.append(f"- {make_attachment_link(fname)}")
+            lines.append(f"- {make_attachment_link(fname, prefix=prefix)}")
     if not seen_filenames:
         return ''
     return '\n'.join(lines)
 
 
-def referenced_attachment_filenames(markdown_body, hash_to_file):
+def referenced_attachment_filenames(
+    markdown_body,
+    hash_to_file,
+    prefix="_attachments",
+):
     """返回正文中已经引用的附件文件名，避免在文末重复展示。"""
     return {
         filename
         for filename in hash_to_file.values()
-        if attachment_url(filename) in (markdown_body or "")
+        if attachment_url(filename, prefix=prefix) in (markdown_body or "")
     }
 
 
@@ -403,7 +411,7 @@ def _evernote_codeblocks_to_html(content):
     return pattern.sub(replace_codeblock, content or "")
 
 
-def html_to_md(content, hash_to_file):
+def html_to_md(content, hash_to_file, attachment_prefix="_attachments"):
     """ENML 网页裁剪内容转 Markdown（使用 html2text）"""
     if not content:
         return ""
@@ -416,7 +424,7 @@ def html_to_md(content, hash_to_file):
             fname = hash_to_file[h]
             ext = os.path.splitext(fname)[1].lower()
             url = html_module.escape(
-                attachment_url(fname),
+                attachment_url(fname, prefix=attachment_prefix),
                 quote=True,
             )
             alt = html_module.escape(fname, quote=True)
@@ -424,7 +432,10 @@ def html_to_md(content, hash_to_file):
                 return f'<img src="{url}" alt="{alt}">'
             else:
                 return f'<a href="{url}">{alt}</a>'
-        return f'<img src="{attachment_url(h)}" alt="{h}">'
+        return (
+            f'<img src="{attachment_url(h, prefix=attachment_prefix)}" '
+            f'alt="{h}">'
+        )
 
     c = _evernote_codeblocks_to_html(content)
     c = re.sub(r'<img[^>]*src="data:image/svg\+xml[^"]*"[^>]*/?\s*>', '', c)

@@ -9,6 +9,11 @@ import evernote.edam.notestore.NoteStore as NoteStore
 from evernote.edam.type.ttypes import NoteSortOrder
 
 try:
+    from .knowledge_base import month_folder_name
+except ImportError:
+    from knowledge_base import month_folder_name
+
+try:
     from .runtime import (
         configure_utf8_output,
         create_note_store,
@@ -162,15 +167,26 @@ def export_note_to_obsidian(note, notebook_name, target_dir):
     created = datetime.fromtimestamp(note.created / 1000)
     updated_ms = getattr(note, "updated", 0) or note.created
     updated = datetime.fromtimestamp(updated_ms / 1000)
+    month_dir = target_dir / month_folder_name(created)
+    month_dir.mkdir(parents=True, exist_ok=True)
+    attachment_prefix = "../_attachments"
     content = note.content or ""
     is_web_clip = is_enml_clip(content) or is_web_clip_by_content(content)
     contains_media = has_en_media(content)
     extra = None
     if is_web_clip:
-        body = html_to_md(content, hash_to_file)
+        body = html_to_md(
+            content,
+            hash_to_file,
+            attachment_prefix=attachment_prefix,
+        )
         extra = "type: webclip"
     elif contains_media:
-        body = html_to_md(content, hash_to_file)
+        body = html_to_md(
+            content,
+            hash_to_file,
+            attachment_prefix=attachment_prefix,
+        )
         extra = "type: inline-images"
     else:
         body = enml_to_markdown(content)
@@ -191,11 +207,16 @@ def export_note_to_obsidian(note, notebook_name, target_dir):
     if resources:
         markdown += make_attachments_section(
             hash_to_file,
-            referenced_attachment_filenames(body, hash_to_file),
+            referenced_attachment_filenames(
+                body,
+                hash_to_file,
+                prefix=attachment_prefix,
+            ),
+            prefix=attachment_prefix,
         )
 
     output_path = resolve_note_path(
-        target_dir,
+        month_dir,
         note.title,
         note.guid,
         {},
