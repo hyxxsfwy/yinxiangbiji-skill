@@ -140,3 +140,106 @@ class IndexTests(unittest.TestCase):
             index,
         )
         self.assertNotIn("目录索引.md`", index)
+
+
+class ArchiveTests(unittest.TestCase):
+    def test_moves_root_note_to_created_month_and_rewrites_attachments(self):
+        from scripts.knowledge_base import archive_root_notes
+
+        with workspace_temp_dir() as root:
+            source = write_note(
+                root / "现有文章.md",
+                title="现有文章",
+                created="2026-07-24 11:00:27",
+                updated="2026-07-25 11:00:27",
+                guid="existing-guid",
+                body="正文内容足够形成简介。\n\n![图](_attachments/image.png)",
+            )
+
+            result = archive_root_notes(root)
+            destination = root / "2026年07月" / "现有文章.md"
+            markdown = destination.read_text(encoding="utf-8")
+
+            self.assertEqual(result.moved, (destination,))
+            self.assertEqual(result.errors, ())
+            self.assertFalse(source.exists())
+            self.assertIn("![图](../_attachments/image.png)", markdown)
+
+    def test_keeps_invalid_root_note_and_continues_valid_migrations(self):
+        from scripts.knowledge_base import archive_root_notes
+
+        with workspace_temp_dir() as root:
+            invalid = root / "缺少时间.md"
+            invalid.write_text("# 缺少时间\n", encoding="utf-8")
+            valid = write_note(
+                root / "有效文章.md",
+                title="有效文章",
+                created="2026-07-20 10:00:00",
+                updated="2026-07-21 10:00:00",
+                guid="valid-guid",
+                body="有效正文内容用于验证迁移继续执行。",
+            )
+
+            result = archive_root_notes(root)
+
+            self.assertTrue(invalid.exists())
+            self.assertFalse(valid.exists())
+            self.assertTrue((root / "2026年07月" / "有效文章.md").exists())
+            self.assertEqual(len(result.errors), 1)
+            self.assertIn("缺少时间.md", result.errors[0])
+
+    def test_keeps_freshest_same_title_and_restores_canonical_filename(self):
+        from scripts.knowledge_base import deduplicate_archived_notes
+
+        with workspace_temp_dir() as root:
+            older = write_note(
+                root / "2026年07月" / "重复文章.md",
+                title="重复文章",
+                created="2026-07-20 10:00:00",
+                updated="2026-07-21 10:00:00",
+                guid="older",
+                body="旧正文内容用于重复笔记测试。",
+            )
+            newer = write_note(
+                root / "2026年07月" / "重复文章_newer.md",
+                title="重复文章",
+                created="2026-07-22 10:00:00",
+                updated="2026-07-25 10:00:00",
+                guid="newer",
+                body="新正文内容应该作为最终保留版本。",
+            )
+
+            removed = deduplicate_archived_notes(root)
+            canonical = root / "2026年07月" / "重复文章.md"
+
+            self.assertIn(older, removed)
+            self.assertTrue(canonical.exists())
+            self.assertIn(
+                'source_guid: "newer"',
+                canonical.read_text(encoding="utf-8"),
+            )
+            self.assertFalse(newer.exists())
+
+    def test_finalization_is_idempotent_and_rebuilds_index(self):
+        from scripts.knowledge_base import finalize_knowledge_base
+
+        with workspace_temp_dir() as root:
+            write_note(
+                root / "根目录文章.md",
+                title="根目录文章",
+                created="2026-07-24 11:00:27",
+                updated="2026-07-26 09:00:00",
+                guid="root-guid",
+                body="根目录文章正文用于验证完整整理流程。",
+            )
+
+            first = finalize_knowledge_base(root)
+            second = finalize_knowledge_base(root)
+            index = second.index_path.read_text(encoding="utf-8")
+
+            self.assertEqual(len(first.moved), 1)
+            self.assertEqual(second.moved, ())
+            self.assertEqual(first.errors, ())
+            self.assertEqual(second.errors, ())
+            self.assertEqual(index.count("- [根目录文章]("), 1)
+            self.assertFalse((root / "根目录文章.md").exists())

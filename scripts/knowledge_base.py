@@ -7,6 +7,11 @@ from pathlib import Path
 import re
 from urllib.parse import quote
 
+try:
+    from .sync_to_obsidian import resolve_note_path, safe_filename
+except ImportError:
+    from sync_to_obsidian import resolve_note_path, safe_filename
+
 
 INDEX_FILENAME = "目录索引.md"
 
@@ -23,6 +28,20 @@ class KnowledgeBaseNote:
     created: datetime
     updated: datetime
     guid: str
+
+
+@dataclass(frozen=True)
+class ArchiveResult:
+    moved: tuple[Path, ...]
+    errors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FinalizationResult:
+    moved: tuple[Path, ...]
+    removed: tuple[Path, ...]
+    index_path: Path
+    errors: tuple[str, ...]
 
 
 def _split_frontmatter(markdown_text):
@@ -227,3 +246,106 @@ def write_knowledge_base_index(root):
     index_path = root / INDEX_FILENAME
     temporary.replace(index_path)
     return index_path
+
+
+def _rewrite_root_attachment_paths(markdown_text):
+    markdown_text = markdown_text.replace(
+        "](_attachments/",
+        "](../_attachments/",
+    )
+    markdown_text = markdown_text.replace(
+        'src="_attachments/',
+        'src="../_attachments/',
+    )
+    return markdown_text.replace(
+        'href="_attachments/',
+        'href="../_attachments/',
+    )
+
+
+def archive_root_notes(root):
+    """把根目录文章迁入创建月份目录，并报告无法迁移的文件。"""
+    root = Path(root)
+    moved = []
+    errors = []
+    for source in sorted(root.glob("*.md")):
+        if source.name == INDEX_FILENAME:
+            continue
+        try:
+            metadata = extract_note_metadata(source)
+            month_dir = root / month_folder_name(metadata.created)
+            month_dir.mkdir(parents=True, exist_ok=True)
+            destination = month_dir / source.name
+            if destination.exists():
+                destination_metadata = extract_note_metadata(destination)
+                if destination_metadata.guid == metadata.guid:
+                    source.unlink()
+                    moved.append(destination)
+                    continue
+                destination = resolve_note_path(
+                    month_dir,
+                    metadata.title,
+                    metadata.guid,
+                    {},
+                )
+
+            markdown_text = source.read_text(encoding="utf-8")
+            destination.write_text(
+                _rewrite_root_attachment_paths(markdown_text),
+                encoding="utf-8",
+            )
+            source.unlink()
+            moved.append(destination)
+        except (OSError, UnicodeError, ValueError) as exc:
+            errors.append(f"{source}: {exc}")
+    return ArchiveResult(tuple(moved), tuple(errors))
+
+
+def _monthly_markdown_paths(root):
+    month_pattern = re.compile(r"^\d{4}年\d{2}月$")
+    for month_dir in Path(root).iterdir():
+        if month_dir.is_dir() and month_pattern.fullmatch(month_dir.name):
+            yield from month_dir.glob("*.md")
+
+
+def _archived_freshness_key(note):
+    return (note.updated, note.created, note.guid)
+
+
+def deduplicate_archived_notes(root):
+    """删除同标题旧版本，并把胜出文件恢复为规范标题文件名。"""
+    groups = {}
+    for path in _monthly_markdown_paths(root):
+        note = extract_note_metadata(path)
+        groups.setdefault(note.title.strip(), []).append(note)
+
+    removed = []
+    for title, notes in groups.items():
+        winner = max(notes, key=_archived_freshness_key)
+        group_paths = {note.path for note in notes}
+        canonical = winner.path.parent / f"{safe_filename(title)}.md"
+        if canonical.exists() and canonical not in group_paths:
+            raise FileExistsError(f"规范路径被其他文章占用: {canonical}")
+
+        for note in notes:
+            if note.path == winner.path:
+                continue
+            note.path.unlink()
+            removed.append(note.path)
+
+        if winner.path != canonical:
+            winner.path.replace(canonical)
+    return removed
+
+
+def finalize_knowledge_base(root):
+    """迁移、去重并重建索引；重复运行保持幂等。"""
+    archive = archive_root_notes(root)
+    removed = tuple(deduplicate_archived_notes(root))
+    index_path = write_knowledge_base_index(root)
+    return FinalizationResult(
+        moved=archive.moved,
+        removed=removed,
+        index_path=index_path,
+        errors=archive.errors,
+    )

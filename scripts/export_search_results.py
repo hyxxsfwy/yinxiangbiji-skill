@@ -9,9 +9,9 @@ import evernote.edam.notestore.NoteStore as NoteStore
 from evernote.edam.type.ttypes import NoteSortOrder
 
 try:
-    from .knowledge_base import month_folder_name
+    from .knowledge_base import finalize_knowledge_base, month_folder_name
 except ImportError:
-    from knowledge_base import month_folder_name
+    from knowledge_base import finalize_knowledge_base, month_folder_name
 
 try:
     from .runtime import (
@@ -315,9 +315,15 @@ def main():
             )
         )
 
+    finalization = finalize_knowledge_base(args.target)
     print(f"\n已导出到: {args.target}")
     for exported_path in exported_paths:
-        print(f"- {exported_path.name}")
+        print(f"- {exported_path.relative_to(args.target)}")
+    print(f"- 目录索引: {finalization.index_path}")
+    if finalization.errors:
+        for error in finalization.errors:
+            print(f"迁移失败: {error}")
+        return 1
     return 0
 
 
