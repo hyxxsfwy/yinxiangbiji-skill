@@ -77,6 +77,27 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("<!-- llmwiki:auto:start -->", knowledge_map)
         self.assertIn("<!-- llmwiki:auto:end -->", knowledge_map)
 
+    def test_skill_documents_curated_obsidian_and_llm_wiki_rules(self):
+        required_phrases = [
+            "历史剪藏继续保留在印象笔记",
+            "按需迁移",
+            "至少两项",
+            "`type`、`domain`、`status`、`tags`",
+            "每篇笔记最多 3 个标签",
+            "受控主题词表",
+            "LLM Wiki",
+            "`llm_policy: off`",
+            "自动审批",
+            "人工审批",
+            "references/obsidian-knowledge-management.md",
+            "templates/obsidian-source-note.md",
+            "templates/obsidian-knowledge-note.md",
+            "templates/obsidian-knowledge-map.md",
+        ]
+        for phrase in required_phrases:
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.skill)
+
     def test_every_user_command_has_non_mutating_help(self):
         command_scripts = [
             "create_note.py",
