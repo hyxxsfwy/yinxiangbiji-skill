@@ -45,7 +45,7 @@ python scripts/get_note_enml.py --guid "NOTE_GUID" --output ".\note.xml"
 
 ### 搜索并导出到 Obsidian
 
-以下命令分别搜索 AI、Agent、人工智能，按 GUID 去重并优先选择标题匹配且最近更新的前三篇：
+以下命令分别搜索 AI、Agent、人工智能，先按 GUID 合并命中，再对标题完全一致的剪藏去重，最后选择标题匹配且最近更新的前三篇：
 
 ```powershell
 python scripts/export_search_results.py `
@@ -55,9 +55,20 @@ python scripts/export_search_results.py `
   --target "D:\path\to\vault\AI相关知识库"
 ```
 
-每篇笔记生成一个 Markdown 文件；图片和附件保存在同目录的 `_attachments/`。同名附件内容不同时会自动追加内容哈希，同标题但不同 GUID 的笔记会使用 `标题_GUID前八位.md`，不会互相覆盖。正文已经引用的图片不会在文末重复展示。
+标题完全一致时依次按 `updated`、`created`、GUID 保留最新版本，去重发生在 `--limit` 之前。文章按 `created` 归入 `YYYY年MM月/`；图片和附件统一保存在知识库根目录 `_attachments/`，月度文章使用 `../_attachments/`。同名附件内容不同时会自动追加内容哈希，正文已经引用的图片不会在文末重复展示。
 
 导出的文章只保留一个一级标题，frontmatter 不再重复写 `title` 属性；正文标题从二级开始，连续空行会压缩为一个空行。印象笔记代码块中的原始换行会保留，图片、链接、列表和表格仍使用标准 Markdown。
+
+根目录自动重建 `目录索引.md`。每篇索引项包含可点击链接、可读的相对位置，以及由首段有效正文和最多四个二、三级目录标题综合形成的一到两句话简介。重复运行会迁移根目录旧文章、清理同标题旧版本并重建索引，不产生重复条目。
+
+```text
+AI相关知识库/
+├── 目录索引.md
+├── _attachments/
+└── 2026年07月/
+    ├── 一张图看懂 AI Agent 全流程.md
+    └── 删掉80%的Skill，Agent反而更听话了.md
+```
 
 ### 增量同步整个 vault
 

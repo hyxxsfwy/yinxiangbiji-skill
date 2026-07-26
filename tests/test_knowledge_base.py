@@ -96,6 +96,48 @@ source_guid: "image-guid"
             "该笔记主要以图片形式呈现“一张图看懂 AI Agent 全流程”相关内容。",
         )
 
+    def test_skips_public_account_signature_and_follow_prompts(self):
+        from scripts.knowledge_base import build_note_summary
+
+        markdown = """# Agent 项目
+
+涛哥聊Python __
+
+**点击上方卡片关注我**
+
+**设置星标 学习更多项目**
+
+搭过 Agent 的人，多半都被上下文折磨过。
+
+## 它解决什么
+"""
+
+        summary = build_note_summary(markdown, "Agent 项目")
+
+        self.assertTrue(summary.startswith("搭过 Agent 的人"))
+        self.assertNotIn("涛哥聊Python", summary)
+        self.assertNotIn("点击上方", summary)
+
+    def test_treats_a_timestamp_as_image_metadata_not_body(self):
+        from scripts.knowledge_base import build_note_summary
+
+        markdown = """# 一张图看懂 AI Agent 全流程
+
+2026-07-24 11:00:11
+
+![流程图](../_attachments/flow.png)
+"""
+
+        summary = build_note_summary(
+            markdown,
+            "一张图看懂 AI Agent 全流程",
+        )
+
+        self.assertEqual(
+            summary,
+            "该笔记主要以图片形式呈现“一张图看懂 AI Agent 全流程”相关内容。",
+        )
+
 
 class IndexTests(unittest.TestCase):
     def test_writes_months_and_notes_in_descending_order(self):

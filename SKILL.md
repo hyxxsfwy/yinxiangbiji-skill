@@ -45,12 +45,19 @@ python scripts/export_search_results.py `
   --target "D:\vault\AI相关知识库"
 ```
 
-脚本按 GUID 去重，导出 Markdown、图片和附件。完成后核对：
+输出契约：
 
-1. Markdown 数量等于预期导出数。
-2. `_attachments/` 中的文件存在且非空。
-3. 每个 `_attachments/...` 引用都有对应文件。
-4. 同标题不同 GUID、同名不同内容附件均未被覆盖。
+- 先按 GUID 合并搜索命中，再对标题完全一致的剪藏去重；依次按 `updated`、`created`、GUID 保留最新版本，最后应用 `--limit`。
+- 文章按笔记 `created` 归入 `YYYY年MM月/`，例如 `2026年07月/`。
+- 根目录生成 `目录索引.md`；每项包含文档位置，以及由首段有效正文和二、三级目录大纲综合生成的一到两句话简介。
+- 附件保留在根目录 `_attachments/`，月度文章使用 `../_attachments/`。
+
+完成后核对：
+
+1. 根目录没有散落的文章 Markdown，文章均位于月份目录。
+2. `目录索引.md` 的条目数等于唯一标题数，链接可打开且简介非空。
+3. 每个 `../_attachments/...` 引用都有对应文件。
+4. 同标题文章只保留按上述新旧规则选中的一篇；同名不同内容附件仍分别存在。
 
 ## 安全边界
 
@@ -65,9 +72,10 @@ python scripts/export_search_results.py `
 | 症状 | 检查 |
 |---|---|
 | 鉴权失败 | Token 是否过期；URL 的 shard 是否与令牌页面一致 |
-| Markdown 没图片 | `getNote` 是否请求资源数据；引用路径与 `_attachments/` 是否一致 |
-| 同名笔记被覆盖 | frontmatter 中 `source_guid` 是否不同；输出名是否带 GUID 后缀 |
+| Markdown 没图片 | `getNote` 是否请求资源数据；月度文章是否使用 `../_attachments/` |
+| 重复剪藏仍出现 | 是否在 `--limit` 前按完全一致标题比较 `updated`、`created`、GUID |
+| 目录索引缺文章 | 文章是否有可解析的 `created`、`updated` 和 `source_guid` |
 | 同名附件只剩一个 | 文件名冲突时是否追加内容哈希 |
-| 同步漏笔记 | 是否分页读取元数据；不要按标题去重 |
+| 整库同步漏笔记 | 是否分页读取元数据；整库同步不按标题去重，组合导出才按标题去重 |
 
 完整参数和实现说明见 `python scripts/<脚本>.py --help` 与 `README.md`。

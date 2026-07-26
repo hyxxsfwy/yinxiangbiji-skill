@@ -129,17 +129,28 @@ def _plain_markdown_text(value):
 
 def _is_effective_paragraph(line):
     stripped = line.strip()
-    if len(stripped) < 12:
+    plain = _plain_markdown_text(stripped)
+    if len(plain) < 12:
         return False
     if re.match(r"^#{1,6}\s", stripped):
         return False
-    if re.match(r"^(?:原文链接|原创|作者|来源)[:：]?", stripped):
+    if re.match(r"^(?:原文链接|原创|作者|来源)[:：]?", plain):
         return False
-    if re.match(r"^(?:引言|前言|序言)[:：]", stripped):
+    if re.match(r"^(?:引言|前言|序言)[:：]", plain):
         return False
-    if "关注" in stripped and any(
-        marker in stripped
+    if re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?",
+        plain,
+    ):
+        return False
+    if "关注" in plain and any(
+        marker in plain
         for marker in ("公众号", "开发者", "获取", "解锁")
+    ):
+        return False
+    if any(
+        prompt in plain
+        for prompt in ("点击上方", "设置星标", "学习更多项目")
     ):
         return False
     if re.match(r"^(?:!\[|\||[-*+]\s|>\s|---+$|___+$)", stripped):
