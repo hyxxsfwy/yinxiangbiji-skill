@@ -1,4 +1,5 @@
 import json
+import stat
 import subprocess
 import sys
 import unittest
@@ -549,6 +550,73 @@ class CleanupGateTests(unittest.TestCase):
             self.assertFalse((vault / "Quant相关知识库").exists())
             self.assertFalse((vault / "HYXX个人知识库").exists())
             self.assertTrue(keep.exists())
+
+    @unittest.skipUnless(
+        sys.platform == "win32",
+        "Windows ReadOnly 目录行为回归",
+    )
+    def test_cleanup_removes_readonly_old_directories_and_nested_directories(self):
+        from scripts.restructure_obsidian_vault import (
+            apply_copy_phase,
+            build_migration_plan,
+            cleanup_old_directories,
+            create_backup,
+            validate_migration,
+            write_link_report,
+            write_manifest,
+        )
+
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            plan = build_migration_plan(vault)
+            records = vault / "90_系统" / "迁移记录"
+            manifest = records / "2026-07-27-文件清单.json"
+            create_backup(plan, records / "2026-07-27-迁移前备份.zip")
+            write_manifest(plan, manifest)
+            apply_copy_phase(plan)
+            report = validate_migration(vault, manifest)
+            write_link_report(report, records / "2026-07-27-链接检查.md")
+            self.assertTrue(report.passed, report.issues)
+            readonly_directories = tuple(
+                directory
+                for old_directory in plan.old_directories
+                for directory in (old_directory, *old_directory.rglob("*"))
+                if directory.is_dir()
+            )
+            old_files = tuple(
+                path
+                for old_directory in plan.old_directories
+                for path in old_directory.rglob("*")
+                if path.is_file()
+            )
+            for directory in readonly_directories:
+                directory.chmod(stat.S_IREAD)
+
+            failure = None
+            try:
+                cleanup_old_directories(plan, report)
+            except PermissionError as exc:
+                failure = exc
+            finally:
+                remaining = tuple(
+                    path
+                    for path in readonly_directories
+                    if path.exists()
+                )
+                deleted_files = tuple(
+                    path for path in old_files if not path.exists()
+                )
+                for directory in remaining:
+                    directory.chmod(stat.S_IWRITE)
+
+            if failure is not None:
+                self.assertTrue(deleted_files)
+            self.assertIsNone(
+                failure,
+                f"只读目录清理失败，已删文件: {deleted_files}，"
+                f"仍存目录: {remaining}",
+            )
+            self.assertEqual(remaining, ())
 
 
 class CommandLineTests(unittest.TestCase):

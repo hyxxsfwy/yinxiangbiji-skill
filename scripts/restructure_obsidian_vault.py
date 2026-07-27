@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import shutil
+import stat
 import sys
 import zipfile
 from dataclasses import dataclass
@@ -914,6 +915,14 @@ def write_migration_summary(
     return path
 
 
+def retry_readonly_removal(function, path, exception):
+    if not isinstance(exception, PermissionError):
+        raise exception
+    target = Path(path)
+    target.chmod(target.stat().st_mode | stat.S_IWRITE)
+    function(path)
+
+
 def cleanup_old_directories(
     plan: MigrationPlan,
     report: ValidationReport,
@@ -937,7 +946,7 @@ def cleanup_old_directories(
         if resolved.name not in OLD_DIRECTORIES:
             raise RuntimeError(f"拒绝删除非白名单目录: {resolved}")
     for old_directory in plan.old_directories:
-        shutil.rmtree(old_directory)
+        shutil.rmtree(old_directory, onexc=retry_readonly_removal)
 
 
 def verify_completed_vault(vault: Path) -> ValidationReport:
