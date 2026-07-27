@@ -150,6 +150,21 @@ python scripts/export_search_results.py `
 
 最终结构、索引职责、审核规则和旧标签映射见 `references/obsidian-knowledge-management.md`。其中 `20_知识笔记` 只保留目录索引和知识地图两份根索引，`30_精选资料` 的每个领域各自维护一份目录索引。
 
+### 精选资料逐篇审阅
+
+`curate_selected_materials.py` 根据显式 JSON 清单逐篇核对领域归属，并维护受控双向链接。错域资料移入 `99_废纸篓/30_精选资料/` 的镜像路径，引用的本地附件同步复制；保留资料每篇最多写入 3 条人工确认的双向链接，没有明确关联时不写链接块。执行前会创建 ZIP 快照和 SHA-256 清单，完成后重建领域索引并生成逐篇审核日志。
+
+```powershell
+# 预览
+python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\2026-07-27-selected-materials-review.json"
+
+# 执行
+python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\2026-07-27-selected-materials-review.json" --apply --confirm CURATE_SELECTED_MATERIALS
+
+# 验证
+python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\2026-07-27-selected-materials-review.json" --verify
+```
+
 ## 写操作与安全边界
 
 只有在明确需要修改账户数据时才运行这些命令：

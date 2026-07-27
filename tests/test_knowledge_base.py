@@ -46,6 +46,25 @@ class MonthFolderTests(unittest.TestCase):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_ignores_managed_related_notes_section_in_outline(self):
+        from scripts.knowledge_base import build_note_summary
+
+        markdown = """# 模型开源
+
+正文讨论开源模型的产业影响。
+
+## 相关笔记
+
+<!-- llmwiki:auto-links:start -->
+- [[30_精选资料/AI/2026年07月/另一篇.md|另一篇]]
+<!-- llmwiki:auto-links:end -->
+"""
+
+        summary = build_note_summary(markdown, "模型开源")
+
+        self.assertNotIn("相关笔记", summary)
+        self.assertEqual(summary, "正文讨论开源模型的产业影响。")
+
     def test_combines_first_effective_paragraph_with_outline(self):
         from scripts.knowledge_base import build_note_summary
 

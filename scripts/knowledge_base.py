@@ -183,7 +183,11 @@ def _outline_titles(body_lines, limit=4):
             "",
             _plain_markdown_text(match.group(1)),
         )
-        if not title or title == "附件" or title in titles:
+        if (
+            not title
+            or title in {"附件", "相关笔记"}
+            or title in titles
+        ):
             continue
         titles.append(title)
         if len(titles) == limit:

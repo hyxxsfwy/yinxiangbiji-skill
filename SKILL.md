@@ -35,6 +35,9 @@ Copy-Item .env.example .env
 | 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian"` | 只读本地 |
 | 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |
 | 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --verify` | 只读本地 |
+| 预览精选资料审阅 | `python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\审阅清单.json"` | 只读本地 |
+| 执行精选资料审阅 | `python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\审阅清单.json" --apply --confirm CURATE_SELECTED_MATERIALS` | 修改本地 vault |
+| 验证精选资料审阅 | `python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\审阅清单.json" --verify` | 只读本地 |
 
 ## 搜索并导出
 
@@ -81,6 +84,10 @@ python scripts/export_search_results.py `
 人工字段固定为 `type`、`domain`、`status`、`tags`。标签只表达主题，每篇笔记最多 3 个标签，且只能使用受控主题词表；`_Apps` 转为来源属性，任务标签转为状态属性，个人状态不进入知识库。
 
 详细规则与模板：`references/obsidian-knowledge-management.md`、`templates/obsidian-source-note.md`、`templates/obsidian-knowledge-note.md`、`templates/obsidian-knowledge-map.md`。
+
+### 精选资料逐篇治理
+
+审阅清单必须逐篇给出 `path`、`decision`、`reason`、`topic` 和 `links`。内容与所在领域不符时使用 `trash`，脚本把 Markdown 移入 `99_废纸篓/30_精选资料/` 的镜像路径，并复制其本地附件，不能用跨领域搬运掩盖错域。保留文档的自动关联必须人工确认语义相关、严格双向且每篇不超过 3 条；没有明确关联时保持为空。执行前创建带 SHA-256 清单的 ZIP 快照，执行后重建领域索引并写入逐篇审核日志。
 
 ### LLM Wiki 半自动审核
 
