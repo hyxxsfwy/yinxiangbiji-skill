@@ -5,7 +5,6 @@ from datetime import datetime
 import json
 from pathlib import Path
 import re
-from urllib.parse import quote
 
 try:
     from .sync_to_obsidian import resolve_note_path, safe_filename
@@ -94,7 +93,7 @@ def extract_note_metadata(markdown_path):
     if not identity:
         raise ValueError(f"{markdown_path} 缺少 source_guid 或 uid")
 
-    title = next(
+    raw_title = next(
         (
             match.group(1).strip()
             for line in body_lines
@@ -102,6 +101,7 @@ def extract_note_metadata(markdown_path):
         ),
         markdown_path.stem,
     )
+    title = _plain_markdown_text(raw_title) or markdown_path.stem
     created = _parse_datetime(
         fields["created"],
         "created",
@@ -130,12 +130,51 @@ def _plain_markdown_text(value):
 
 def _is_effective_paragraph(line):
     stripped = line.strip()
+    if stripped.startswith("<!--"):
+        return False
     plain = _plain_markdown_text(stripped)
     if len(plain) < 12:
         return False
     if re.match(r"^#{1,6}\s", stripped):
         return False
     if re.match(r"^(?:原文链接|原创|作者|来源)[:：]?", plain):
+        return False
+    if re.match(r"^(?:编译|译者)\s*[|｜]", plain):
+        return False
+    if re.match(r"^以下文章来源于", plain):
+        return False
+    if re.match(r"^共\s*\d+\s*字.*阅读需\s*\d+\s*分钟", plain):
+        return False
+    if re.match(r"^本文内容不构成.*(?:投资|财务).*建议", plain):
+        return False
+    if re.match(r"^本文为.+原创内容", plain):
+        return False
+    if re.fullmatch(r"(.{2,40})\s+\1", plain.rstrip("。")):
+        return False
+    if re.search(r"我是.+专注于.+(?:分享|干货)", plain):
+        return False
+    if "无法收到推送" in plain:
+        return False
+    if plain.endswith(("吴说Real", "AgenticHub", "聊AI")):
+        return False
+    if re.match(
+        r"^(?:本漫画作者@|相关[:：]|[，,]\s*已帮助|（?食材不保证真实性)",
+        plain,
+    ):
+        return False
+    if re.match(r"^大家好(?:[，,]\s*我是|[。！!]?$)", plain):
+        return False
+    if re.match(r"^先问大家一个问题", plain):
+        return False
+    if re.search(r"offer", plain, re.IGNORECASE) and any(
+        marker in plain
+        for marker in ("学员", "总包", "上岸", "人才计划")
+    ):
+        return False
+    if sum(
+        marker in plain
+        for marker in ("学员", "总包", "上岸", "人才计划")
+    ) >= 2:
         return False
     if re.match(r"^(?:引言|前言|序言)[:：]", plain):
         return False
@@ -168,7 +207,7 @@ def _first_sentence(paragraph, max_length=180):
     if len(sentence) > max_length:
         sentence = sentence[:max_length].rstrip("，,；;：:。！？!? ") + "。"
     elif sentence and sentence[-1] not in "。！？!?":
-        sentence += "。"
+        sentence = sentence.rstrip("：:") + "。"
     return sentence
 
 
@@ -183,6 +222,7 @@ def _outline_titles(body_lines, limit=4):
             "",
             _plain_markdown_text(match.group(1)),
         )
+        title = re.sub(r"^\\\.\s*", "", title)
         if (
             not title
             or title in {"附件", "相关笔记"}
@@ -266,17 +306,19 @@ def write_knowledge_base_index(root, domain="AI"):
         month_notes.sort(key=lambda note: note.created, reverse=True)
         for note in month_notes:
             relative = note.path.relative_to(root).as_posix()
-            encoded = quote(relative, safe="/-._~")
             markdown_text = note.path.read_text(encoding="utf-8")
             summary = build_note_summary(markdown_text, note.title)
+            alias = note.title.replace("|", "｜").replace("]", "］")
             lines.extend(
                 [
-                    f"- [{note.title}]({encoded})",
+                    f"- [[{relative}|{alias}]]",
                     f"  - 位置：`{relative}`",
                     f"  - 简介：{summary}",
                 ]
             )
         lines.append("")
+    if not grouped:
+        lines.extend(["## 当前资料", "", "- 暂无", ""])
 
     rendered = "\n".join(lines).rstrip() + "\n"
     temporary = root / f".{INDEX_FILENAME}.tmp"

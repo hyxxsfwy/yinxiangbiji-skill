@@ -1118,7 +1118,7 @@ def render_knowledge_catalog(vault: Path) -> str:
             key=lambda row: (row[0], row[1].as_posix()),
             reverse=True,
         ):
-            relative = path.relative_to(root).with_suffix("").as_posix()
+            relative = path.relative_to(root).as_posix()
             lines.append(
                 f"- [[{relative}|{path.stem}]]"
                 f"｜{summary}｜{status}｜{updated or '未记录'}"

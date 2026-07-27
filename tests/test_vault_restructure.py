@@ -237,6 +237,45 @@ class SnapshotTests(unittest.TestCase):
 
 
 class ScaffoldTests(unittest.TestCase):
+    def test_knowledge_catalog_uses_explicit_markdown_suffix(self):
+        from scripts.restructure_obsidian_vault import (
+            DOMAINS,
+            render_knowledge_catalog,
+        )
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            for domain in DOMAINS:
+                (
+                    vault
+                    / "20_知识笔记"
+                    / domain
+                ).mkdir(parents=True)
+            note = (
+                vault
+                / "20_知识笔记"
+                / "软件工程"
+                / "Codex 5.6.md"
+            )
+            note.write_text(
+                "---\n"
+                "type: 知识\n"
+                "domain: 软件工程\n"
+                "status: 常青\n"
+                "updated: 2026-07-27\n"
+                "---\n\n"
+                "# Codex 5.6\n\n"
+                "正文介绍 Codex 的版本差异与实践方法。\n",
+                encoding="utf-8",
+            )
+
+            catalog = render_knowledge_catalog(vault)
+
+        self.assertIn(
+            "[[软件工程/Codex 5.6.md|Codex 5.6]]",
+            catalog,
+        )
+
     def test_creates_exact_lifecycle_tree_and_index_contracts(self):
         from scripts.restructure_obsidian_vault import (
             build_migration_plan,

@@ -46,6 +46,96 @@ class MonthFolderTests(unittest.TestCase):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_skips_export_comments_brand_signatures_and_follow_prompts(self):
+        from scripts.knowledge_base import build_note_summary
+
+        markdown = """# Agent 工程
+
+<!-- llmwiki:auto-links:start -->
+
+QuantML QuantML __
+
+✅我是丁师兄，专注于智能驾驶大模型，持续分享LLM面试干货。
+
+Oluwapelumi 吴说Real
+
+本漫画作者@ 灵魂画手Puppy。
+
+相关：如何布局 BTC！
+
+，已帮助多名同学成功上岸。
+
+（食材不保证真实性，切勿当真）。
+
+大家好，我是示例作者。
+
+编译|深潮 TechFlow。
+
+双大厂 ssp + 双独角兽人才计划，总包 100w+。
+
+先问大家一个问题。
+
+否则可能无法收到推送。
+
+正文解释状态爆炸与上下文溢出的共同根因。
+"""
+
+        summary = build_note_summary(markdown, "Agent 工程")
+
+        self.assertEqual(
+            summary,
+            "正文解释状态爆炸与上下文溢出的共同根因。",
+        )
+
+    def test_summary_replaces_terminal_colon_with_sentence_period(self):
+        from scripts.knowledge_base import build_note_summary
+
+        summary = build_note_summary(
+            "# 行业事件\n\n2026 年，行业发生了一起戏剧性的安全事件：\n",
+            "行业事件",
+        )
+
+        self.assertEqual(
+            summary,
+            "2026 年，行业发生了一起戏剧性的安全事件。",
+        )
+
+    def test_outline_removes_exported_escaped_number_marker(self):
+        from scripts.knowledge_base import build_note_summary
+
+        markdown = """# Skills
+
+正文介绍 Skills 的规范设计方法。
+
+## \\. Skills 到底是什么
+"""
+
+        summary = build_note_summary(markdown, "Skills")
+
+        self.assertIn("“Skills 到底是什么”", summary)
+        self.assertNotIn("\\.", summary)
+
+    def test_skips_source_metrics_and_disclaimer_before_real_summary(self):
+        from scripts.knowledge_base import build_note_summary
+
+        markdown = """# 金融数据
+
+以下文章来源于示例号，作者示例作者。
+
+共 6815 字阅读需 14 分钟。
+
+本文内容不构成任何投资财务建议，请读者严格遵守所在地法律法规。
+
+这篇文章分析金融数据如何影响量化研究流程。
+"""
+
+        summary = build_note_summary(markdown, "金融数据")
+
+        self.assertEqual(
+            summary,
+            "这篇文章分析金融数据如何影响量化研究流程。",
+        )
+
     def test_ignores_managed_related_notes_section_in_outline(self):
         from scripts.knowledge_base import build_note_summary
 
@@ -171,6 +261,44 @@ source_guid: "image-guid"
 
 
 class IndexTests(unittest.TestCase):
+    def test_index_uses_explicit_wikilink_for_dotted_plus_title(self):
+        from scripts.knowledge_base import write_knowledge_base_index
+
+        with workspace_temp_dir() as root:
+            month = root / "2026年07月"
+            write_note(
+                month / "GPT-5.6+RAG.md",
+                title="[GPT-5.6+RAG](https://example.com/source)",
+                created="2026-07-24 11:00:27",
+                updated="2026-07-26 09:00:00",
+                guid="dotted-plus",
+                body="正文解释模型评测与检索增强生成的关系。",
+            )
+
+            index = write_knowledge_base_index(
+                root,
+                domain="AI",
+            ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "- [[2026年07月/GPT-5.6+RAG.md|GPT-5.6+RAG]]",
+            index,
+        )
+        self.assertNotIn("%2B", index)
+        self.assertNotIn("https://example.com/source", index)
+
+    def test_empty_index_explicitly_states_no_materials(self):
+        from scripts.knowledge_base import write_knowledge_base_index
+
+        with workspace_temp_dir() as root:
+            index = write_knowledge_base_index(
+                root,
+                domain="个人成长",
+            ).read_text(encoding="utf-8")
+
+        self.assertIn("## 当前资料", index)
+        self.assertIn("- 暂无", index)
+
     def test_index_header_documents_domain_function_and_rebuild_rules(self):
         from scripts.knowledge_base import write_knowledge_base_index
 
@@ -203,7 +331,10 @@ class IndexTests(unittest.TestCase):
                 domain="Quant",
             ).read_text(encoding="utf-8")
 
-        self.assertIn("[外部资料]", index)
+        self.assertIn(
+            "[[2026年06月/外部资料.md|外部资料]]",
+            index,
+        )
 
     def test_index_ignores_missing_wrong_type_and_cross_domain_documents(self):
         from scripts.knowledge_base import write_knowledge_base_index
@@ -247,10 +378,10 @@ class IndexTests(unittest.TestCase):
                 domain="AI",
             ).read_text(encoding="utf-8")
 
-        self.assertIn("[AI资料]", index)
-        self.assertNotIn("[知识笔记]", index)
-        self.assertNotIn("[Quant资料]", index)
-        self.assertNotIn("[缺失类型领域]", index)
+        self.assertIn("[[2026年07月/AI资料.md|AI资料]]", index)
+        self.assertNotIn("|知识笔记]]", index)
+        self.assertNotIn("|Quant资料]]", index)
+        self.assertNotIn("|缺失类型领域]]", index)
         self.assertIn(
             "只收录 `type: 资料` 且 `domain: AI` 的文档",
             index,
@@ -289,8 +420,7 @@ class IndexTests(unittest.TestCase):
         )
         self.assertIn("位置：`2026年07月/七月文章.md`", index)
         self.assertIn(
-            "[七月文章](2026%E5%B9%B407%E6%9C%88/"
-            "%E4%B8%83%E6%9C%88%E6%96%87%E7%AB%A0.md)",
+            "[[2026年07月/七月文章.md|七月文章]]",
             index,
         )
         self.assertIn(
@@ -421,5 +551,10 @@ class ArchiveTests(unittest.TestCase):
             self.assertEqual(second.moved, ())
             self.assertEqual(first.errors, ())
             self.assertEqual(second.errors, ())
-            self.assertEqual(index.count("- [根目录文章]("), 1)
+            self.assertEqual(
+                index.count(
+                    "- [[2026年07月/根目录文章.md|根目录文章]]"
+                ),
+                1,
+            )
             self.assertFalse((root / "根目录文章.md").exists())
