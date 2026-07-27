@@ -349,6 +349,142 @@ class CopyAndMetadataTests(unittest.TestCase):
                 )
 
 
+class LinkValidationTests(unittest.TestCase):
+    def test_reports_missing_local_target_and_ignores_http(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            note = vault / "note.md"
+            note.write_text(
+                "![缺图](assets/missing.png)\n"
+                "[外部](https://example.com)\n",
+                encoding="utf-8",
+            )
+            issues = scan_local_links(vault)
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].source.name, "note.md")
+        self.assertEqual(issues[0].target, "assets/missing.png")
+        self.assertEqual(issues[0].reason, "目标不存在")
+
+    def test_rejects_link_resolving_outside_vault(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "note.md").write_text(
+                "[越界](../../secret.txt)\n",
+                encoding="utf-8",
+            )
+            issues = scan_local_links(vault)
+
+        self.assertEqual(issues[0].reason, "目标越出 vault")
+
+    def test_decodes_percent_encoded_local_paths(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "2026年07月").mkdir()
+            (vault / "2026年07月" / "文章.md").write_text(
+                "# 正文\n",
+                encoding="utf-8",
+            )
+            (vault / "index.md").write_text(
+                "[文章](2026%E5%B9%B407%E6%9C%88/%E6%96%87%E7%AB%A0.md)\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(scan_local_links(vault), ())
+
+
+class CleanupGateTests(unittest.TestCase):
+    def test_validation_failure_keeps_all_old_directories(self):
+        from scripts.restructure_obsidian_vault import (
+            apply_copy_phase,
+            build_migration_plan,
+            cleanup_old_directories,
+            create_backup,
+            validate_migration,
+            write_manifest,
+        )
+
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            plan = build_migration_plan(vault)
+            manifest = (
+                vault
+                / "90_系统"
+                / "迁移记录"
+                / "2026-07-27-文件清单.json"
+            )
+            create_backup(
+                plan,
+                vault
+                / "90_系统"
+                / "迁移记录"
+                / "2026-07-27-迁移前备份.zip",
+            )
+            write_manifest(plan, manifest)
+            apply_copy_phase(plan)
+            (
+                vault / "30_精选资料" / "AI" / "_attachments" / "agent.png"
+            ).unlink()
+            report = validate_migration(vault, manifest)
+            with self.assertRaisesRegex(RuntimeError, "验证未通过"):
+                cleanup_old_directories(plan, report)
+            self.assertTrue((vault / "AI相关知识库").exists())
+            self.assertTrue((vault / "Quant相关知识库").exists())
+            self.assertTrue((vault / "HYXX个人知识库").exists())
+
+    def test_successful_validation_removes_only_three_old_directories(self):
+        from scripts.restructure_obsidian_vault import (
+            apply_copy_phase,
+            build_migration_plan,
+            cleanup_old_directories,
+            create_backup,
+            validate_migration,
+            write_link_report,
+            write_manifest,
+        )
+
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            keep = vault / "用户目录"
+            keep.mkdir()
+            plan = build_migration_plan(vault)
+            manifest = (
+                vault
+                / "90_系统"
+                / "迁移记录"
+                / "2026-07-27-文件清单.json"
+            )
+            create_backup(
+                plan,
+                vault
+                / "90_系统"
+                / "迁移记录"
+                / "2026-07-27-迁移前备份.zip",
+            )
+            write_manifest(plan, manifest)
+            apply_copy_phase(plan)
+            report = validate_migration(vault, manifest)
+            write_link_report(
+                report,
+                vault
+                / "90_系统"
+                / "迁移记录"
+                / "2026-07-27-链接检查.md",
+            )
+            self.assertTrue(report.passed, report.issues)
+            cleanup_old_directories(plan, report)
+
+            self.assertFalse((vault / "AI相关知识库").exists())
+            self.assertFalse((vault / "Quant相关知识库").exists())
+            self.assertFalse((vault / "HYXX个人知识库").exists())
+            self.assertTrue(keep.exists())
+
+
 class CommandLineTests(unittest.TestCase):
     def test_default_command_only_prints_plan(self):
         with workspace_temp_dir() as vault:
@@ -390,7 +526,7 @@ class CommandLineTests(unittest.TestCase):
             self.assertIn("MIGRATE_OBSIDIAN_VAULT", result.stderr)
             self.assertFalse((vault / "20_知识笔记").exists())
 
-    def test_confirmed_apply_creates_snapshot_and_keeps_old_directories(self):
+    def test_confirmed_apply_creates_records_and_removes_old_directories(self):
         with workspace_temp_dir() as vault:
             seed_old_vault(vault)
             result = subprocess.run(
@@ -408,57 +544,114 @@ class CommandLineTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue(
-                (
-                    vault
-                    / "90_系统"
-                    / "迁移记录"
-                    / "2026-07-27-迁移前备份.zip"
-                ).is_file()
+            records = vault / "90_系统" / "迁移记录"
+            for record in (
+                "2026-07-27-迁移前备份.zip",
+                "2026-07-27-文件清单.json",
+                "2026-07-27-链接检查.md",
+                "2026-07-27-迁移说明.md",
+            ):
+                self.assertTrue((records / record).is_file(), record)
+            for old_directory in (
+                "AI相关知识库",
+                "Quant相关知识库",
+                "HYXX个人知识库",
+            ):
+                self.assertFalse((vault / old_directory).exists())
+            self.assertTrue((vault / "30_精选资料" / "AI").exists())
+            self.assertIn(
+                "- 结果：通过",
+                (records / "2026-07-27-链接检查.md").read_text(
+                    encoding="utf-8"
+                ),
             )
+            self.assertIn(
+                "- 旧目录已清理：是",
+                (records / "2026-07-27-迁移说明.md").read_text(
+                    encoding="utf-8"
+                ),
+            )
+
+    def test_verify_supports_completed_vault_without_modifying_files(self):
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            applied = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--apply",
+                    "--confirm",
+                    "MIGRATE_OBSIDIAN_VAULT",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            before = {
+                path.relative_to(vault): (path.stat().st_mtime_ns, path.read_bytes())
+                for path in vault.rglob("*")
+                if path.is_file()
+            }
+
+            verified = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--verify",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            after = {
+                path.relative_to(vault): (path.stat().st_mtime_ns, path.read_bytes())
+                for path in vault.rglob("*")
+                if path.is_file()
+            }
+
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertEqual(after, before)
+
+    def test_failed_validation_keeps_old_directories_and_writes_link_report(self):
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            (vault / "AI相关知识库" / "_attachments" / "agent.png").unlink()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--apply",
+                    "--confirm",
+                    "MIGRATE_OBSIDIAN_VAULT",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(result.returncode, 1, result.stderr)
             for old_directory in (
                 "AI相关知识库",
                 "Quant相关知识库",
                 "HYXX个人知识库",
             ):
                 self.assertTrue((vault / old_directory).exists())
-            self.assertTrue((vault / "30_精选资料" / "AI").exists())
-
-    def test_confirmed_apply_is_repeatable_and_manifest_is_stable(self):
-        with workspace_temp_dir() as vault:
-            seed_old_vault(vault)
-            command = [
-                sys.executable,
-                "scripts/restructure_obsidian_vault.py",
-                "--vault",
-                str(vault),
-                "--apply",
-                "--confirm",
-                "MIGRATE_OBSIDIAN_VAULT",
-            ]
-            first = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            )
-            self.assertEqual(first.returncode, 0, first.stderr)
             records = vault / "90_系统" / "迁移记录"
-            backup = records / "2026-07-27-迁移前备份.zip"
-            manifest = records / "2026-07-27-文件清单.json"
-            original_backup = backup.read_bytes()
-            original_manifest = manifest.read_bytes()
-
-            second = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
+            self.assertIn(
+                "- 结果：失败",
+                (records / "2026-07-27-链接检查.md").read_text(
+                    encoding="utf-8"
+                ),
             )
-
-            self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertEqual(backup.read_bytes(), original_backup)
-            self.assertEqual(manifest.read_bytes(), original_manifest)
+            self.assertFalse((records / "2026-07-27-迁移说明.md").exists())
 
     def test_apply_can_retry_after_late_conflict_without_rewriting_snapshot(self):
         with workspace_temp_dir() as vault:

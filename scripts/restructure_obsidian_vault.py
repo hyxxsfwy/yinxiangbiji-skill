@@ -10,6 +10,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 try:
     from scripts.knowledge_base import write_knowledge_base_index
@@ -22,6 +23,8 @@ DOMAINS = ("AI", "Quant", "软件工程", "投资理财", "个人成长")
 OLD_DIRECTORIES = ("AI相关知识库", "Quant相关知识库", "HYXX个人知识库")
 QUANT_FILENAME = "GPT-6也救不了平庸策略：Vibe Quant 的反思.md"
 CODEX_FILENAME = "Codex CLI 使用技巧记录.md"
+MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+EXTERNAL_SCHEMES = ("http:", "https:", "mailto:", "data:")
 FRONTMATTER_RE = re.compile(
     r"\A---\r?\n(.*?)\r?\n---",
     re.DOTALL,
@@ -66,11 +69,89 @@ class MigrationPlan:
     old_directories: tuple[Path, ...]
 
 
+@dataclass(frozen=True)
+class LinkIssue:
+    source: Path
+    target: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class ValidationReport:
+    passed: bool
+    issues: tuple[str, ...]
+    markdown_files_before: int
+    local_links_checked: int
+    image_links_checked: int
+
+
 def assert_vault(vault: Path) -> Path:
     resolved = Path(vault).resolve()
     if not (resolved / ".obsidian").is_dir():
         raise ValueError(f"目标不是 Obsidian vault，缺少 .obsidian: {resolved}")
     return resolved
+
+
+def iter_managed_markdown(vault: Path):
+    for path in sorted(Path(vault).rglob("*.md")):
+        relative = path.relative_to(vault)
+        if ".obsidian" in relative.parts:
+            continue
+        if relative.parts and relative.parts[0] in OLD_DIRECTORIES:
+            continue
+        yield path
+
+
+def scan_local_links(vault: Path) -> tuple[LinkIssue, ...]:
+    vault = assert_vault(vault)
+    issues = []
+    for source in iter_managed_markdown(vault):
+        markdown = source.read_text(encoding="utf-8")
+        for match in MARKDOWN_LINK.finditer(markdown):
+            raw_target = match.group(1).strip()
+            target_without_anchor = raw_target.split("#", 1)[0]
+            if (
+                not target_without_anchor
+                or target_without_anchor.lower().startswith(EXTERNAL_SCHEMES)
+            ):
+                continue
+            decoded = unquote(target_without_anchor)
+            resolved = (source.parent / decoded).resolve()
+            try:
+                resolved.relative_to(vault)
+            except ValueError:
+                issues.append(LinkIssue(source, raw_target, "目标越出 vault"))
+                continue
+            if not resolved.exists():
+                issues.append(LinkIssue(source, raw_target, "目标不存在"))
+    return tuple(issues)
+
+
+def count_markdown_images(vault: Path) -> int:
+    return sum(
+        len(
+            re.findall(
+                r"!\[[^\]]*\]\([^)]+\)",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+        for path in iter_managed_markdown(vault)
+    )
+
+
+def count_local_markdown_links(vault: Path) -> int:
+    count = 0
+    for path in iter_managed_markdown(vault):
+        text = path.read_text(encoding="utf-8")
+        for match in MARKDOWN_LINK.finditer(text):
+            target = match.group(1).strip().lower()
+            if (
+                not match.group(0).startswith("!")
+                and target
+                and not target.startswith(EXTERNAL_SCHEMES)
+            ):
+                count += 1
+    return count
 
 
 def build_migration_plan(vault: Path) -> MigrationPlan:
@@ -710,6 +791,179 @@ def write_vault_documents(plan: MigrationPlan):
         write_knowledge_base_index(vault / "30_精选资料" / domain, domain=domain)
 
 
+def validate_migration(
+    vault: Path,
+    manifest_path: Path,
+) -> ValidationReport:
+    vault = assert_vault(vault)
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    issues = []
+    required_paths = [
+        vault / "00_首页.md",
+        vault / "10_项目" / "目录索引.md",
+        vault / "20_知识笔记" / "目录索引.md",
+        vault / "20_知识笔记" / "知识地图.md",
+        vault / "90_系统" / "知识库治理" / "管理规则.md",
+        vault / "90_系统" / "知识库治理" / "主题词表.md",
+        vault / "90_系统" / "知识库治理" / "别名词典.md",
+    ]
+    required_paths.extend(
+        vault / "30_精选资料" / domain / "目录索引.md"
+        for domain in DOMAINS
+    )
+    for path in required_paths:
+        if not path.exists():
+            issues.append(f"缺少必需路径: {path}")
+
+    for record in manifest["files"]:
+        destination_text = record.get("destination")
+        if destination_text is None:
+            continue
+        destination = vault / Path(destination_text)
+        if not destination.is_file():
+            issues.append(f"缺少迁移目标: {destination_text}")
+            continue
+        if (
+            record.get("preserve_hash")
+            and sha256_file(destination) != record["sha256"]
+        ):
+            issues.append(f"二进制文件哈希不一致: {destination_text}")
+
+    issues.extend(
+        f"{issue.source}: {issue.target}: {issue.reason}"
+        for issue in scan_local_links(vault)
+    )
+
+    for markdown_path in iter_managed_markdown(vault):
+        relative = markdown_path.relative_to(vault)
+        if relative.parts[:2] == ("90_系统", "迁移记录"):
+            continue
+        text = markdown_path.read_text(encoding="utf-8")
+        for old_name in OLD_DIRECTORIES:
+            if old_name in text:
+                issues.append(
+                    f"新结构仍引用旧目录: "
+                    f"{relative}: {old_name}"
+                )
+
+    return ValidationReport(
+        passed=not issues,
+        issues=tuple(issues),
+        markdown_files_before=sum(
+            1
+            for record in manifest["files"]
+            if record["source"].lower().endswith(".md")
+        ),
+        local_links_checked=count_local_markdown_links(vault),
+        image_links_checked=count_markdown_images(vault),
+    )
+
+
+def write_link_report(report: ValidationReport, path: Path) -> Path:
+    issue_lines = (
+        [f"- {issue}" for issue in report.issues]
+        if report.issues
+        else ["- 无"]
+    )
+    lines = [
+        "# Obsidian vault 迁移链接检查",
+        "",
+        f"- 结果：{'通过' if report.passed else '失败'}",
+        f"- 迁移前 Markdown：{report.markdown_files_before}",
+        f"- 检查的 Markdown 链接：{report.local_links_checked}",
+        f"- 检查的图片引用：{report.image_links_checked}",
+        "",
+        "## 问题",
+        "",
+        *issue_lines,
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def write_migration_summary(
+    plan: MigrationPlan,
+    report: ValidationReport,
+    path: Path,
+    old_directories_removed: bool,
+) -> Path:
+    lines = [
+        "# Obsidian vault 迁移说明",
+        "",
+        f"- 执行时间：{datetime.now().astimezone().isoformat()}",
+        f"- vault：`{plan.vault}`",
+        f"- 验证结果：{'通过' if report.passed else '失败'}",
+        f"- 旧目录已清理：{'是' if old_directories_removed else '否'}",
+        "- 快照：`2026-07-27-迁移前备份.zip`",
+        "- 清单：`2026-07-27-文件清单.json`",
+        "- 链接报告：`2026-07-27-链接检查.md`",
+        "",
+        "## 路径映射",
+        "",
+    ]
+    for item in plan.items:
+        lines.append(
+            f"- `{item.source.relative_to(plan.vault)}`"
+            f" → `{item.destination.relative_to(plan.vault)}`"
+        )
+    lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def cleanup_old_directories(
+    plan: MigrationPlan,
+    report: ValidationReport,
+):
+    if not report.passed:
+        raise RuntimeError("迁移验证未通过，保留全部旧目录")
+    records = plan.vault / "90_系统" / "迁移记录"
+    required_records = (
+        records / "2026-07-27-迁移前备份.zip",
+        records / "2026-07-27-文件清单.json",
+        records / "2026-07-27-链接检查.md",
+    )
+    if not all(path.is_file() for path in required_records):
+        raise RuntimeError("缺少迁移快照或文件清单，保留全部旧目录")
+    if not all(path.is_dir() for path in plan.old_directories):
+        raise RuntimeError("旧目录不完整，保留全部旧目录")
+    for old_directory in plan.old_directories:
+        resolved = old_directory.resolve()
+        if resolved.parent != plan.vault:
+            raise RuntimeError(f"拒绝删除非 vault 直接子目录: {resolved}")
+        if resolved.name not in OLD_DIRECTORIES:
+            raise RuntimeError(f"拒绝删除非白名单目录: {resolved}")
+    for old_directory in plan.old_directories:
+        shutil.rmtree(old_directory)
+
+
+def verify_completed_vault(vault: Path) -> ValidationReport:
+    vault = assert_vault(vault)
+    manifest = (
+        vault
+        / "90_系统"
+        / "迁移记录"
+        / "2026-07-27-文件清单.json"
+    )
+    report = validate_migration(vault, manifest)
+    remaining = [
+        name for name in OLD_DIRECTORIES if (vault / name).exists()
+    ]
+    if not remaining:
+        return report
+    issues = report.issues + tuple(
+        f"旧目录仍存在: {name}" for name in remaining
+    )
+    return ValidationReport(
+        passed=False,
+        issues=issues,
+        markdown_files_before=report.markdown_files_before,
+        local_links_checked=report.local_links_checked,
+        image_links_checked=report.image_links_checked,
+    )
+
+
 def print_plan(plan: MigrationPlan):
     print("预览模式：不会修改 vault")
     for item in plan.items:
@@ -723,6 +977,11 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="安全重组 HYXX Obsidian LLM Wiki")
     parser.add_argument("--vault", type=Path, required=True)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="只验证已迁移结构，不执行复制或删除",
+    )
     parser.add_argument("--confirm")
     return parser.parse_args(argv)
 
@@ -731,6 +990,9 @@ def main(argv=None):
     args = parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
+    if args.verify:
+        report = verify_completed_vault(args.vault)
+        return 0 if report.passed else 1
     if args.apply and args.confirm != CONFIRMATION:
         print(
             f"--apply 必须同时提供 --confirm {CONFIRMATION}",
@@ -740,10 +1002,25 @@ def main(argv=None):
     plan = build_migration_plan(args.vault)
     if args.apply:
         records = plan.vault / "90_系统" / "迁移记录"
-        create_backup(plan, records / "2026-07-27-迁移前备份.zip")
-        write_manifest(plan, records / "2026-07-27-文件清单.json")
+        backup = records / "2026-07-27-迁移前备份.zip"
+        manifest = records / "2026-07-27-文件清单.json"
+        link_report_path = records / "2026-07-27-链接检查.md"
+        summary_path = records / "2026-07-27-迁移说明.md"
+
+        create_backup(plan, backup)
+        write_manifest(plan, manifest)
         apply_copy_phase(plan)
-        print("复制阶段完成；旧目录保持不变，等待完整验证")
+        report = validate_migration(plan.vault, manifest)
+        write_link_report(report, link_report_path)
+        if not report.passed:
+            return 1
+        cleanup_old_directories(plan, report)
+        write_migration_summary(
+            plan,
+            report,
+            summary_path,
+            old_directories_removed=True,
+        )
         return 0
     print_plan(plan)
     return 0
