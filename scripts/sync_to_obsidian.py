@@ -685,6 +685,19 @@ def yaml_string(value):
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def yaml_value(value):
+    """把受控的 Python 标量和列表渲染为 YAML 兼容值。"""
+    if value is None:
+        return '""'
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return json.dumps(list(value), ensure_ascii=False)
+    return yaml_string(value)
+
+
 def frontmatter(
     title,
     nb_name,
@@ -713,7 +726,7 @@ def frontmatter(
                 raise ValueError(f"无效的 frontmatter 扩展字段: {extra}")
             extra_items = [(key, value.strip())]
         for key, value in extra_items:
-            fm += f"{key}: {yaml_string(value)}\n"
+            fm += f"{key}: {yaml_value(value)}\n"
     fm += "---\n\n"
     return fm
 

@@ -6,6 +6,31 @@ from tests.support import workspace_temp_dir
 
 
 class FrontmatterTests(unittest.TestCase):
+    def test_frontmatter_supports_scalar_and_list_extra_fields(self):
+        from scripts.sync_to_obsidian import frontmatter
+
+        rendered = frontmatter(
+            "标题",
+            "微信",
+            "guid-1",
+            datetime(2026, 7, 21, 8, 0, 0),
+            datetime(2026, 7, 22, 9, 0, 0),
+            {
+                "type": "资料",
+                "domain": "AI",
+                "status": "待提炼",
+                "tags": ["主题/Agent"],
+                "review_status": "pending",
+                "llm_policy": "strict",
+            },
+            include_title=False,
+        )
+
+        self.assertIn('type: "资料"', rendered)
+        self.assertIn('domain: "AI"', rendered)
+        self.assertIn('tags: ["主题/Agent"]', rendered)
+        self.assertNotIn('tags: "[', rendered)
+
     def test_quotes_yaml_sensitive_strings(self):
         from scripts.sync_to_obsidian import frontmatter
 

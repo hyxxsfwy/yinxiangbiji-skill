@@ -90,8 +90,9 @@ def extract_note_metadata(markdown_path):
     fields, body_lines = _split_frontmatter(markdown_text)
     if not fields.get("created"):
         raise ValueError(f"{markdown_path} 缺少 created")
-    if not fields.get("source_guid"):
-        raise ValueError(f"{markdown_path} 缺少 source_guid")
+    identity = fields.get("source_guid") or fields.get("uid")
+    if not identity:
+        raise ValueError(f"{markdown_path} 缺少 source_guid 或 uid")
 
     title = next(
         (
@@ -116,7 +117,7 @@ def extract_note_metadata(markdown_path):
         title=title,
         created=created,
         updated=updated,
-        guid=fields["source_guid"],
+        guid=identity,
     )
 
 
@@ -212,7 +213,7 @@ def build_note_summary(markdown_text, title):
     return summary
 
 
-def write_knowledge_base_index(root):
+def write_knowledge_base_index(root, domain="AI"):
     """完整重建知识库根目录的 Markdown 索引。"""
     root = Path(root)
     notes = []
@@ -232,7 +233,26 @@ def write_knowledge_base_index(root):
     for note in notes:
         grouped.setdefault(note.path.parent.name, []).append(note)
 
-    lines = ["# AI 相关知识库目录", ""]
+    lines = [
+        "---",
+        "type: 索引",
+        f"domain: {domain}",
+        "status: 常青",
+        "tags: []",
+        "review_status: human-approved",
+        "llm_policy: standard",
+        "---",
+        "",
+        f"# {domain} 精选资料目录",
+        "",
+        "> [!info] 功能",
+        f"> 本文件列出 {domain} 领域的全部精选资料，提供位置和简要说明。",
+        "",
+        "> [!info] 构建规则",
+        "> 扫描本目录的年月归档，按创建月份和创建时间倒序排列。",
+        "> 简介由首段有效正文和目录大纲综合生成；本文件可由导出脚本完整重建，不保存人工评论。",
+        "",
+    ]
     for month in sorted(grouped, reverse=True):
         lines.extend([f"## {month}", ""])
         month_notes = sorted(grouped[month], key=lambda note: note.title)
@@ -349,11 +369,11 @@ def deduplicate_archived_notes(root):
     return removed
 
 
-def finalize_knowledge_base(root):
+def finalize_knowledge_base(root, domain="AI"):
     """迁移、去重并重建索引；重复运行保持幂等。"""
     archive = archive_root_notes(root)
     removed = tuple(deduplicate_archived_notes(root))
-    index_path = write_knowledge_base_index(root)
+    index_path = write_knowledge_base_index(root, domain=domain)
     return FinalizationResult(
         moved=archive.moved,
         removed=removed,

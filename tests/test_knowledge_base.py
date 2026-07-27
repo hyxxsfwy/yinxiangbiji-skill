@@ -140,6 +140,40 @@ source_guid: "image-guid"
 
 
 class IndexTests(unittest.TestCase):
+    def test_index_header_documents_domain_function_and_rebuild_rules(self):
+        from scripts.knowledge_base import write_knowledge_base_index
+
+        with workspace_temp_dir() as root:
+            index_path = write_knowledge_base_index(root, domain="Quant")
+            index = index_path.read_text(encoding="utf-8")
+
+        self.assertIn("type: 索引", index)
+        self.assertIn("domain: Quant", index)
+        self.assertIn("# Quant 精选资料目录", index)
+        self.assertIn("> [!info] 功能", index)
+        self.assertIn("> [!info] 构建规则", index)
+        self.assertIn("可由导出脚本完整重建", index)
+
+    def test_index_accepts_uid_for_non_evernote_source(self):
+        from scripts.knowledge_base import write_knowledge_base_index
+
+        with workspace_temp_dir() as root:
+            month = root / "2026年06月"
+            month.mkdir()
+            (month / "外部资料.md").write_text(
+                "---\ncreated: \"2026-06-12\"\n"
+                "updated: \"2026-06-12\"\n"
+                "uid: \"source-quant-vibe-2026-06-12\"\n"
+                "---\n\n# 外部资料\n\n正文。\n",
+                encoding="utf-8",
+            )
+            index = write_knowledge_base_index(
+                root,
+                domain="Quant",
+            ).read_text(encoding="utf-8")
+
+        self.assertIn("[外部资料]", index)
+
     def test_writes_months_and_notes_in_descending_order(self):
         from scripts.knowledge_base import write_knowledge_base_index
 

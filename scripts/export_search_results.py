@@ -153,7 +153,7 @@ def search_metadata_batches(
     return batches, totals
 
 
-def export_note_to_obsidian(note, notebook_name, target_dir):
+def export_note_to_obsidian(note, notebook_name, target_dir, domain="AI"):
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -173,24 +173,29 @@ def export_note_to_obsidian(note, notebook_name, target_dir):
     content = note.content or ""
     is_web_clip = is_enml_clip(content) or is_web_clip_by_content(content)
     contains_media = has_en_media(content)
-    extra = None
     if is_web_clip:
         body = html_to_md(
             content,
             hash_to_file,
             attachment_prefix=attachment_prefix,
         )
-        extra = "type: webclip"
     elif contains_media:
         body = html_to_md(
             content,
             hash_to_file,
             attachment_prefix=attachment_prefix,
         )
-        extra = "type: inline-images"
     else:
         body = enml_to_markdown(content)
     body = simplify_markdown(body, note.title)
+    extra = {
+        "type": "资料",
+        "domain": domain,
+        "status": "待提炼",
+        "tags": [],
+        "review_status": "pending",
+        "llm_policy": "strict",
+    }
 
     markdown = frontmatter(
         note.title,
@@ -261,6 +266,12 @@ def main():
         required=True,
         help="Obsidian 目标目录",
     )
+    parser.add_argument(
+        "--domain",
+        choices=("AI", "Quant", "软件工程", "投资理财", "个人成长"),
+        default="AI",
+        help="精选资料所属领域（默认 AI）",
+    )
     args = parser.parse_args()
 
     token, note_store_url = load_config()
@@ -312,10 +323,11 @@ def main():
                 note,
                 notebook_name=notebook_name,
                 target_dir=args.target,
+                domain=args.domain,
             )
         )
 
-    finalization = finalize_knowledge_base(args.target)
+    finalization = finalize_knowledge_base(args.target, domain=args.domain)
     print(f"\n已导出到: {args.target}")
     for exported_path in exported_paths:
         print(f"- {exported_path.relative_to(args.target)}")

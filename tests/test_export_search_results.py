@@ -226,6 +226,7 @@ class ExportNoteTests(unittest.TestCase):
                 note,
                 notebook_name="2026",
                 target_dir=temp_dir,
+                domain="AI",
             )
             exported_content = exported_path.read_text(encoding="utf-8")
 
@@ -233,6 +234,12 @@ class ExportNoteTests(unittest.TestCase):
         self.assertEqual(exported_path.parent.name, "2025年07月")
         self.assertIn('source_guid: "note-guid"', exported_content)
         self.assertIn('notebook: "2026"', exported_content)
+        self.assertIn('type: "资料"', exported_content)
+        self.assertIn('domain: "AI"', exported_content)
+        self.assertIn('status: "待提炼"', exported_content)
+        self.assertIn('tags: []', exported_content)
+        self.assertIn('review_status: "pending"', exported_content)
+        self.assertIn('llm_policy: "strict"', exported_content)
         self.assertIn("# AI 笔记", exported_content)
         self.assertIn("AI 内容", exported_content)
 
