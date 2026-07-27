@@ -4,7 +4,9 @@
 import argparse
 from dataclasses import dataclass
 from datetime import date, datetime
+import hashlib
 from html.parser import HTMLParser
+import json
 from pathlib import Path
 import re
 
@@ -12,9 +14,17 @@ import evernote.edam.notestore.NoteStore as NoteStore
 from evernote.edam.type.ttypes import NoteSortOrder
 
 try:
-    from .knowledge_base import finalize_knowledge_base, month_folder_name
+    from .knowledge_base import (
+        extract_note_metadata,
+        finalize_knowledge_base,
+        month_folder_name,
+    )
 except ImportError:
-    from knowledge_base import finalize_knowledge_base, month_folder_name
+    from knowledge_base import (
+        extract_note_metadata,
+        finalize_knowledge_base,
+        month_folder_name,
+    )
 
 try:
     from .runtime import (
@@ -156,6 +166,10 @@ DOMAIN_PROFILES = {
             "机器学习",
             "深度学习",
             "神经网络",
+            "强化学习",
+            "reinforcement learning",
+            "rlhf",
+            "rlaif",
             "智能体",
             "ai agent",
             "agentic",
@@ -167,6 +181,17 @@ DOMAIN_PROFILES = {
             "gpt",
             "qwen",
             "codex",
+            "workbuddy",
+            "kimi",
+            "minimax",
+            "glm",
+            "huggingface",
+            "hugging face",
+            "transformer",
+            "rwkv",
+            "stable diffusion",
+            "diffusion model",
+            "扩散模型",
         ),
         "support": (
             "agent",
@@ -177,7 +202,8 @@ DOMAIN_PROFILES = {
             "embedding",
             "向量检索",
             "向量数据库",
-            "transformer",
+            "attention",
+            "注意力机制",
             "推理",
             "微调",
             "模型",
@@ -187,6 +213,7 @@ DOMAIN_PROFILES = {
             "工具调用",
             "上下文窗口",
             "mcp",
+            "harness",
         ),
         "support_only_min": 4,
     },
@@ -248,11 +275,26 @@ DOMAIN_PROFILES = {
             "投资组合",
             "股票",
             "基金",
+            "etf",
+            "定投",
+            "金融",
+            "理财",
             "债券",
             "估值",
             "证券",
             "房地产投资",
             "财务自由",
+            "区块链",
+            "比特币",
+            "bitcoin",
+            "btc",
+            "以太坊",
+            "ethereum",
+            "eth",
+            "solana",
+            "sol",
+            "加密货币",
+            "crypto",
         ),
         "support": (
             "收益率",
@@ -333,17 +375,29 @@ class DomainAssessment:
     competing_domain: str | None = None
 
 
+def _term_count(text, term):
+    folded_term = term.casefold()
+    if re.fullmatch(r"[a-z0-9]+", folded_term):
+        return len(
+            re.findall(
+                rf"(?<![a-z0-9]){re.escape(folded_term)}(?![a-z0-9])",
+                text,
+            )
+        )
+    return text.count(folded_term)
+
+
 def _score_domain(text, profile):
     folded = text.casefold()
     core_hits = {
-        term: folded.count(term.casefold())
+        term: _term_count(folded, term)
         for term in profile["core"]
-        if term.casefold() in folded
+        if _term_count(folded, term)
     }
     support_hits = {
-        term: folded.count(term.casefold())
+        term: _term_count(folded, term)
         for term in profile["support"]
-        if term.casefold() in folded
+        if _term_count(folded, term)
     }
     score = sum(3 * min(count, 3) for count in core_hits.values())
     score += sum(min(count, 2) for count in support_hits.values())
@@ -419,7 +473,6 @@ def assess_domain_relevance(domain, title, content):
 @dataclass(frozen=True)
 class CandidateReview:
     metadata: object
-    note: object
     assessment: DomainAssessment
     notebook_name: str
 
@@ -428,7 +481,73 @@ class CandidateReview:
 class DomainExportResult:
     selected: tuple
     rejected: tuple
+    already_exported: tuple
+    previously_rejected: tuple
     exported_paths: tuple
+
+
+def discover_exported_versions(target_dir):
+    """读取目标目录中已成功导出的 GUID 及其更新时间（秒）。"""
+    target_dir = Path(target_dir)
+    if not target_dir.exists():
+        return {}
+
+    versions = {}
+    for markdown_path in target_dir.rglob("*.md"):
+        if markdown_path.name == "目录索引.md":
+            continue
+        try:
+            metadata = extract_note_metadata(markdown_path)
+        except (OSError, UnicodeError, ValueError):
+            continue
+        updated_second = int(metadata.updated.timestamp())
+        versions[metadata.guid] = max(
+            versions.get(metadata.guid, 0),
+            updated_second,
+        )
+    return versions
+
+
+def export_state_path(target_dir, domain):
+    """为目标目录生成不进入 Obsidian 的本地续跑状态路径。"""
+    target_key = str(Path(target_dir).resolve()).casefold()
+    digest = hashlib.sha256(target_key.encode("utf-8")).hexdigest()[:16]
+    safe_domain = re.sub(r"[^\w-]+", "_", domain)
+    return (
+        Path(__file__).resolve().parent.parent
+        / ".state"
+        / f"export-{safe_domain}-{digest}.json"
+    )
+
+
+def _load_export_state(state_file):
+    if state_file is None or not Path(state_file).is_file():
+        return {}
+    try:
+        payload = json.loads(Path(state_file).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    reviews = payload.get("reviews", {})
+    return reviews if isinstance(reviews, dict) else {}
+
+
+def _save_export_state(state_file, reviews):
+    if state_file is None:
+        return
+    state_file = Path(state_file)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_file.with_suffix(state_file.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(
+            {"version": 1, "reviews": reviews},
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(state_file)
 
 
 def export_domain_candidates(
@@ -439,19 +558,41 @@ def export_domain_candidates(
     target_dir,
     domain,
     limit,
+    state_file=None,
 ):
     """逐篇拉完整正文并过领域门禁，匹配后才写 Markdown 和附件。"""
     selected = []
     rejected = []
+    already_exported = []
+    previously_rejected = []
     exported_paths = []
     selected_titles = set()
+    exported_versions = discover_exported_versions(target_dir)
+    review_state = _load_export_state(state_file)
 
     for metadata in candidates:
-        if limit is not None and len(selected) >= limit:
+        completed_count = len(selected) + len(already_exported)
+        if limit is not None and completed_count >= limit:
             break
 
         title_key = (getattr(metadata, "title", "") or "").strip()
         if title_key in selected_titles:
+            continue
+        guid = str(getattr(metadata, "guid", "") or "")
+        updated_second = int(
+            (getattr(metadata, "updated", 0) or 0) / 1000
+        )
+        if exported_versions.get(guid) == updated_second:
+            selected_titles.add(title_key)
+            already_exported.append(metadata)
+            continue
+        previous = review_state.get(guid, {})
+        if (
+            previous.get("updated") == updated_second
+            and previous.get("domain") == domain
+            and previous.get("outcome") == "rejected"
+        ):
+            previously_rejected.append(metadata)
             continue
 
         note = note_store.getNote(
@@ -473,12 +614,19 @@ def export_domain_candidates(
         )
         review = CandidateReview(
             metadata=metadata,
-            note=note,
             assessment=assessment,
             notebook_name=notebook_name,
         )
         if not assessment.matched:
             rejected.append(review)
+            review_state[guid] = {
+                "updated": updated_second,
+                "domain": domain,
+                "outcome": "rejected",
+                "reason": assessment.reason,
+                "evidence": list(assessment.evidence[:12]),
+            }
+            _save_export_state(state_file, review_state)
             continue
 
         selected_titles.add(title_key)
@@ -495,6 +643,8 @@ def export_domain_candidates(
     return DomainExportResult(
         selected=tuple(selected),
         rejected=tuple(rejected),
+        already_exported=tuple(already_exported),
+        previously_rejected=tuple(previously_rejected),
         exported_paths=tuple(exported_paths),
     )
 
@@ -695,6 +845,7 @@ def main():
         target_dir=args.target,
         domain=args.domain,
         limit=args.limit,
+        state_file=export_state_path(args.target, args.domain),
     )
     for review in result.rejected:
         evidence = "、".join(review.assessment.evidence[:6]) or "无"
@@ -703,11 +854,22 @@ def main():
             f"{review.assessment.reason}（正文证据：{evidence}）"
         )
 
-    if not result.selected:
+    if result.already_exported:
+        print(
+            f"\n续跑识别到 {len(result.already_exported)} 篇未变化的"
+            "已导出笔记，已跳过重复正文和资源请求"
+        )
+    if result.previously_rejected:
+        print(
+            f"续跑识别到 {len(result.previously_rejected)} 篇未变化的"
+            "已拒绝候选，已跳过重复正文请求"
+        )
+
+    if not result.selected and not result.already_exported:
         print(f"\n没有正文主旨匹配 {args.domain} 的候选，未写入任何文章或附件")
         return 1
 
-    print(f"\n正文审核通过并导出 {len(result.selected)} 篇：")
+    print(f"\n本次正文审核通过并新增或更新 {len(result.selected)} 篇：")
     for index, review in enumerate(result.selected, 1):
         metadata = review.metadata
         created = datetime.fromtimestamp(metadata.created / 1000)

@@ -9,6 +9,20 @@ from tests.support import workspace_temp_dir
 
 
 class RuntimeConfigTests(unittest.TestCase):
+    def test_note_store_http_requests_have_a_finite_timeout(self):
+        from scripts.runtime import create_note_store
+
+        client = create_note_store(
+            "https://app.yinxiang.com/shard/s27/notestore",
+            "test-token",
+        )
+        transport = client._iprot.trans
+
+        self.assertEqual(
+            transport._THttpClient__timeout,
+            60.0,
+        )
+
     def test_environment_overrides_dotenv(self):
         try:
             from scripts.runtime import load_config

@@ -11,3 +11,4 @@ scripts/.sync_state.json
 note_enml_output.xml
 tests/.tmp-*
 .worktrees/
+.state/

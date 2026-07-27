@@ -11,6 +11,7 @@ import thrift.transport.THttpClient as THttpClient
 
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_HTTP_TIMEOUT_MS = 60_000
 
 
 def _read_dotenv(env_path):
@@ -53,12 +54,17 @@ def configure_utf8_output():
             stream.reconfigure(encoding="utf-8")
 
 
-def create_note_store(note_store_url, token=None):
+def create_note_store(
+    note_store_url,
+    token=None,
+    request_timeout_ms=DEFAULT_HTTP_TIMEOUT_MS,
+):
     """构造 NoteStore 客户端，不输出或持久化凭据。"""
     if not note_store_url:
         raise ValueError("未配置 EVERNOTE_NOTESTORE_URL")
 
     transport = THttpClient.THttpClient(note_store_url)
+    transport.setTimeout(request_timeout_ms)
     if token:
         transport.setCustomHeaders({"Authorization": f"Bearer {token}"})
     protocol = TBinaryProtocol.TBinaryProtocol(transport)

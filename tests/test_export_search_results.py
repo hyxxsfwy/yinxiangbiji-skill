@@ -306,6 +306,48 @@ class DomainRelevanceTests(unittest.TestCase):
 
         self.assertTrue(assessment.matched)
 
+    def test_accepts_reinforcement_learning_and_diffusion_body(self):
+        from scripts.export_search_results import assess_domain_relevance
+
+        assessment = assess_domain_relevance(
+            domain="AI",
+            title="模型训练方法",
+            content=(
+                "<en-note>本文讨论强化学习、RLHF、奖励模型和"
+                "Stable Diffusion 扩散模型的训练方法。</en-note>"
+            ),
+        )
+
+        self.assertTrue(assessment.matched)
+
+    def test_accepts_crypto_and_etf_body_as_investment(self):
+        from scripts.export_search_results import assess_domain_relevance
+
+        assessment = assess_domain_relevance(
+            domain="投资理财",
+            title="资产观察",
+            content=(
+                "<en-note>本文比较 ETF 定投、比特币 BTC、以太坊 ETH "
+                "和 SOL 的资产配置与风险控制。</en-note>"
+            ),
+        )
+
+        self.assertTrue(assessment.matched)
+
+    def test_short_crypto_symbols_do_not_match_inside_english_words(self):
+        from scripts.export_search_results import assess_domain_relevance
+
+        assessment = assess_domain_relevance(
+            domain="投资理财",
+            title="Software method",
+            content=(
+                "<en-note>This method describes a software solution "
+                "for resolving network isolation.</en-note>"
+            ),
+        )
+
+        self.assertFalse(assessment.matched)
+
     def test_rejects_target_domain_when_another_domain_is_clearly_dominant(self):
         from scripts.export_search_results import assess_domain_relevance
 
@@ -325,6 +367,139 @@ class DomainRelevanceTests(unittest.TestCase):
 
 
 class DomainGatedExportTests(unittest.TestCase):
+    def test_resume_skips_unchanged_candidates_previously_rejected(self):
+        from scripts.export_search_results import export_domain_candidates
+
+        metadata = SimpleNamespace(
+            guid="rejected-guid",
+            title="AI 家庭整理术",
+            created=1753488000000,
+            updated=1753574400000,
+            notebookGuid="notebook-guid",
+        )
+        note = SimpleNamespace(
+            **metadata.__dict__,
+            content="<en-note>衣柜整理、厨房清洁和家庭收纳。</en-note>",
+            resources=[],
+        )
+
+        class FirstNoteStore:
+            def getNote(self, *_args):
+                return note
+
+        class ResumeNoteStore:
+            def getNote(self, *_args):
+                raise AssertionError("未变化的已拒绝候选不应再次请求正文")
+
+        with workspace_temp_dir() as temp_dir:
+            state_file = temp_dir / "export-state.json"
+            first = export_domain_candidates(
+                note_store=FirstNoteStore(),
+                token="token",
+                candidates=[metadata],
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=temp_dir / "AI",
+                domain="AI",
+                limit=None,
+                state_file=state_file,
+            )
+            resumed = export_domain_candidates(
+                note_store=ResumeNoteStore(),
+                token="token",
+                candidates=[metadata],
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=temp_dir / "AI",
+                domain="AI",
+                limit=None,
+                state_file=state_file,
+            )
+
+            self.assertEqual(len(first.rejected), 1)
+            self.assertTrue(state_file.is_file())
+            self.assertEqual(
+                [item.guid for item in resumed.previously_rejected],
+                ["rejected-guid"],
+            )
+            self.assertEqual(resumed.rejected, ())
+
+    def test_resume_skips_unchanged_guids_already_exported_to_target(self):
+        from datetime import datetime
+
+        from scripts.export_search_results import export_domain_candidates
+
+        updated_ms = 1753574400000
+        existing = SimpleNamespace(
+            guid="already-exported",
+            title="已导出的 AI 笔记",
+            created=1753488000000,
+            updated=updated_ms,
+            notebookGuid="notebook-guid",
+        )
+        pending = SimpleNamespace(
+            guid="pending-note",
+            title="待导出的 AI 笔记",
+            created=1753488000000,
+            updated=1753574400000,
+            notebookGuid="notebook-guid",
+        )
+        pending_note = SimpleNamespace(
+            **pending.__dict__,
+            content=(
+                "<en-note>本文讨论大语言模型、智能体、RAG 和"
+                "向量检索。</en-note>"
+            ),
+            resources=[],
+        )
+
+        class FakeNoteStore:
+            def __init__(self):
+                self.calls = []
+
+            def getNote(self, _token, guid, *_args):
+                self.calls.append(guid)
+                if guid != "pending-note":
+                    raise AssertionError("续跑不应再次读取已成功导出的正文")
+                return pending_note
+
+        with workspace_temp_dir() as temp_dir:
+            target = temp_dir / "AI"
+            month = target / "2025年07月"
+            month.mkdir(parents=True)
+            updated_text = datetime.fromtimestamp(
+                updated_ms / 1000
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            (month / "已导出的 AI 笔记.md").write_text(
+                "---\n"
+                'created: "2025-07-26 08:00:00"\n'
+                f'updated: "{updated_text}"\n'
+                'source_guid: "already-exported"\n'
+                "---\n\n"
+                "# 已导出的 AI 笔记\n\n"
+                "已有正文。\n",
+                encoding="utf-8",
+            )
+
+            note_store = FakeNoteStore()
+            result = export_domain_candidates(
+                note_store=note_store,
+                token="token",
+                candidates=[existing, pending],
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=target,
+                domain="AI",
+                limit=None,
+            )
+
+            self.assertEqual(note_store.calls, ["pending-note"])
+            self.assertEqual(
+                [item.guid for item in result.already_exported],
+                ["already-exported"],
+            )
+            self.assertEqual(
+                [review.metadata.guid for review in result.selected],
+                ["pending-note"],
+            )
+
     def test_mismatched_full_body_writes_no_markdown_or_attachments(self):
         from scripts.export_search_results import export_domain_candidates
 
