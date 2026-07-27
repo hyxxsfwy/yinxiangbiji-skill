@@ -51,6 +51,33 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("--confirm DELETE_ALL", combined)
         self.assertIn("export_search_results.py", combined)
 
+    def test_documents_full_body_domain_gate_before_any_file_write(self):
+        reference = (
+            REPO_ROOT / "references" / "obsidian-knowledge-management.md"
+        ).read_text(encoding="utf-8")
+        combined = self.skill + self.readme + reference
+
+        for phrase in (
+            "搜索关键词只用于产生候选",
+            "完整正文",
+            "正文主旨",
+            "不写入 Markdown 或附件",
+            "无法确定",
+        ):
+            self.assertIn(phrase, combined)
+
+        skill_gate = self.skill.split("## 搜索并导出", 1)[1].split(
+            "## Obsidian 精选知识管理",
+            1,
+        )[0]
+        fetch_position = skill_gate.index("拉取完整正文")
+        assess_position = skill_gate.index("判断正文主旨")
+        write_position = skill_gate.index("写入 Markdown 和附件")
+        self.assertLess(fetch_position, assess_position)
+        self.assertLess(assess_position, write_position)
+        self.assertIn("通过正文门禁后再按完全一致标题去重", skill_gate)
+        self.assertIn("最后应用 `--limit`", skill_gate)
+
     def test_examples_do_not_contain_a_real_developer_token(self):
         combined = (
             self.skill

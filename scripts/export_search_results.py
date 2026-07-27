@@ -2,8 +2,11 @@
 """按日期区间和关键词搜索印象笔记，并导出到 Obsidian。"""
 
 import argparse
+from dataclasses import dataclass
 from datetime import date, datetime
+from html.parser import HTMLParser
 from pathlib import Path
+import re
 
 import evernote.edam.notestore.NoteStore as NoteStore
 from evernote.edam.type.ttypes import NoteSortOrder
@@ -104,7 +107,8 @@ def deduplicate_notes_by_title(notes):
     return list(winners.values())
 
 
-def select_top_notes(search_batches, keywords, limit):
+def rank_note_candidates(search_batches, keywords):
+    """按 GUID 合并并排序候选，不在读取正文前按标题丢弃候选。"""
     notes_by_guid = {}
     for batch in search_batches:
         for note in batch:
@@ -123,10 +127,376 @@ def select_top_notes(search_batches, keywords, limit):
             title_matches,
             getattr(note, "updated", 0) or 0,
             getattr(note, "created", 0) or 0,
+            str(getattr(note, "guid", "") or ""),
         )
 
-    unique_titles = deduplicate_notes_by_title(notes_by_guid.values())
-    return sorted(unique_titles, key=sort_key, reverse=True)[:limit]
+    return sorted(notes_by_guid.values(), key=sort_key, reverse=True)
+
+
+def select_top_notes(search_batches, keywords, limit):
+    """兼容旧调用：按元数据排序、标题去重并应用数量限制。"""
+    ranked = rank_note_candidates(search_batches, keywords)
+    unique_titles = deduplicate_notes_by_title(ranked)
+    return sorted(
+        unique_titles,
+        key=lambda note: ranked.index(note),
+    )[:limit]
+
+
+DOMAIN_PROFILES = {
+    "AI": {
+        "core": (
+            "人工智能",
+            "生成式ai",
+            "generative ai",
+            "大语言模型",
+            "大模型",
+            "language model",
+            "llm",
+            "机器学习",
+            "深度学习",
+            "神经网络",
+            "智能体",
+            "ai agent",
+            "agentic",
+            "rag",
+            "chatgpt",
+            "openai",
+            "claude",
+            "deepseek",
+            "gpt",
+            "qwen",
+            "codex",
+        ),
+        "support": (
+            "agent",
+            "skill",
+            "prompt",
+            "提示词",
+            "token",
+            "embedding",
+            "向量检索",
+            "向量数据库",
+            "transformer",
+            "推理",
+            "微调",
+            "模型",
+            "模型训练",
+            "指令",
+            "上下文",
+            "工具调用",
+            "上下文窗口",
+            "mcp",
+        ),
+        "support_only_min": 4,
+    },
+    "Quant": {
+        "core": (
+            "量化交易",
+            "量化投资",
+            "量化研究",
+            "因子投资",
+            "多因子",
+            "回测",
+            "alpha",
+            "高频交易",
+            "algorithmic trading",
+            "quantitative finance",
+        ),
+        "support": (
+            "因子",
+            "交易信号",
+            "最大回撤",
+            "夏普",
+            "时间序列",
+            "策略收益",
+            "组合优化",
+            "仓位",
+        ),
+    },
+    "软件工程": {
+        "core": (
+            "软件工程",
+            "软件开发",
+            "程序设计",
+            "代码重构",
+            "系统架构",
+            "微服务",
+            "数据库",
+            "编程语言",
+            "devops",
+            "持续集成",
+            "continuous integration",
+        ),
+        "support": (
+            "代码",
+            "开发",
+            "测试",
+            "接口",
+            "api",
+            "部署",
+            "编译器",
+            "版本控制",
+            "github",
+            "容器",
+        ),
+    },
+    "投资理财": {
+        "core": (
+            "投资理财",
+            "资产配置",
+            "投资组合",
+            "股票",
+            "基金",
+            "债券",
+            "估值",
+            "证券",
+            "房地产投资",
+            "财务自由",
+        ),
+        "support": (
+            "收益率",
+            "市场",
+            "仓位",
+            "风险控制",
+            "现金流",
+            "分红",
+            "利率",
+            "财报",
+            "牛市",
+            "熊市",
+        ),
+    },
+    "个人成长": {
+        "core": (
+            "个人成长",
+            "自我管理",
+            "时间管理",
+            "职业规划",
+            "习惯养成",
+            "学习方法",
+            "认知提升",
+            "情绪管理",
+            "自我反思",
+        ),
+        "support": (
+            "复盘",
+            "目标",
+            "习惯",
+            "专注",
+            "阅读",
+            "学习",
+            "职业",
+            "沟通",
+            "效率",
+        ),
+    },
+}
+
+
+class _BodyTextParser(HTMLParser):
+    """从 ENML/HTML 中提取可见正文，不把标签属性当作领域证据。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden_depth = 0
+
+    def handle_starttag(self, tag, _attrs):
+        if tag.casefold() in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.casefold() in {"script", "style"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data):
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def full_body_text(content):
+    """把完整 ENML/HTML 正文转换为领域判定使用的纯文本。"""
+    parser = _BodyTextParser()
+    parser.feed(content or "")
+    parser.close()
+    return re.sub(r"\s+", " ", " ".join(parser.parts)).strip()
+
+
+@dataclass(frozen=True)
+class DomainAssessment:
+    matched: bool
+    domain: str
+    score: int
+    evidence: tuple
+    reason: str
+    competing_domain: str | None = None
+
+
+def _score_domain(text, profile):
+    folded = text.casefold()
+    core_hits = {
+        term: folded.count(term.casefold())
+        for term in profile["core"]
+        if term.casefold() in folded
+    }
+    support_hits = {
+        term: folded.count(term.casefold())
+        for term in profile["support"]
+        if term.casefold() in folded
+    }
+    score = sum(3 * min(count, 3) for count in core_hits.values())
+    score += sum(min(count, 2) for count in support_hits.values())
+    eligible = (
+        len(core_hits) >= 2
+        or sum(core_hits.values()) >= 2
+        or (len(core_hits) >= 1 and len(support_hits) >= 2)
+        or len(support_hits) >= profile.get("support_only_min", 10**9)
+    )
+    evidence = tuple((*core_hits.keys(), *support_hits.keys()))
+    return score, eligible, evidence
+
+
+def assess_domain_relevance(domain, title, content):
+    """基于完整正文主旨判断是否允许写入目标领域。
+
+    标题只用于日志展示，不能单独构成通过条件。判定采用保守策略：
+    目标领域证据不足、其他领域明显占优或领域并列时均拒绝。
+    """
+    if domain not in DOMAIN_PROFILES:
+        raise ValueError(f"不支持的领域: {domain}")
+
+    body = full_body_text(content)
+    scores = {
+        name: _score_domain(body, profile)
+        for name, profile in DOMAIN_PROFILES.items()
+    }
+    target_score, target_eligible, target_evidence = scores[domain]
+    eligible_competitors = [
+        (name, score)
+        for name, (score, eligible, _evidence) in scores.items()
+        if name != domain and eligible
+    ]
+    eligible_competitors.sort(key=lambda item: (-item[1], item[0]))
+    strongest = eligible_competitors[0] if eligible_competitors else None
+
+    if not target_eligible:
+        competitor = strongest[0] if strongest else None
+        if competitor:
+            reason = f"正文主旨更接近 {competitor}，目标领域 {domain} 证据不足"
+        else:
+            reason = f"完整正文中缺少足够的 {domain} 领域证据"
+        return DomainAssessment(
+            matched=False,
+            domain=domain,
+            score=target_score,
+            evidence=target_evidence,
+            reason=reason,
+            competing_domain=competitor,
+        )
+
+    if strongest and strongest[1] >= target_score:
+        relation = "并列，无法确定主领域" if strongest[1] == target_score else "更接近"
+        return DomainAssessment(
+            matched=False,
+            domain=domain,
+            score=target_score,
+            evidence=target_evidence,
+            reason=f"正文主旨{relation} {strongest[0]}，不写入 {domain}",
+            competing_domain=strongest[0],
+        )
+
+    evidence_text = "、".join(target_evidence[:6])
+    return DomainAssessment(
+        matched=True,
+        domain=domain,
+        score=target_score,
+        evidence=target_evidence,
+        reason=f"正文主旨匹配 {domain}；证据：{evidence_text}",
+    )
+
+
+@dataclass(frozen=True)
+class CandidateReview:
+    metadata: object
+    note: object
+    assessment: DomainAssessment
+    notebook_name: str
+
+
+@dataclass(frozen=True)
+class DomainExportResult:
+    selected: tuple
+    rejected: tuple
+    exported_paths: tuple
+
+
+def export_domain_candidates(
+    note_store,
+    token,
+    candidates,
+    notebook_map,
+    target_dir,
+    domain,
+    limit,
+):
+    """逐篇拉完整正文并过领域门禁，匹配后才写 Markdown 和附件。"""
+    selected = []
+    rejected = []
+    exported_paths = []
+    selected_titles = set()
+
+    for metadata in candidates:
+        if limit is not None and len(selected) >= limit:
+            break
+
+        title_key = (getattr(metadata, "title", "") or "").strip()
+        if title_key in selected_titles:
+            continue
+
+        note = note_store.getNote(
+            token,
+            metadata.guid,
+            True,
+            True,
+            True,
+            True,
+        )
+        assessment = assess_domain_relevance(
+            domain=domain,
+            title=getattr(note, "title", title_key),
+            content=getattr(note, "content", "") or "",
+        )
+        notebook_name = notebook_map.get(
+            getattr(metadata, "notebookGuid", ""),
+            "未知笔记本",
+        )
+        review = CandidateReview(
+            metadata=metadata,
+            note=note,
+            assessment=assessment,
+            notebook_name=notebook_name,
+        )
+        if not assessment.matched:
+            rejected.append(review)
+            continue
+
+        selected_titles.add(title_key)
+        selected.append(review)
+        exported_paths.append(
+            export_note_to_obsidian(
+                note,
+                notebook_name=notebook_name,
+                target_dir=target_dir,
+                domain=domain,
+            )
+        )
+
+    return DomainExportResult(
+        selected=tuple(selected),
+        rejected=tuple(rejected),
+        exported_paths=tuple(exported_paths),
+    )
 
 
 def search_metadata_batches(
@@ -309,46 +679,49 @@ def main():
     for keyword, total, batch in zip(args.keywords, totals, batches):
         print(f"关键词 {keyword}: 共 {total} 条，拉取 {len(batch)} 条候选")
 
-    selected = select_top_notes(batches, args.keywords, args.limit)
-    if not selected:
+    candidates = rank_note_candidates(batches, args.keywords)
+    if not candidates:
         print("未找到符合条件的笔记")
         return 1
 
     notebooks = note_store.listNotebooks(token)
     notebook_map = {notebook.guid: notebook.name for notebook in notebooks}
 
-    print(f"\n选中 {len(selected)} 篇：")
-    exported_paths = []
-    for index, metadata in enumerate(selected, 1):
+    result = export_domain_candidates(
+        note_store=note_store,
+        token=token,
+        candidates=candidates,
+        notebook_map=notebook_map,
+        target_dir=args.target,
+        domain=args.domain,
+        limit=args.limit,
+    )
+    for review in result.rejected:
+        evidence = "、".join(review.assessment.evidence[:6]) or "无"
+        print(
+            f"[跳过] {review.metadata.title}: "
+            f"{review.assessment.reason}（正文证据：{evidence}）"
+        )
+
+    if not result.selected:
+        print(f"\n没有正文主旨匹配 {args.domain} 的候选，未写入任何文章或附件")
+        return 1
+
+    print(f"\n正文审核通过并导出 {len(result.selected)} 篇：")
+    for index, review in enumerate(result.selected, 1):
+        metadata = review.metadata
         created = datetime.fromtimestamp(metadata.created / 1000)
         updated = datetime.fromtimestamp(metadata.updated / 1000)
-        notebook_name = notebook_map.get(metadata.notebookGuid, "未知笔记本")
         print(
             f"{index}. {metadata.title} "
             f"(创建 {created:%Y-%m-%d}，更新 {updated:%Y-%m-%d}，"
-            f"笔记本 {notebook_name})"
-        )
-
-        note = note_store.getNote(
-            token,
-            metadata.guid,
-            True,
-            True,
-            True,
-            True,
-        )
-        exported_paths.append(
-            export_note_to_obsidian(
-                note,
-                notebook_name=notebook_name,
-                target_dir=args.target,
-                domain=args.domain,
-            )
+            f"笔记本 {review.notebook_name})；"
+            f"{review.assessment.reason}"
         )
 
     finalization = finalize_knowledge_base(args.target, domain=args.domain)
     print(f"\n已导出到: {args.target}")
-    for exported_path in exported_paths:
+    for exported_path in result.exported_paths:
         print(f"- {exported_path.relative_to(args.target)}")
     print(f"- 目录索引: {finalization.index_path}")
     if finalization.errors:

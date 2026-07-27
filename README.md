@@ -45,7 +45,7 @@ python scripts/get_note_enml.py --guid "NOTE_GUID" --output ".\note.xml"
 
 ### 搜索并导出到 Obsidian
 
-以下命令分别搜索 AI、Agent、人工智能，先按 GUID 合并命中，再对标题完全一致的剪藏去重，最后选择标题匹配且最近更新的前三篇：
+以下命令分别搜索 AI、Agent、人工智能。搜索关键词只用于产生候选；脚本会逐篇拉取完整正文，确认正文主旨属于 AI 后才选择并导出前三篇：
 
 ```powershell
 python scripts/export_search_results.py `
@@ -59,7 +59,9 @@ python scripts/export_search_results.py `
 
 `--since` 包含当日，`--until` 不包含当日，因此两者可表达稳定的左闭右开创建时间区间。使用 `--limit all` 可导出全部候选；此时应把 `--max-per-keyword` 设为足够大的值，并确认命令输出中每个关键词的“共 N 条”与“拉取 N 条候选”一致，避免候选上限造成遗漏。
 
-标题完全一致时依次按 `updated`、`created`、GUID 保留最新版本，去重发生在 `--limit` 之前。文章按 `created` 归入 `YYYY年MM月/`；图片和附件统一保存在知识库根目录 `_attachments/`，月度文章使用 `../_attachments/`。同名附件内容不同时会自动追加内容哈希，正文已经引用的图片不会在文末重复展示。
+导出顺序固定为：合并 GUID 并排序候选、通过 API 拉取完整正文和资源、判断正文主旨、对审核通过项按完全一致标题去重、应用 `--limit`，最后才写入 Markdown 和附件。标题或搜索关键词命中不能代替正文判断；目标领域证据不足、其他领域明显占优或无法确定主领域时，脚本会输出跳过原因和正文证据，不写入 Markdown 或附件，也不占用导出名额。若最新的同标题剪藏错域，脚本会继续检查较旧版本，直到找到正文匹配的版本或耗尽该标题候选。
+
+通过门禁的同标题文章依次按 `updated`、`created`、GUID 保留最新版本。文章按 `created` 归入 `YYYY年MM月/`；图片和附件统一保存在知识库根目录 `_attachments/`，月度文章使用 `../_attachments/`。同名附件内容不同时会自动追加内容哈希，正文已经引用的图片不会在文末重复展示。
 
 导出的文章只保留一个一级标题，frontmatter 不再重复写 `title` 属性；正文标题从二级开始，连续空行会压缩为一个空行。印象笔记代码块中的原始换行会保留，图片、链接、列表和表格仍使用标准 Markdown。
 

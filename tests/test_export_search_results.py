@@ -140,7 +140,10 @@ class SearchQueryTests(unittest.TestCase):
         self.assertEqual(len({note.title for note in selected}), 2)
 
     def test_uses_guid_to_break_a_same_title_timestamp_tie(self):
-        from scripts.export_search_results import select_top_notes
+        from scripts.export_search_results import (
+            rank_note_candidates,
+            select_top_notes,
+        )
 
         first = SimpleNamespace(
             guid="aaa-guid",
@@ -160,8 +163,13 @@ class SearchQueryTests(unittest.TestCase):
             keywords=["AI"],
             limit=1,
         )
+        ranked = rank_note_candidates(
+            [[first, second]],
+            keywords=["AI"],
+        )
 
         self.assertEqual([note.guid for note in selected], ["zzz-guid"])
+        self.assertEqual([note.guid for note in ranked], ["zzz-guid", "aaa-guid"])
 
     def test_selects_every_unique_title_when_limit_is_unbounded(self):
         from scripts.export_search_results import select_top_notes
@@ -249,6 +257,252 @@ class SearchQueryTests(unittest.TestCase):
         )
         self.assertEqual([len(batch) for batch in batches], [1, 1])
         self.assertEqual(totals, [1, 1])
+
+
+class DomainRelevanceTests(unittest.TestCase):
+    def test_rejects_title_hit_when_full_body_is_unrelated(self):
+        from scripts.export_search_results import assess_domain_relevance
+
+        assessment = assess_domain_relevance(
+            domain="AI",
+            title="AI 时代的家庭收纳",
+            content=(
+                "<en-note><div>本文介绍衣柜分区、厨房清洁和家庭物品"
+                "收纳方法，不讨论任何技术主题。</div></en-note>"
+            ),
+        )
+
+        self.assertFalse(assessment.matched)
+        self.assertIn("正文", assessment.reason)
+
+    def test_accepts_neutral_title_when_full_body_matches_domain(self):
+        from scripts.export_search_results import assess_domain_relevance
+
+        assessment = assess_domain_relevance(
+            domain="AI",
+            title="本周技术观察",
+            content=(
+                "<en-note><div>本文比较大语言模型的推理能力，并介绍"
+                " RAG、向量检索和提示词工程的实现方法。</div></en-note>"
+            ),
+        )
+
+        self.assertTrue(assessment.matched)
+        self.assertIn("大语言模型", assessment.evidence)
+        self.assertIn("rag", assessment.evidence)
+
+    def test_accepts_agent_skill_article_from_body_evidence_cluster(self):
+        from scripts.export_search_results import assess_domain_relevance
+
+        assessment = assess_domain_relevance(
+            domain="AI",
+            title="删掉80%的Skill，Agent反而更听话了",
+            content=(
+                "<en-note><div>Agent 的 Skill 太多会分散上下文，"
+                "系统指令、工具调用和提示词互相竞争。精简 Skill 后，"
+                "模型能够更稳定地选择工具。</div></en-note>"
+            ),
+        )
+
+        self.assertTrue(assessment.matched)
+
+    def test_rejects_target_domain_when_another_domain_is_clearly_dominant(self):
+        from scripts.export_search_results import assess_domain_relevance
+
+        assessment = assess_domain_relevance(
+            domain="AI",
+            title="人工智能热点与投资组合",
+            content=(
+                "<en-note><div>人工智能只是市场热点之一。本文重点讨论"
+                "股票估值、基金配置、债券收益率、投资组合、仓位管理、"
+                "资产配置与风险控制。</div></en-note>"
+            ),
+        )
+
+        self.assertFalse(assessment.matched)
+        self.assertEqual(assessment.competing_domain, "投资理财")
+        self.assertIn("更接近", assessment.reason)
+
+
+class DomainGatedExportTests(unittest.TestCase):
+    def test_mismatched_full_body_writes_no_markdown_or_attachments(self):
+        from scripts.export_search_results import export_domain_candidates
+
+        image_hash = "0123456789abcdef0123456789abcdef"
+        metadata = SimpleNamespace(
+            guid="wrong-domain",
+            title="AI 家庭整理术",
+            created=1753488000000,
+            updated=1753574400000,
+            notebookGuid="notebook-guid",
+        )
+        note = SimpleNamespace(
+            **metadata.__dict__,
+            content=(
+                "<en-note><div>这篇文章只讨论衣柜整理、厨房清洁和"
+                "家庭物品收纳。</div>"
+                f'<en-media type="image/png" hash="{image_hash}"/>'
+                "</en-note>"
+            ),
+            resources=[
+                SimpleNamespace(
+                    data=SimpleNamespace(
+                        body=b"must-not-be-written",
+                        bodyHash=bytes.fromhex(image_hash),
+                    ),
+                    mime="image/png",
+                    attributes=SimpleNamespace(fileName="wrong.png"),
+                )
+            ],
+        )
+
+        class FakeNoteStore:
+            def getNote(self, *_args):
+                return note
+
+        with workspace_temp_dir() as temp_dir:
+            target = temp_dir / "AI"
+            result = export_domain_candidates(
+                note_store=FakeNoteStore(),
+                token="token",
+                candidates=[metadata],
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=target,
+                domain="AI",
+                limit=1,
+            )
+
+            self.assertEqual(result.exported_paths, ())
+            self.assertEqual(len(result.rejected), 1)
+            self.assertFalse(target.exists())
+
+    def test_skips_mismatch_and_continues_until_limit_is_filled(self):
+        from scripts.export_search_results import export_domain_candidates
+
+        candidates = [
+            SimpleNamespace(
+                guid="wrong-domain",
+                title="AI 家庭整理术",
+                created=1753488000000,
+                updated=1753660800000,
+                notebookGuid="notebook-guid",
+            ),
+            SimpleNamespace(
+                guid="right-domain",
+                title="技术观察",
+                created=1753488000000,
+                updated=1753574400000,
+                notebookGuid="notebook-guid",
+            ),
+        ]
+        notes = {
+            "wrong-domain": SimpleNamespace(
+                **candidates[0].__dict__,
+                content=(
+                    "<en-note><div>衣柜整理、厨房清洁和家庭收纳。"
+                    "</div></en-note>"
+                ),
+                resources=[],
+            ),
+            "right-domain": SimpleNamespace(
+                **candidates[1].__dict__,
+                content=(
+                    "<en-note><div>本文讨论大语言模型、智能体、RAG "
+                    "和向量检索的工程实践。</div></en-note>"
+                ),
+                resources=[],
+            ),
+        }
+
+        class FakeNoteStore:
+            def __init__(self):
+                self.calls = []
+
+            def getNote(self, _token, guid, *_args):
+                self.calls.append(guid)
+                return notes[guid]
+
+        note_store = FakeNoteStore()
+        with workspace_temp_dir() as temp_dir:
+            target = temp_dir / "AI"
+            result = export_domain_candidates(
+                note_store=note_store,
+                token="token",
+                candidates=candidates,
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=target,
+                domain="AI",
+                limit=1,
+            )
+
+            exported_names = [
+                path.name for path in result.exported_paths
+            ]
+            self.assertEqual(exported_names, ["技术观察.md"])
+            self.assertEqual(note_store.calls, ["wrong-domain", "right-domain"])
+            self.assertFalse(
+                any(target.rglob("AI 家庭整理术.md"))
+            )
+            self.assertEqual(len(result.rejected), 1)
+
+    def test_checks_older_duplicate_when_newest_body_is_mismatched(self):
+        from scripts.export_search_results import export_domain_candidates
+
+        candidates = [
+            SimpleNamespace(
+                guid="new-wrong",
+                title="Agent 专题",
+                created=1753488000000,
+                updated=1753660800000,
+                notebookGuid="notebook-guid",
+            ),
+            SimpleNamespace(
+                guid="old-right",
+                title="Agent 专题",
+                created=1753401600000,
+                updated=1753488000000,
+                notebookGuid="notebook-guid",
+            ),
+        ]
+        notes = {
+            "new-wrong": SimpleNamespace(
+                **candidates[0].__dict__,
+                content="<en-note>旅行住宿与行李收纳指南。</en-note>",
+                resources=[],
+            ),
+            "old-right": SimpleNamespace(
+                **candidates[1].__dict__,
+                content=(
+                    "<en-note>大语言模型的智能体通过 RAG、向量检索"
+                    "和工具调用完成任务。</en-note>"
+                ),
+                resources=[],
+            ),
+        }
+
+        class FakeNoteStore:
+            def getNote(self, _token, guid, *_args):
+                return notes[guid]
+
+        with workspace_temp_dir() as temp_dir:
+            result = export_domain_candidates(
+                note_store=FakeNoteStore(),
+                token="token",
+                candidates=candidates,
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=temp_dir / "AI",
+                domain="AI",
+                limit=1,
+            )
+
+        self.assertEqual(
+            [review.metadata.guid for review in result.selected],
+            ["old-right"],
+        )
+        self.assertEqual(
+            [review.metadata.guid for review in result.rejected],
+            ["new-wrong"],
+        )
 
 
 class ExportNoteTests(unittest.TestCase):
