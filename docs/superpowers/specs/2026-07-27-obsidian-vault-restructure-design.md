@@ -1,5 +1,9 @@
 # Obsidian LLM Wiki 统一目录与迁移设计
 
+> 本设计中的生命周期目录编号已被
+> [Obsidian 生命周期目录重新编号设计](2026-07-27-obsidian-lifecycle-directory-renumbering-design.md)
+> 取代；业务分层、领域和 LLM Wiki 治理规则仍然有效。
+
 ## 1. 背景与目标
 
 当前印象笔记账户共有 38 个笔记本、49,270 篇笔记和 208 个标签。笔记本分为
