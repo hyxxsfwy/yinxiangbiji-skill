@@ -100,6 +100,28 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("HYXX个人知识库/.obsidian/", names)
         self.assertTrue(all(record["sha256"] for record in payload["files"]))
 
+    def test_backup_reuses_matching_archive_but_rejects_changed_sources(self):
+        from scripts.restructure_obsidian_vault import (
+            build_migration_plan,
+            create_backup,
+        )
+
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            plan = build_migration_plan(vault)
+            backup = vault / "90_系统" / "迁移记录" / "backup.zip"
+            create_backup(plan, backup)
+            original_backup = backup.read_bytes()
+
+            self.assertEqual(create_backup(plan, backup), backup)
+            self.assertEqual(backup.read_bytes(), original_backup)
+
+            (vault / "AI相关知识库" / "_attachments" / "agent.png").write_bytes(
+                b"changed-image"
+            )
+            with self.assertRaisesRegex(FileExistsError, "不匹配"):
+                create_backup(plan, backup)
+
 
 class ScaffoldTests(unittest.TestCase):
     def test_creates_exact_lifecycle_tree_and_index_contracts(self):
@@ -212,7 +234,22 @@ class CopyAndMetadataTests(unittest.TestCase):
                 / "2026年07月"
                 / "一张图看懂 AI Agent 全流程.md"
             )
-            _, original_body = split_frontmatter(source.read_text(encoding="utf-8"))
+            source.write_bytes(
+                (
+                    "---\r\n"
+                    'created: "2026-07-21 08:00:00"\r\n'
+                    'updated: "2026-07-22 08:00:00"\r\n'
+                    'source: "Evernote"\r\n'
+                    'source_guid: "agent-guid"\r\n'
+                    'notebook: "微信"\r\n'
+                    'type: "webclip"\r\n'
+                    "---\r\n\r\n\r\n"
+                    "# 一张图看懂 AI Agent 全流程\r\n\r\n"
+                    "![图](../_attachments/agent.png)\r\n"
+                ).encode("utf-8")
+            )
+            with source.open("r", encoding="utf-8", newline="") as stream:
+                _, original_body = split_frontmatter(stream.read())
             apply_copy_phase(build_migration_plan(vault))
             destination = (
                 vault
@@ -221,18 +258,14 @@ class CopyAndMetadataTests(unittest.TestCase):
                 / "2026年07月"
                 / source.name
             )
-            _, copied_body = split_frontmatter(
-                destination.read_text(encoding="utf-8")
-            )
+            with destination.open("r", encoding="utf-8", newline="") as stream:
+                _, copied_body = split_frontmatter(stream.read())
             copied_attachment = (
                 vault / "30_精选资料" / "AI" / "_attachments" / "agent.png"
             )
             copied_attachment_bytes = copied_attachment.read_bytes()
 
-        self.assertEqual(
-            copied_body.lstrip("\r\n"),
-            original_body.lstrip("\r\n"),
-        )
+        self.assertEqual(copied_body, original_body)
         self.assertIn("![图](../_attachments/agent.png)", copied_body)
         self.assertEqual(copied_attachment_bytes, b"image")
 
@@ -285,6 +318,35 @@ class CopyAndMetadataTests(unittest.TestCase):
             "---\n\n"
             "# 原标题\n\n正文。\n",
         )
+
+    def test_merge_frontmatter_preserves_exact_suffix_after_closing_marker(self):
+        from scripts.restructure_obsidian_vault import merge_frontmatter
+
+        cases = (
+            (
+                "---\r\ntype: old\r\n---BODY",
+                '---\ntype: "知识"\n---BODY',
+            ),
+            (
+                "---\ntype: old\n---\nBODY",
+                '---\ntype: "知识"\n---\nBODY',
+            ),
+            (
+                "---\r\ntype: old\r\n---\r\n\r\nBODY\r\n",
+                '---\ntype: "知识"\n---\r\n\r\nBODY\r\n',
+            ),
+            (
+                "---\ntype: old\n---\n\n\nBODY\n",
+                '---\ntype: "知识"\n---\n\n\nBODY\n',
+            ),
+        )
+
+        for markdown, expected in cases:
+            with self.subTest(markdown=repr(markdown)):
+                self.assertEqual(
+                    merge_frontmatter(markdown, {"type": "知识"}),
+                    expected,
+                )
 
 
 class CommandLineTests(unittest.TestCase):
@@ -361,3 +423,82 @@ class CommandLineTests(unittest.TestCase):
             ):
                 self.assertTrue((vault / old_directory).exists())
             self.assertTrue((vault / "30_精选资料" / "AI").exists())
+
+    def test_confirmed_apply_is_repeatable_and_manifest_is_stable(self):
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            command = [
+                sys.executable,
+                "scripts/restructure_obsidian_vault.py",
+                "--vault",
+                str(vault),
+                "--apply",
+                "--confirm",
+                "MIGRATE_OBSIDIAN_VAULT",
+            ]
+            first = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            records = vault / "90_系统" / "迁移记录"
+            backup = records / "2026-07-27-迁移前备份.zip"
+            manifest = records / "2026-07-27-文件清单.json"
+            original_backup = backup.read_bytes()
+            original_manifest = manifest.read_bytes()
+
+            second = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(backup.read_bytes(), original_backup)
+            self.assertEqual(manifest.read_bytes(), original_manifest)
+
+    def test_apply_can_retry_after_late_conflict_without_rewriting_snapshot(self):
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            conflicting_template = (
+                vault / "90_系统" / "模板" / "精选资料模板.md"
+            )
+            conflicting_template.parent.mkdir(parents=True)
+            conflicting_template.write_text("用户内容\n", encoding="utf-8")
+            command = [
+                sys.executable,
+                "scripts/restructure_obsidian_vault.py",
+                "--vault",
+                str(vault),
+                "--apply",
+                "--confirm",
+                "MIGRATE_OBSIDIAN_VAULT",
+            ]
+
+            first = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            self.assertNotEqual(first.returncode, 0)
+            records = vault / "90_系统" / "迁移记录"
+            backup = records / "2026-07-27-迁移前备份.zip"
+            manifest = records / "2026-07-27-文件清单.json"
+            original_backup = backup.read_bytes()
+            original_manifest = manifest.read_bytes()
+
+            conflicting_template.unlink()
+            second = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(backup.read_bytes(), original_backup)
+            self.assertEqual(manifest.read_bytes(), original_manifest)

@@ -23,7 +23,7 @@ OLD_DIRECTORIES = ("AI相关知识库", "Quant相关知识库", "HYXX个人知�
 QUANT_FILENAME = "GPT-6也救不了平庸策略：Vibe Quant 的反思.md"
 CODEX_FILENAME = "Codex CLI 使用技巧记录.md"
 FRONTMATTER_RE = re.compile(
-    r"\A---\r?\n(.*?)\r?\n---(?:\r?\n)?",
+    r"\A---\r?\n(.*?)\r?\n---",
     re.DOTALL,
 )
 FRONTMATTER_ORDER = (
@@ -131,26 +131,65 @@ def destination_for_source(plan: MigrationPlan, source: Path) -> Path | None:
     return None
 
 
+def backup_entries(plan: MigrationPlan):
+    for old_directory in plan.old_directories:
+        for path in sorted(old_directory.rglob("*")):
+            relative = path.relative_to(plan.vault).as_posix()
+            if path.is_dir():
+                yield relative.rstrip("/") + "/", None
+            else:
+                yield relative, path
+
+
+def backup_matches_sources(plan: MigrationPlan, backup_path: Path) -> bool:
+    expected_entries = tuple(backup_entries(plan))
+    expected_names = tuple(name for name, _ in expected_entries)
+    try:
+        with zipfile.ZipFile(backup_path) as archive:
+            actual_names = tuple(archive.namelist())
+            if (
+                len(actual_names) != len(expected_names)
+                or set(actual_names) != set(expected_names)
+                or archive.testzip() is not None
+            ):
+                return False
+            for name, source in expected_entries:
+                info = archive.getinfo(name)
+                if source is None:
+                    if not info.is_dir():
+                        return False
+                    continue
+                digest = hashlib.sha256()
+                with archive.open(info) as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                if digest.hexdigest() != sha256_file(source):
+                    return False
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return False
+    return True
+
+
 def create_backup(plan: MigrationPlan, backup_path: Path) -> Path:
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     if backup_path.exists():
-        raise FileExistsError(f"备份已存在，拒绝覆盖: {backup_path}")
+        if backup_matches_sources(plan, backup_path):
+            return backup_path
+        raise FileExistsError(
+            f"备份已存在但与当前迁移源不匹配，拒绝复用: {backup_path}"
+        )
     with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for old_directory in plan.old_directories:
-            for path in sorted(old_directory.rglob("*")):
-                relative = path.relative_to(plan.vault).as_posix()
-                if path.is_dir():
-                    archive.writestr(relative.rstrip("/") + "/", b"")
-                else:
-                    archive.write(path, relative)
+        for relative, source in backup_entries(plan):
+            if source is None:
+                archive.writestr(relative, b"")
+            else:
+                archive.write(source, relative)
     return backup_path
 
 
-def write_manifest(plan: MigrationPlan, manifest_path: Path) -> Path:
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+def manifest_source_state(plan: MigrationPlan) -> dict[str, object]:
+    return {
         "vault": str(plan.vault),
-        "created_at": datetime.now().astimezone().isoformat(),
         "files": [
             {
                 "source": path.relative_to(plan.vault).as_posix(),
@@ -165,6 +204,34 @@ def write_manifest(plan: MigrationPlan, manifest_path: Path) -> Path:
             }
             for path in iter_old_files(plan)
         ],
+    }
+
+
+def write_manifest(plan: MigrationPlan, manifest_path: Path) -> Path:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    source_state = manifest_source_state(plan)
+    if manifest_path.exists():
+        try:
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+            created_at = existing["created_at"]
+            datetime.fromisoformat(created_at)
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise FileExistsError(
+                f"清单已存在但格式无效，拒绝复用: {manifest_path}"
+            ) from exc
+        if (
+            set(existing) == {"vault", "created_at", "files"}
+            and existing["vault"] == source_state["vault"]
+            and existing["files"] == source_state["files"]
+        ):
+            return manifest_path
+        raise FileExistsError(
+            f"清单已存在但与当前迁移源不匹配，拒绝复用: {manifest_path}"
+        )
+    payload = {
+        "vault": source_state["vault"],
+        "created_at": datetime.now().astimezone().isoformat(),
+        "files": source_state["files"],
     }
     manifest_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -475,19 +542,25 @@ def merge_frontmatter(
     markdown: str,
     required: dict[str, object],
 ) -> str:
+    had_frontmatter = FRONTMATTER_RE.match(markdown) is not None
     fields, body = split_frontmatter(markdown)
     fields.update(required)
-    return render_frontmatter(fields) + body.lstrip("\r\n")
+    rendered = render_frontmatter(fields).rstrip("\n")
+    if had_frontmatter:
+        return rendered + body
+    return rendered + "\n\n" + body
 
 
 def write_expected_text(destination: Path, expected: str):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
-        actual = destination.read_text(encoding="utf-8")
+        with destination.open("r", encoding="utf-8", newline="") as stream:
+            actual = stream.read()
         if actual == expected:
             return
         raise FileExistsError(f"目标文本已存在且内容不同: {destination}")
-    destination.write_text(expected, encoding="utf-8")
+    with destination.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(expected)
 
 
 def copy_file_without_overwrite(source: Path, destination: Path):
@@ -535,7 +608,8 @@ def copy_mapped_content(plan: MigrationPlan):
         if source.suffix.lower() != ".md":
             copy_file_without_overwrite(source, destination)
             continue
-        original = source.read_text(encoding="utf-8")
+        with source.open("r", encoding="utf-8", newline="") as stream:
+            original = stream.read()
         title = title_from_markdown(original, source.stem)
         expected = merge_frontmatter(
             original,
@@ -562,8 +636,10 @@ def copy_mapped_content(plan: MigrationPlan):
         / "2026年06月"
         / QUANT_FILENAME
     )
+    with quant_source.open("r", encoding="utf-8", newline="") as stream:
+        quant_original = stream.read()
     quant_expected = merge_frontmatter(
-        quant_source.read_text(encoding="utf-8"),
+        quant_original,
         {
             "type": "资料",
             "domain": "Quant",
@@ -590,8 +666,10 @@ def copy_mapped_content(plan: MigrationPlan):
     codex_destination = (
         plan.vault / "20_知识笔记" / "软件工程" / CODEX_FILENAME
     )
+    with codex_source.open("r", encoding="utf-8", newline="") as stream:
+        codex_original = stream.read()
     codex_expected = merge_frontmatter(
-        codex_source.read_text(encoding="utf-8"),
+        codex_original,
         {
             "type": "知识",
             "domain": "软件工程",
