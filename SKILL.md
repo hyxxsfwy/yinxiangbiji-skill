@@ -32,6 +32,9 @@ Copy-Item .env.example .env
 | 更新 | `python scripts/update_note.py --guid "GUID" --title "新标题"` | 修改账户 |
 | 移入废纸篓 | `python scripts/delete_note.py --guid "GUID" --confirm` | 修改账户 |
 | 永久清空 | `python scripts/empty_trash.py --confirm DELETE_ALL` | 不可恢复 |
+| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian"` | 只读本地 |
+| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |
+| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --verify` | 只读本地 |
 
 ## 搜索并导出
 

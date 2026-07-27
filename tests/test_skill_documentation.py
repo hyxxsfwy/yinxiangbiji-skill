@@ -175,9 +175,9 @@ class SkillDocumentationTests(unittest.TestCase):
             with self.subTest(operation=human_review_operation):
                 self.assertIn(human_review_operation, reference)
 
-        self.assertIn("90_系统/LLM Wiki/", reference)
+        self.assertIn("90_系统/知识库治理/", reference)
         for asset in (
-            "审核规则.md",
+            "管理规则.md",
             "主题词表.md",
             "别名词典.md",
             "审核队列/",
@@ -208,6 +208,49 @@ class SkillDocumentationTests(unittest.TestCase):
         for phrase in required_phrases:
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.skill)
+
+    def test_documents_final_vault_structure_and_migration_command(self):
+        reference = (
+            REPO_ROOT / "references" / "obsidian-knowledge-management.md"
+        ).read_text(encoding="utf-8")
+        combined = self.skill + self.readme + reference
+
+        for phrase in (
+            "10_项目",
+            "20_知识笔记",
+            "30_精选资料",
+            "90_系统/知识库治理",
+            "整个 vault 是 LLM Wiki",
+            "20_知识笔记/目录索引.md",
+            "20_知识笔记/知识地图.md",
+            "scripts/restructure_obsidian_vault.py",
+            "--confirm MIGRATE_OBSIDIAN_VAULT",
+            r"30_精选资料\AI",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, combined)
+
+        for obsolete in (
+            "10_知识库",
+            "20_项目",
+            "90_系统/LLM Wiki/",
+        ):
+            with self.subTest(obsolete=obsolete):
+                self.assertNotIn(obsolete, reference)
+
+    def test_documents_distinct_catalog_map_and_source_index_rules(self):
+        reference = (
+            REPO_ROOT / "references" / "obsidian-knowledge-management.md"
+        ).read_text(encoding="utf-8")
+        for phrase in (
+            "按 `domain` 分组",
+            "可由脚本或 AI 完整重建",
+            "不保存人工评语",
+            "人工维护核心概念",
+            "仅关键词相同不足以建立关系",
+            "每个领域保留一份独立的 `目录索引.md`",
+        ):
+            self.assertIn(phrase, reference)
 
     def test_every_user_command_has_non_mutating_help(self):
         command_scripts = [

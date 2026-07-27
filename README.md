@@ -100,6 +100,34 @@ type: "inline-images"
 ---
 ```
 
+## 统一 LLM Wiki 结构
+
+迁移只作用于本地 Obsidian vault，不访问印象笔记帐号。先预览迁移计划，再在用户明确授权后执行；执行会创建 ZIP 快照，验证失败不会删除旧目录。
+
+```powershell
+# 预览：只读本地 vault
+python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian"
+
+# 执行：创建 ZIP 快照并重组目录
+python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT
+
+# 验证：只检查最终结构、清单和链接
+python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --verify
+```
+
+后续精选导出写入对应领域资料目录：
+
+```powershell
+python scripts/export_search_results.py `
+  --since 2025-07-27 `
+  --keywords AI Agent 人工智能 `
+  --domain AI `
+  --limit 3 `
+  --target "D:\OneDrive\文档\@_Obsidian\30_精选资料\AI"
+```
+
+最终结构、索引职责、审核规则和旧标签映射见 `references/obsidian-knowledge-management.md`。其中 `20_知识笔记` 只保留目录索引和知识地图两份根索引，`30_精选资料` 的每个领域各自维护一份目录索引。
+
 ## 写操作与安全边界
 
 只有在明确需要修改账户数据时才运行这些命令：
