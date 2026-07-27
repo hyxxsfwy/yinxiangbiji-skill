@@ -1,6 +1,9 @@
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime
+from io import StringIO
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from tests.support import workspace_temp_dir
 
@@ -211,6 +214,26 @@ class SyncStateTests(unittest.TestCase):
             prepared["progress"],
             {"notebook_idx": 0, "note_idx": 12},
         )
+
+
+class SyncDestinationSafetyTests(unittest.TestCase):
+    def test_full_sync_rejects_unified_llm_wiki_root_before_loading_credentials(self):
+        from scripts.sync_to_obsidian import sync_to_obsidian
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "00_首页.md").write_text("# 首页\n", encoding="utf-8")
+            for name in ("10_项目", "20_知识笔记", "30_精选资料", "90_系统"):
+                (vault / name).mkdir()
+
+            with patch(
+                "scripts.sync_to_obsidian.load_config",
+                side_effect=AssertionError("统一根目录拒绝前不应读取凭据"),
+            ), redirect_stdout(StringIO()):
+                succeeded = sync_to_obsidian(vault, max_sync_per_run=1, api_delay=0)
+
+            self.assertFalse(succeeded)
+            self.assertFalse((vault / ".yinxiang_sync_state.json").exists())
 
 
 class FilenameTests(unittest.TestCase):

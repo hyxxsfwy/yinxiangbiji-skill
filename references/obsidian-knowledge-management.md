@@ -6,11 +6,14 @@
 
 一篇笔记只有一个主要目录和一个主要领域；跨领域关系使用内部链接和有限标签表达。目录默认不超过两级业务层级，历史年份不是知识分类，只允许作为精选资料的时间归档。知识地图是人工选择的重要入口，不是文件清单；完整列表交给目录索引或 Bases。
 
+`sync_to_obsidian.py` 的全量同步不得写入统一 LLM Wiki 根目录，也不能按印象笔记本名称在生命周期目录旁重新铺设历史目录。`OBSIDIAN_VAULT_PATH` 应指向独立的全量同步暂存目录；进入正式 Wiki 的内容必须通过带 `--domain` 的精选导出命令写入明确领域目录。
+
 ## 最终目录
 
 ```text
 @_Obsidian/
 ├── 00_首页.md
+├── 01_收件箱/
 ├── 10_项目/
 │   └── 目录索引.md
 ├── 20_知识笔记/
@@ -49,7 +52,7 @@
 
 ## 迁移与验证
 
-先在本地预览，确认计划、清单和链接报告；预览和验证均只读本地 vault：
+先在本地预览路径映射；预览和验证均只读本地 vault。预览只输出路径映射，不生成清单或链接报告：
 
 ```powershell
 python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian"
@@ -68,7 +71,7 @@ python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsid
 
 精选资料是值得复用、但尚未完全转化为个人知识的原始剪藏、网页、PDF 或参考内容，进入 `30_精选资料`。知识笔记是经过理解、改写、总结、验证或实践后形成的知识，进入 `20_知识笔记`。仅服务当前交付的内容进入 `10_项目`；项目结束后按价值提炼、归档或清理。
 
-日常人工维护固定使用 `type`、`domain`、`status`、`tags` 四个字段。`type` 可为 `资料`、`知识`、`项目`、`索引` 或 `模板`；`domain` 可为 AI、Quant、软件工程、投资理财或个人成长；标签只表达主题，每篇笔记最多 3 个受控主题标签。
+日常人工维护固定使用 `type`、`domain`、`status`、`tags` 四个字段。`type` 可为 `资料`、`知识`、`索引` 或 `模板`。`domain` 可为 AI、Quant、软件工程、投资理财或个人成长；标签只表达主题，每篇笔记最多 3 个受控主题标签。
 
 待审知识草稿默认 `status: 待提炼`，只有人工确认后才可提升为 `status: 常青`。LLM Wiki 附加字段包括 `uid`、`summary`、`aliases`、`review_status`、`reviewed_by`、`reviewed_at` 和 `llm_policy`；`llm_policy: strict` 只允许提出建议，`llm_policy: off` 禁止 AI 处理。
 

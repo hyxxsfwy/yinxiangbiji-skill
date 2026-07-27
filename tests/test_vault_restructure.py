@@ -4,6 +4,7 @@ import subprocess
 import sys
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from tests.support import workspace_temp_dir
 
@@ -40,6 +41,52 @@ def seed_old_vault(vault):
         "1. 进入翻页模式：CTRL + T\n",
         encoding="utf-8",
     )
+
+
+def apply_fixture_vault(vault):
+    seed_old_vault(vault)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/restructure_obsidian_vault.py",
+            "--vault",
+            str(vault),
+            "--apply",
+            "--confirm",
+            "MIGRATE_OBSIDIAN_VAULT",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr or result.stdout)
+    return vault / "90_系统" / "迁移记录"
+
+
+def prepare_cleanup_fixture(vault):
+    from scripts.restructure_obsidian_vault import (
+        apply_copy_phase,
+        build_migration_plan,
+        create_backup,
+        validate_migration,
+        write_link_report,
+        write_manifest,
+    )
+
+    seed_old_vault(vault)
+    plan = build_migration_plan(vault)
+    records = vault / "90_系统" / "迁移记录"
+    backup = records / "2026-07-27-迁移前备份.zip"
+    manifest = records / "2026-07-27-文件清单.json"
+    create_backup(plan, backup)
+    write_manifest(plan, manifest)
+    apply_copy_phase(plan)
+    report = validate_migration(vault, manifest)
+    write_link_report(report, records / "2026-07-27-链接检查.md")
+    if not report.passed:
+        raise AssertionError(report.issues)
+    return plan, records, manifest, report
 
 
 class MigrationPlanTests(unittest.TestCase):
@@ -398,6 +445,76 @@ class LinkValidationTests(unittest.TestCase):
             )
             self.assertEqual(scan_local_links(vault), ())
 
+    def test_scans_wikilinks_and_reports_a_missing_target(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "存在.md").write_text("# 存在\n", encoding="utf-8")
+            (vault / "index.md").write_text(
+                "[[存在|别名]]\n[[缺失笔记#章节]]\n",
+                encoding="utf-8",
+            )
+
+            issues = scan_local_links(vault)
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].target, "缺失笔记#章节")
+        self.assertEqual(issues[0].reason, "目标不存在")
+
+    def test_supports_angle_destination_optional_title_and_nested_parentheses(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            docs = vault / "docs"
+            docs.mkdir()
+            (docs / "a(b).md").write_text("# 目标\n", encoding="utf-8")
+            (vault / "index.md").write_text(
+                '[目标](<docs/a(b).md> "可选标题")\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(scan_local_links(vault), ())
+
+    def test_image_target_must_be_a_regular_file(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "assets").mkdir()
+            (vault / "index.md").write_text(
+                "![错误图片](assets)\n",
+                encoding="utf-8",
+            )
+
+            issues = scan_local_links(vault)
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].reason, "目标不是普通文件")
+
+    def test_ignores_anchors_obsidian_config_and_legacy_directories(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / ".obsidian" / "插件说明.md").write_text(
+                "[缺失](missing-plugin.md)\n",
+                encoding="utf-8",
+            )
+            legacy = vault / "AI相关知识库"
+            legacy.mkdir()
+            (legacy / "旧文章.md").write_text(
+                "[缺失](missing-legacy.md)\n",
+                encoding="utf-8",
+            )
+            (vault / "index.md").write_text(
+                "[页内锚点](#章节)\n[[#Wiki章节]]\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(scan_local_links(vault), ())
+
 
 class ValidationRobustnessTests(unittest.TestCase):
     def test_required_markdown_directory_is_reported_as_missing_file(self):
@@ -463,6 +580,183 @@ class ValidationRobustnessTests(unittest.TestCase):
             ),
             report.issues,
         )
+
+    def test_completed_verify_requires_all_four_records_as_regular_files(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        for record_name in (
+            "2026-07-27-迁移前备份.zip",
+            "2026-07-27-链接检查.md",
+            "2026-07-27-迁移说明.md",
+        ):
+            with self.subTest(record=record_name), workspace_temp_dir() as vault:
+                records = apply_fixture_vault(vault)
+                record = records / record_name
+                record.unlink()
+                record.mkdir()
+
+                report = verify_completed_vault(vault)
+
+                self.assertFalse(report.passed, report.issues)
+                self.assertTrue(
+                    any(record_name in issue for issue in report.issues),
+                    report.issues,
+                )
+
+    def test_completed_verify_reports_manifest_directory_without_traceback(self):
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            manifest = records / "2026-07-27-文件清单.json"
+            manifest.unlink()
+            manifest.mkdir()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--verify",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_completed_verify_rejects_truncated_manifest_and_deleted_target(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            manifest = records / "2026-07-27-文件清单.json"
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            removed = next(
+                record
+                for record in payload["files"]
+                if record["source"].endswith("Codex CLI 使用技巧记录.md")
+            )
+            payload["files"].remove(removed)
+            manifest.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (vault / removed["destination"]).unlink()
+
+            report = verify_completed_vault(vault)
+
+        self.assertFalse(report.passed, report.issues)
+        self.assertTrue(
+            any("ZIP" in issue or "完整" in issue for issue in report.issues),
+            report.issues,
+        )
+
+    def test_completed_verify_rejects_duplicate_and_out_of_bounds_records(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        mutations = {
+            "duplicate": lambda payload: payload["files"].append(
+                dict(payload["files"][0])
+            ),
+            "outside": lambda payload: payload["files"].append(
+                {
+                    "source": "../vault之外.md",
+                    "destination": None,
+                    "size": 1,
+                    "sha256": "0" * 64,
+                    "preserve_hash": False,
+                }
+            ),
+            "outside-destination": lambda payload: payload["files"][0].update(
+                {"destination": "../vault之外.md"}
+            ),
+            "duplicate-destination": lambda payload: payload["files"][1].update(
+                {"destination": payload["files"][0]["destination"]}
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name), workspace_temp_dir() as vault:
+                records = apply_fixture_vault(vault)
+                manifest = records / "2026-07-27-文件清单.json"
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+                mutate(payload)
+                manifest.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                report = verify_completed_vault(vault)
+
+                self.assertFalse(report.passed, report.issues)
+
+    def test_completed_verify_rejects_wrong_manifest_vault_and_corrupted_zip(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            manifest = records / "2026-07-27-文件清单.json"
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            payload["vault"] = str(vault / "其它目录")
+            manifest.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            wrong_vault_report = verify_completed_vault(vault)
+
+        self.assertFalse(wrong_vault_report.passed, wrong_vault_report.issues)
+
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            backup = records / "2026-07-27-迁移前备份.zip"
+            backup.write_bytes(backup.read_bytes()[:128] + b"corrupted")
+
+            corrupted_zip_report = verify_completed_vault(vault)
+
+        self.assertFalse(corrupted_zip_report.passed, corrupted_zip_report.issues)
+
+    def test_completed_verify_recomputes_and_validates_reports(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        mutations = {
+            "link-report": (
+                "2026-07-27-链接检查.md",
+                lambda text: text.replace("- 结果：通过", "- 结果：失败"),
+            ),
+            "summary": (
+                "2026-07-27-迁移说明.md",
+                lambda text: text.replace("- 旧目录已清理：是", "- 旧目录已清理：否"),
+            ),
+        }
+        for name, (record_name, mutate) in mutations.items():
+            with self.subTest(record=name), workspace_temp_dir() as vault:
+                records = apply_fixture_vault(vault)
+                record = records / record_name
+                record.write_text(
+                    mutate(record.read_text(encoding="utf-8")),
+                    encoding="utf-8",
+                )
+
+                report = verify_completed_vault(vault)
+
+                self.assertFalse(report.passed, report.issues)
+
+    def test_new_apply_manifest_records_migration_and_link_results(self):
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            payload = json.loads(
+                (records / "2026-07-27-文件清单.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(payload.get("schema_version"), 2)
+        self.assertEqual(payload.get("migration_result"), "completed")
+        link_result = payload.get("link_check_result", {})
+        self.assertEqual(link_result.get("result"), "passed")
+        self.assertEqual(link_result.get("issues"), 0)
 
 
 class CleanupGateTests(unittest.TestCase):
@@ -550,6 +844,95 @@ class CleanupGateTests(unittest.TestCase):
             self.assertFalse((vault / "Quant相关知识库").exists())
             self.assertFalse((vault / "HYXX个人知识库").exists())
             self.assertTrue(keep.exists())
+
+    def test_source_changes_after_snapshot_block_cleanup(self):
+        mutations = {
+            "mapped-markdown": lambda vault: (
+                vault
+                / "AI相关知识库"
+                / "2026年07月"
+                / "一张图看懂 AI Agent 全流程.md"
+            ).write_text("快照后新内容\n", encoding="utf-8"),
+            "binary": lambda vault: (
+                vault / "AI相关知识库" / "_attachments" / "agent.png"
+            ).write_bytes(b"changed-after-snapshot"),
+            "unmapped-file": lambda vault: (
+                vault / "HYXX个人知识库" / "快照后新增.txt"
+            ).write_text("新增内容\n", encoding="utf-8"),
+        }
+
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name), workspace_temp_dir() as vault:
+                from scripts.restructure_obsidian_vault import (
+                    cleanup_old_directories,
+                )
+
+                plan, _, _, report = prepare_cleanup_fixture(vault)
+                mutate(vault)
+
+                with self.assertRaisesRegex(RuntimeError, "源|快照|ZIP|清单"):
+                    cleanup_old_directories(plan, report)
+
+                for old_directory in plan.old_directories:
+                    self.assertTrue(old_directory.is_dir())
+
+    def test_cleanup_failure_on_second_directory_restores_all_sources(self):
+        import scripts.restructure_obsidian_vault as migration
+
+        with workspace_temp_dir() as vault:
+            plan, _, manifest, report = prepare_cleanup_fixture(vault)
+            original_rmtree = migration.shutil.rmtree
+            call_count = 0
+
+            def fail_on_second_directory(path, *args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return original_rmtree(path, *args, **kwargs)
+                raise OSError("第二个目录删除失败")
+
+            with patch(
+                "scripts.restructure_obsidian_vault.shutil.rmtree",
+                side_effect=fail_on_second_directory,
+            ):
+                with self.assertRaisesRegex(OSError, "第二个目录删除失败"):
+                    migration.cleanup_old_directories(plan, report)
+
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            for record in payload["files"]:
+                source = vault / record["source"]
+                self.assertTrue(source.is_file(), record["source"])
+                self.assertEqual(source.stat().st_size, record["size"])
+                self.assertEqual(migration.sha256_file(source), record["sha256"])
+
+    def test_cleanup_failure_after_nested_file_removal_restores_all_sources(self):
+        import scripts.restructure_obsidian_vault as migration
+
+        with workspace_temp_dir() as vault:
+            plan, _, manifest, report = prepare_cleanup_fixture(vault)
+
+            def fail_after_nested_file_removal(path, *args, **kwargs):
+                victim = (
+                    path
+                    / "2026年07月"
+                    / "一张图看懂 AI Agent 全流程.md"
+                )
+                victim.unlink()
+                raise OSError("嵌套文件删除失败")
+
+            with patch(
+                "scripts.restructure_obsidian_vault.shutil.rmtree",
+                side_effect=fail_after_nested_file_removal,
+            ):
+                with self.assertRaisesRegex(OSError, "嵌套文件删除失败"):
+                    migration.cleanup_old_directories(plan, report)
+
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            for record in payload["files"]:
+                source = vault / record["source"]
+                self.assertTrue(source.is_file(), record["source"])
+                self.assertEqual(source.stat().st_size, record["size"])
+                self.assertEqual(migration.sha256_file(source), record["sha256"])
 
     @unittest.skipUnless(
         sys.platform == "win32",
@@ -816,7 +1199,9 @@ class CommandLineTests(unittest.TestCase):
             backup = records / "2026-07-27-迁移前备份.zip"
             manifest = records / "2026-07-27-文件清单.json"
             original_backup = backup.read_bytes()
-            original_manifest = manifest.read_bytes()
+            original_manifest = json.loads(
+                manifest.read_text(encoding="utf-8")
+            )
 
             conflicting_template.unlink()
             second = subprocess.run(
@@ -828,4 +1213,18 @@ class CommandLineTests(unittest.TestCase):
 
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(backup.read_bytes(), original_backup)
-            self.assertEqual(manifest.read_bytes(), original_manifest)
+            completed_manifest = json.loads(
+                manifest.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                completed_manifest["created_at"],
+                original_manifest["created_at"],
+            )
+            self.assertEqual(
+                completed_manifest["files"],
+                original_manifest["files"],
+            )
+            self.assertEqual(
+                completed_manifest["migration_result"],
+                "completed",
+            )

@@ -221,6 +221,7 @@ class SkillDocumentationTests(unittest.TestCase):
             top_level,
             [
                 "00_首页.md",
+                "01_收件箱/",
                 "10_项目/",
                 "20_知识笔记/",
                 "30_精选资料/",
@@ -288,6 +289,10 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertNotIn("--apply", verify)
         self.assertIn("--apply --confirm MIGRATE_OBSIDIAN_VAULT", apply)
         self.assertIn("预览和验证均只读本地 vault", reference)
+        self.assertIn(
+            "预览只输出路径映射，不生成清单或链接报告",
+            reference,
+        )
 
         export_block = next(
             block
@@ -310,6 +315,24 @@ class SkillDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(phrase, reference)
 
+    def test_every_curated_export_example_targets_the_ai_domain_directory(self):
+        export_blocks = [
+            block
+            for document in (self.readme, self.skill)
+            for block in re.findall(r"```powershell\n(.*?)\n```", document, re.DOTALL)
+            if "scripts/export_search_results.py" in block
+        ]
+
+        self.assertGreaterEqual(len(export_blocks), 3)
+        for block in export_blocks:
+            with self.subTest(block=block):
+                self.assertIn("--domain AI", block)
+                self.assertIn(
+                    r'--target "D:\OneDrive\文档\@_Obsidian\30_精选资料\AI"',
+                    block,
+                )
+                self.assertNotIn(r"\AI相关知识库", block)
+
     def test_documents_vault_environment_and_image_safety_contract(self):
         reference = (
             REPO_ROOT / "references" / "obsidian-knowledge-management.md"
@@ -319,8 +342,10 @@ class SkillDocumentationTests(unittest.TestCase):
         vault_path = re.search(
             r"(?m)^OBSIDIAN_VAULT_PATH=(.+)$", environment
         ).group(1)
-        self.assertEqual(vault_path, r"D:\OneDrive\文档\@_Obsidian")
+        self.assertEqual(vault_path, r"D:\OneDrive\文档\@_Obsidian_全量同步暂存")
         self.assertNotRegex(vault_path, r"30_精选资料|20_知识笔记|_attachments")
+        self.assertNotEqual(vault_path, r"D:\OneDrive\文档\@_Obsidian")
+        self.assertIn("全量同步不得写入统一 LLM Wiki 根目录", reference)
 
         migration_section = reference.split("## 迁移与验证", 1)[1].split(
             "## 双层内容与 Properties", 1
@@ -328,6 +353,15 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("30_精选资料/AI/_attachments", migration_section)
         self.assertIn("文章对图片的相对引用布局", migration_section)
         self.assertIn("验证阶段会检查这些图片引用可解析", migration_section)
+
+        type_contract = re.search(
+            r"`type` 可为 ([^。]+)。",
+            reference,
+        ).group(1)
+        self.assertEqual(
+            type_contract,
+            "`资料`、`知识`、`索引` 或 `模板`",
+        )
 
     def test_every_user_command_has_non_mutating_help(self):
         command_scripts = [

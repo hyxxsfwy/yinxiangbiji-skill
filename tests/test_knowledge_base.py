@@ -5,12 +5,24 @@ from pathlib import Path
 from tests.support import workspace_temp_dir
 
 
-def write_note(path, title, created, updated, guid, body):
+def write_note(
+    path,
+    title,
+    created,
+    updated,
+    guid,
+    body,
+    *,
+    note_type="资料",
+    domain="AI",
+):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         (
             "---\n"
+            f"type: {note_type}\n"
+            f"domain: {domain}\n"
             f'created: "{created}"\n'
             f'updated: "{updated}"\n'
             f'source_guid: "{guid}"\n'
@@ -161,7 +173,7 @@ class IndexTests(unittest.TestCase):
             month = root / "2026年06月"
             month.mkdir()
             (month / "外部资料.md").write_text(
-                "---\ncreated: \"2026-06-12\"\n"
+                "---\ntype: 资料\ndomain: Quant\ncreated: \"2026-06-12\"\n"
                 "updated: \"2026-06-12\"\n"
                 "uid: \"source-quant-vibe-2026-06-12\"\n"
                 "---\n\n# 外部资料\n\n正文。\n",
@@ -173,6 +185,57 @@ class IndexTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
 
         self.assertIn("[外部资料]", index)
+
+    def test_index_ignores_missing_wrong_type_and_cross_domain_documents(self):
+        from scripts.knowledge_base import write_knowledge_base_index
+
+        with workspace_temp_dir() as root:
+            month = root / "2026年07月"
+            write_note(
+                month / "AI资料.md",
+                title="AI资料",
+                created="2026-07-24 11:00:27",
+                updated="2026-07-26 09:00:00",
+                guid="ai-source",
+                body="AI 资料正文用于领域索引过滤测试。",
+            )
+            write_note(
+                month / "知识笔记.md",
+                title="知识笔记",
+                created="2026-07-24 11:00:27",
+                updated="2026-07-26 09:00:00",
+                guid="knowledge-note",
+                body="错放知识笔记不应出现在资料索引。",
+                note_type="知识",
+            )
+            write_note(
+                month / "Quant资料.md",
+                title="Quant资料",
+                created="2026-07-24 11:00:27",
+                updated="2026-07-26 09:00:00",
+                guid="quant-source",
+                body="跨领域资料不应出现在 AI 索引。",
+                domain="Quant",
+            )
+            (month / "缺失类型领域.md").write_text(
+                "---\ncreated: \"2026-07-24\"\nuid: missing-contract\n---\n"
+                "# 缺失类型领域\n",
+                encoding="utf-8",
+            )
+
+            index = write_knowledge_base_index(
+                root,
+                domain="AI",
+            ).read_text(encoding="utf-8")
+
+        self.assertIn("[AI资料]", index)
+        self.assertNotIn("[知识笔记]", index)
+        self.assertNotIn("[Quant资料]", index)
+        self.assertNotIn("[缺失类型领域]", index)
+        self.assertIn(
+            "只收录 `type: 资料` 且 `domain: AI` 的文档",
+            index,
+        )
 
     def test_writes_months_and_notes_in_descending_order(self):
         from scripts.knowledge_base import write_knowledge_base_index

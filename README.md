@@ -16,7 +16,7 @@ Copy-Item .env.example .env
 ```dotenv
 EVERNOTE_TOKEN=your-developer-token
 EVERNOTE_NOTESTORE_URL=https://app.yinxiang.com/shard/sXX/notestore
-OBSIDIAN_VAULT_PATH=D:\path\to\ObsidianVault
+OBSIDIAN_VAULT_PATH=D:\OneDrive\文档\@_Obsidian_全量同步暂存
 ```
 
 `EVERNOTE_NOTESTORE_URL` 必须使用令牌页面显示的实际 shard。环境变量优先于 `.env`。真实令牌会获得账户访问权限，`.env` 已被 Git 忽略，不要把令牌写入命令、文档、日志或提交记录。
@@ -51,8 +51,9 @@ python scripts/get_note_enml.py --guid "NOTE_GUID" --output ".\note.xml"
 python scripts/export_search_results.py `
   --since 2025-07-26 `
   --keywords AI Agent 人工智能 `
+  --domain AI `
   --limit 3 `
-  --target "D:\path\to\vault\AI相关知识库"
+  --target "D:\OneDrive\文档\@_Obsidian\30_精选资料\AI"
 ```
 
 标题完全一致时依次按 `updated`、`created`、GUID 保留最新版本，去重发生在 `--limit` 之前。文章按 `created` 归入 `YYYY年MM月/`；图片和附件统一保存在知识库根目录 `_attachments/`，月度文章使用 `../_attachments/`。同名附件内容不同时会自动追加内容哈希，正文已经引用的图片不会在文末重复展示。
@@ -62,7 +63,7 @@ python scripts/export_search_results.py `
 根目录自动重建 `目录索引.md`。每篇索引项包含可点击链接、可读的相对位置，以及由首段有效正文和最多四个二、三级目录标题综合形成的一到两句话简介。重复运行会迁移根目录旧文章、清理同标题旧版本并重建索引，不产生重复条目。
 
 ```text
-AI相关知识库/
+30_精选资料/AI/
 ├── 目录索引.md
 ├── _attachments/
 └── 2026年07月/
@@ -86,6 +87,8 @@ python scripts/sync_to_obsidian.py `
 ```
 
 未传 `--vault` 时读取 `OBSIDIAN_VAULT_PATH`。默认状态文件为 `<vault>/.yinxiang_sync_state.json`。同步按 NoteStore 元数据分页拉取，不按标题丢弃笔记；每个笔记本下分别创建 `_attachments/` 和 `_clips/`。超过 200 KB 的网页裁剪可保存为 HTML，其余正文转为 Markdown。
+
+全量同步会按印象笔记本名称创建目录，因此只能写入独立暂存目录；检测到统一 LLM Wiki 根目录时脚本会在读取凭据前拒绝执行。进入正式 Wiki 的内容使用上面的精选导出命令，并显式指定 `--domain` 和领域目标目录。
 
 生成的 frontmatter 示例：
 

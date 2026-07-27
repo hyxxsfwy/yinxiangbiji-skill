@@ -10,7 +10,7 @@ import sys
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
 try:
@@ -24,8 +24,31 @@ DOMAINS = ("AI", "Quant", "软件工程", "投资理财", "个人成长")
 OLD_DIRECTORIES = ("AI相关知识库", "Quant相关知识库", "HYXX个人知识库")
 QUANT_FILENAME = "GPT-6也救不了平庸策略：Vibe Quant 的反思.md"
 CODEX_FILENAME = "Codex CLI 使用技巧记录.md"
-MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+INLINE_LINK_START = re.compile(r"(!?)\[[^\]\n]*\]\(")
+WIKILINK = re.compile(r"(!?)\[\[([^\]\n]+)\]\]")
 EXTERNAL_SCHEMES = ("http:", "https:", "mailto:", "data:")
+MIGRATION_RECORD_NAMES = {
+    "backup": "2026-07-27-迁移前备份.zip",
+    "manifest": "2026-07-27-文件清单.json",
+    "link_report": "2026-07-27-链接检查.md",
+    "summary": "2026-07-27-迁移说明.md",
+}
+LEGACY_MANIFEST_KEYS = {"vault", "created_at", "files"}
+CURRENT_MANIFEST_KEYS = {
+    "schema_version",
+    "vault",
+    "created_at",
+    "migration_result",
+    "link_check_result",
+    "files",
+}
+MANIFEST_FILE_KEYS = {
+    "source",
+    "destination",
+    "size",
+    "sha256",
+    "preserve_hash",
+}
 FRONTMATTER_RE = re.compile(
     r"\A---\r?\n(.*?)\r?\n---",
     re.DOTALL,
@@ -78,12 +101,20 @@ class LinkIssue:
 
 
 @dataclass(frozen=True)
+class MarkdownReference:
+    target: str
+    is_image: bool
+    is_wikilink: bool
+
+
+@dataclass(frozen=True)
 class ValidationReport:
     passed: bool
     issues: tuple[str, ...]
     markdown_files_before: int
     local_links_checked: int
     image_links_checked: int
+    wiki_links_checked: int = 0
 
 
 def assert_vault(vault: Path) -> Path:
@@ -105,56 +136,204 @@ def iter_managed_markdown(vault: Path):
         yield path
 
 
+def _inline_destination(markdown: str, start: int) -> tuple[str, int] | None:
+    depth = 0
+    escaped = False
+    for index in range(start, len(markdown)):
+        character = markdown[index]
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if character == "(":
+            depth += 1
+            continue
+        if character == ")":
+            if depth:
+                depth -= 1
+                continue
+            return markdown[start:index], index + 1
+    return None
+
+
+def _destination_without_title(raw: str) -> str:
+    value = raw.strip()
+    if value.startswith("<"):
+        escaped = False
+        for index, character in enumerate(value[1:], 1):
+            if escaped:
+                escaped = False
+                continue
+            if character == "\\":
+                escaped = True
+                continue
+            if character == ">":
+                return value[1:index]
+        return value
+
+    depth = 0
+    escaped = False
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
+        if character == "(":
+            depth += 1
+            continue
+        if character == ")" and depth:
+            depth -= 1
+            continue
+        if character.isspace() and depth == 0:
+            return value[:index]
+    return value
+
+
+def iter_markdown_references(markdown: str):
+    for match in INLINE_LINK_START.finditer(markdown):
+        parsed = _inline_destination(markdown, match.end())
+        if parsed is None:
+            continue
+        raw, _ = parsed
+        target = _destination_without_title(raw).replace(r"\(", "(").replace(
+            r"\)", ")"
+        )
+        yield MarkdownReference(
+            target=target,
+            is_image=bool(match.group(1)),
+            is_wikilink=False,
+        )
+    for match in WIKILINK.finditer(markdown):
+        yield MarkdownReference(
+            target=match.group(2).strip(),
+            is_image=bool(match.group(1)),
+            is_wikilink=True,
+        )
+
+
+def _inside_vault(vault: Path, path: Path) -> bool:
+    try:
+        path.relative_to(vault)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolve_wikilink(
+    vault: Path,
+    source: Path,
+    target: str,
+) -> tuple[Path | None, str | None]:
+    link_path = PurePosixPath(unquote(target.replace("\\", "/")))
+    if link_path.is_absolute() or ".." in link_path.parts:
+        return None, "目标越出 vault"
+    candidates = []
+    requested = Path(*link_path.parts)
+    if not requested.suffix:
+        requested = requested.with_suffix(".md")
+    for candidate in (
+        (source.parent / requested).resolve(),
+        (vault / requested).resolve(),
+    ):
+        if _inside_vault(vault, candidate) and candidate not in candidates:
+            candidates.append(candidate)
+    regular_files = [candidate for candidate in candidates if candidate.is_file()]
+    if regular_files:
+        return regular_files[0], None
+    if any(candidate.exists() for candidate in candidates):
+        return None, "目标不是普通文件"
+    if len(link_path.parts) == 1 and not link_path.suffix:
+        matches = [
+            path
+            for path in iter_managed_markdown(vault)
+            if path.stem == link_path.name
+        ]
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            return None, "目标不唯一"
+    return None, "目标不存在"
+
+
 def scan_local_links(vault: Path) -> tuple[LinkIssue, ...]:
     vault = assert_vault(vault)
     issues = []
     for source in iter_managed_markdown(vault):
         markdown = source.read_text(encoding="utf-8")
-        for match in MARKDOWN_LINK.finditer(markdown):
-            raw_target = match.group(1).strip()
-            target_without_anchor = raw_target.split("#", 1)[0]
+        for reference in iter_markdown_references(markdown):
+            raw_target = reference.target.strip()
+            if reference.is_wikilink:
+                target_without_alias = raw_target.split("|", 1)[0].strip()
+                target_without_anchor = re.split(
+                    r"[#^]",
+                    target_without_alias,
+                    maxsplit=1,
+                )[0].strip()
+            else:
+                target_without_anchor = raw_target.split("#", 1)[0].strip()
             if (
                 not target_without_anchor
                 or target_without_anchor.lower().startswith(EXTERNAL_SCHEMES)
             ):
                 continue
+            if reference.is_wikilink:
+                _, reason = _resolve_wikilink(
+                    vault,
+                    source,
+                    target_without_anchor,
+                )
+                if reason:
+                    issues.append(LinkIssue(source, raw_target, reason))
+                continue
             decoded = unquote(target_without_anchor)
             resolved = (source.parent / decoded).resolve()
-            try:
-                resolved.relative_to(vault)
-            except ValueError:
+            if not _inside_vault(vault, resolved):
                 issues.append(LinkIssue(source, raw_target, "目标越出 vault"))
-                continue
-            if not resolved.exists():
+            elif not resolved.exists():
                 issues.append(LinkIssue(source, raw_target, "目标不存在"))
+            elif not resolved.is_file():
+                issues.append(LinkIssue(source, raw_target, "目标不是普通文件"))
     return tuple(issues)
 
 
 def count_markdown_images(vault: Path) -> int:
     return sum(
-        len(
-            re.findall(
-                r"!\[[^\]]*\]\([^)]+\)",
-                path.read_text(encoding="utf-8"),
-            )
-        )
+        1
         for path in iter_managed_markdown(vault)
+        for reference in iter_markdown_references(
+            path.read_text(encoding="utf-8")
+        )
+        if reference.is_image
     )
 
 
 def count_local_markdown_links(vault: Path) -> int:
-    count = 0
-    for path in iter_managed_markdown(vault):
-        text = path.read_text(encoding="utf-8")
-        for match in MARKDOWN_LINK.finditer(text):
-            target = match.group(1).strip().lower()
-            if (
-                not match.group(0).startswith("!")
-                and target
-                and not target.startswith(EXTERNAL_SCHEMES)
-            ):
-                count += 1
-    return count
+    return sum(
+        1
+        for path in iter_managed_markdown(vault)
+        for reference in iter_markdown_references(
+            path.read_text(encoding="utf-8")
+        )
+        if not reference.is_image
+        and not reference.is_wikilink
+        and reference.target
+        and not reference.target.lower().startswith(EXTERNAL_SCHEMES)
+    )
+
+
+def count_wikilinks(vault: Path) -> int:
+    return sum(
+        1
+        for path in iter_managed_markdown(vault)
+        for reference in iter_markdown_references(
+            path.read_text(encoding="utf-8")
+        )
+        if reference.is_wikilink
+    )
 
 
 def build_migration_plan(vault: Path) -> MigrationPlan:
@@ -304,7 +483,7 @@ def write_manifest(plan: MigrationPlan, manifest_path: Path) -> Path:
                 f"清单已存在但格式无效，拒绝复用: {manifest_path}"
             ) from exc
         if (
-            set(existing) == {"vault", "created_at", "files"}
+            set(existing) in (LEGACY_MANIFEST_KEYS, CURRENT_MANIFEST_KEYS)
             and existing["vault"] == source_state["vault"]
             and existing["files"] == source_state["files"]
         ):
@@ -313,8 +492,17 @@ def write_manifest(plan: MigrationPlan, manifest_path: Path) -> Path:
             f"清单已存在但与当前迁移源不匹配，拒绝复用: {manifest_path}"
         )
     payload = {
+        "schema_version": 2,
         "vault": source_state["vault"],
         "created_at": datetime.now().astimezone().isoformat(),
+        "migration_result": "pending",
+        "link_check_result": {
+            "result": "pending",
+            "issues": None,
+            "markdown_links_checked": None,
+            "image_links_checked": None,
+            "wiki_links_checked": None,
+        },
         "files": source_state["files"],
     }
     manifest_path.write_text(
@@ -322,6 +510,338 @@ def write_manifest(plan: MigrationPlan, manifest_path: Path) -> Path:
         encoding="utf-8",
     )
     return manifest_path
+
+
+def record_manifest_results(
+    manifest_path: Path,
+    report: ValidationReport,
+) -> Path:
+    manifest_path = Path(manifest_path)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if set(payload) != CURRENT_MANIFEST_KEYS or payload.get("schema_version") != 2:
+        raise ValueError("只有新版清单可以记录迁移完成结果")
+    payload["migration_result"] = "completed" if report.passed else "failed"
+    payload["link_check_result"] = {
+        "result": "passed" if report.passed else "failed",
+        "issues": len(report.issues),
+        "markdown_links_checked": report.local_links_checked,
+        "image_links_checked": report.image_links_checked,
+        "wiki_links_checked": report.wiki_links_checked,
+    }
+    temporary = manifest_path.with_name(f".{manifest_path.name}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(manifest_path)
+    return manifest_path
+
+
+def migration_record_paths(vault: Path) -> dict[str, Path]:
+    records = Path(vault) / "90_系统" / "迁移记录"
+    return {
+        key: records / filename
+        for key, filename in MIGRATION_RECORD_NAMES.items()
+    }
+
+
+def expected_destination_for_source(source: str) -> str | None:
+    relative = PurePosixPath(source)
+    if relative.parts and relative.parts[0] == "AI相关知识库":
+        return PurePosixPath(
+            "30_精选资料",
+            "AI",
+            *relative.parts[1:],
+        ).as_posix()
+    if source == f"Quant相关知识库/{QUANT_FILENAME}":
+        return PurePosixPath(
+            "30_精选资料",
+            "Quant",
+            "2026年06月",
+            QUANT_FILENAME,
+        ).as_posix()
+    if source == f"HYXX个人知识库/{CODEX_FILENAME}":
+        return PurePosixPath(
+            "20_知识笔记",
+            "软件工程",
+            CODEX_FILENAME,
+        ).as_posix()
+    return None
+
+
+def _safe_manifest_relative(value, label: str) -> tuple[PurePosixPath | None, str | None]:
+    if not isinstance(value, str) or not value or "\\" in value:
+        return None, f"{label}不是规范的 POSIX 相对路径: {value!r}"
+    relative = PurePosixPath(value)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in ("", ".", "..") for part in relative.parts)
+    ):
+        return None, f"{label}越出 vault: {value!r}"
+    return relative, None
+
+
+def load_manifest_strict(
+    vault: Path,
+    manifest_path: Path,
+    *,
+    completed: bool,
+) -> tuple[dict[str, object] | None, tuple[str, ...]]:
+    vault = Path(vault).resolve()
+    manifest_path = Path(manifest_path)
+    if not manifest_path.is_file():
+        return None, (f"迁移记录不是普通文件: {manifest_path.name}",)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, (f"迁移清单无法读取: {exc}",)
+    if not isinstance(payload, dict):
+        return None, ("迁移清单根节点必须是对象",)
+
+    issues = []
+    keys = set(payload)
+    is_legacy = keys == LEGACY_MANIFEST_KEYS
+    is_current = keys == CURRENT_MANIFEST_KEYS
+    if not (is_legacy or is_current):
+        issues.append(f"迁移清单 schema 不受支持: {sorted(keys)}")
+
+    manifest_vault = payload.get("vault")
+    try:
+        manifest_vault_path = Path(manifest_vault).resolve()
+    except (TypeError, ValueError, OSError):
+        manifest_vault_path = None
+    if manifest_vault_path != vault:
+        issues.append(
+            f"迁移清单 vault 不匹配: {manifest_vault!r} != {str(vault)!r}"
+        )
+    try:
+        datetime.fromisoformat(payload.get("created_at"))
+    except (TypeError, ValueError):
+        issues.append("迁移清单 created_at 无效")
+
+    if is_current:
+        if payload.get("schema_version") != 2:
+            issues.append("迁移清单 schema_version 必须为 2")
+        migration_result = payload.get("migration_result")
+        link_result = payload.get("link_check_result")
+        if migration_result not in ("pending", "completed", "failed"):
+            issues.append("迁移清单 migration_result 无效")
+        if not isinstance(link_result, dict) or set(link_result) != {
+            "result",
+            "issues",
+            "markdown_links_checked",
+            "image_links_checked",
+            "wiki_links_checked",
+        }:
+            issues.append("迁移清单 link_check_result schema 无效")
+        elif completed:
+            if migration_result != "completed":
+                issues.append("迁移清单未记录完成迁移")
+            if link_result.get("result") != "passed":
+                issues.append("迁移清单未记录链接检查通过")
+            for key in (
+                "issues",
+                "markdown_links_checked",
+                "image_links_checked",
+                "wiki_links_checked",
+            ):
+                if not isinstance(link_result.get(key), int) or link_result[key] < 0:
+                    issues.append(f"迁移清单 link_check_result.{key} 无效")
+
+    files = payload.get("files")
+    if not isinstance(files, list) or not files:
+        issues.append("迁移清单 files 必须是非空数组")
+        return payload, tuple(issues)
+
+    seen_sources = set()
+    seen_destinations = set()
+    for index, record in enumerate(files):
+        prefix = f"迁移清单 files[{index}]"
+        if not isinstance(record, dict) or set(record) != MANIFEST_FILE_KEYS:
+            issues.append(f"{prefix} schema 无效")
+            continue
+        source = record.get("source")
+        source_path, source_issue = _safe_manifest_relative(
+            source,
+            f"{prefix}.source",
+        )
+        if source_issue:
+            issues.append(source_issue)
+        elif source_path.parts[0] not in OLD_DIRECTORIES:
+            issues.append(f"{prefix}.source 不属于白名单旧目录: {source}")
+        elif source in seen_sources:
+            issues.append(f"迁移清单包含重复来源: {source}")
+        else:
+            seen_sources.add(source)
+
+        destination = record.get("destination")
+        if destination is not None:
+            _, destination_issue = _safe_manifest_relative(
+                destination,
+                f"{prefix}.destination",
+            )
+            if destination_issue:
+                issues.append(destination_issue)
+            elif destination in seen_destinations:
+                issues.append(f"迁移清单包含重复目标: {destination}")
+            else:
+                seen_destinations.add(destination)
+        if source_path is not None:
+            expected = expected_destination_for_source(source)
+            if destination != expected:
+                issues.append(
+                    f"{prefix}.destination 与迁移映射不一致: "
+                    f"{destination!r} != {expected!r}"
+                )
+        if not isinstance(record.get("size"), int) or record["size"] < 0:
+            issues.append(f"{prefix}.size 无效")
+        if not isinstance(record.get("sha256"), str) or not re.fullmatch(
+            r"[0-9a-f]{64}",
+            record["sha256"],
+        ):
+            issues.append(f"{prefix}.sha256 无效")
+        if not isinstance(record.get("preserve_hash"), bool):
+            issues.append(f"{prefix}.preserve_hash 无效")
+        elif isinstance(source, str):
+            expected_preserve_hash = not source.lower().endswith(".md")
+            if record["preserve_hash"] != expected_preserve_hash:
+                issues.append(f"{prefix}.preserve_hash 与文件类型不一致")
+    return payload, tuple(issues)
+
+
+def inspect_backup(
+    backup_path: Path,
+) -> tuple[dict[str, tuple[int, str]], tuple[str, ...]]:
+    backup_path = Path(backup_path)
+    if not backup_path.is_file():
+        return {}, (f"迁移记录不是普通文件: {backup_path.name}",)
+    files = {}
+    issues = []
+    seen_names = set()
+    try:
+        with zipfile.ZipFile(backup_path) as archive:
+            for info in archive.infolist():
+                name = info.filename
+                if name in seen_names:
+                    issues.append(f"ZIP 包含重复条目: {name}")
+                    continue
+                seen_names.add(name)
+                normalized = name.rstrip("/")
+                relative, path_issue = _safe_manifest_relative(
+                    normalized,
+                    "ZIP 条目",
+                )
+                if path_issue:
+                    issues.append(path_issue)
+                    continue
+                if relative.parts[0] not in OLD_DIRECTORIES:
+                    issues.append(f"ZIP 条目不属于白名单旧目录: {name}")
+                    continue
+                if info.is_dir():
+                    continue
+                digest = hashlib.sha256()
+                with archive.open(info) as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                files[name] = (info.file_size, digest.hexdigest())
+    except (OSError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+        return {}, (f"迁移 ZIP 无效: {exc}",)
+    return files, tuple(issues)
+
+
+def validate_manifest_and_backup(
+    vault: Path,
+    manifest_path: Path,
+    backup_path: Path,
+    *,
+    completed: bool,
+) -> tuple[dict[str, object] | None, tuple[str, ...]]:
+    payload, manifest_issues = load_manifest_strict(
+        vault,
+        manifest_path,
+        completed=completed,
+    )
+    backup_files, backup_issues = inspect_backup(backup_path)
+    issues = [*manifest_issues, *backup_issues]
+    if payload is None or not isinstance(payload.get("files"), list):
+        return payload, tuple(issues)
+
+    manifest_files = {
+        record["source"]: (record["size"], record["sha256"])
+        for record in payload["files"]
+        if isinstance(record, dict)
+        and set(record) == MANIFEST_FILE_KEYS
+        and isinstance(record.get("source"), str)
+        and isinstance(record.get("size"), int)
+        and isinstance(record.get("sha256"), str)
+    }
+    if set(manifest_files) != set(backup_files):
+        missing = sorted(set(manifest_files) - set(backup_files))
+        extra = sorted(set(backup_files) - set(manifest_files))
+        if missing:
+            issues.append(f"ZIP 缺少清单来源: {missing}")
+        if extra:
+            issues.append(f"ZIP 包含清单外来源，清单不完整: {extra}")
+    for source in sorted(set(manifest_files) & set(backup_files)):
+        if manifest_files[source] != backup_files[source]:
+            issues.append(f"ZIP 与清单的大小或 SHA-256 不一致: {source}")
+    return payload, tuple(issues)
+
+
+def validate_source_snapshot(
+    plan: MigrationPlan,
+    manifest_path: Path,
+    backup_path: Path,
+) -> tuple[str, ...]:
+    payload, issues = validate_manifest_and_backup(
+        plan.vault,
+        manifest_path,
+        backup_path,
+        completed=False,
+    )
+    issue_list = list(issues)
+    if payload is None or not isinstance(payload.get("files"), list):
+        return tuple(issue_list)
+    for old_directory in plan.old_directories:
+        if not old_directory.is_dir():
+            issue_list.append(f"迁移源目录不完整: {old_directory.name}")
+    expected = {
+        record["source"]: (record["size"], record["sha256"])
+        for record in payload["files"]
+        if isinstance(record, dict) and set(record) == MANIFEST_FILE_KEYS
+    }
+    actual = {
+        path.relative_to(plan.vault).as_posix(): (
+            path.stat().st_size,
+            sha256_file(path),
+        )
+        for path in iter_old_files(plan)
+    }
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        if missing:
+            issue_list.append(f"当前迁移源缺少清单文件: {missing}")
+        if extra:
+            issue_list.append(f"当前迁移源包含快照后文件: {extra}")
+    for source in sorted(set(actual) & set(expected)):
+        if actual[source] != expected[source]:
+            issue_list.append(f"当前迁移源与清单/ZIP 不一致: {source}")
+    return tuple(issue_list)
+
+
+def assert_source_snapshot_consistent(
+    plan: MigrationPlan,
+    manifest_path: Path,
+    backup_path: Path,
+):
+    issues = validate_source_snapshot(plan, manifest_path, backup_path)
+    if issues:
+        raise RuntimeError(
+            "迁移源、清单与 ZIP 快照不一致，保留全部旧目录:\n"
+            + "\n".join(issues)
+        )
 
 
 def ensure_target_structure(plan: MigrationPlan):
@@ -799,8 +1319,12 @@ def validate_migration(
     manifest_path: Path,
 ) -> ValidationReport:
     vault = assert_vault(vault)
-    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    issues = []
+    manifest, manifest_issues = load_manifest_strict(
+        vault,
+        manifest_path,
+        completed=False,
+    )
+    issues = list(manifest_issues)
     required_paths = [
         vault / "00_首页.md",
         vault / "10_项目" / "目录索引.md",
@@ -818,17 +1342,32 @@ def validate_migration(
         if not path.is_file():
             issues.append(f"缺少必需路径: {path}")
 
-    for record in manifest["files"]:
+    records = (
+        manifest.get("files", [])
+        if isinstance(manifest, dict)
+        and isinstance(manifest.get("files"), list)
+        else []
+    )
+    for record in records:
+        if not isinstance(record, dict) or set(record) != MANIFEST_FILE_KEYS:
+            continue
         destination_text = record.get("destination")
         if destination_text is None:
             continue
-        destination = vault / Path(destination_text)
-        if not destination.is_file():
-            issues.append(f"缺少迁移目标: {destination_text}")
+        _, destination_issue = _safe_manifest_relative(
+            destination_text,
+            "迁移目标",
+        )
+        if destination_issue:
             continue
-        if (
+        destination = (vault / Path(destination_text)).resolve()
+        if not _inside_vault(vault, destination):
+            issues.append(f"迁移目标越出 vault: {destination_text}")
+        elif not destination.is_file():
+            issues.append(f"缺少迁移目标: {destination_text}")
+        elif (
             record.get("preserve_hash")
-            and sha256_file(destination) != record["sha256"]
+            and sha256_file(destination) != record.get("sha256")
         ):
             issues.append(f"二进制文件哈希不一致: {destination_text}")
 
@@ -854,15 +1393,22 @@ def validate_migration(
         issues=tuple(issues),
         markdown_files_before=sum(
             1
-            for record in manifest["files"]
-            if record["source"].lower().endswith(".md")
+            for record in records
+            if isinstance(record, dict)
+            and isinstance(record.get("source"), str)
+            and record["source"].lower().endswith(".md")
         ),
         local_links_checked=count_local_markdown_links(vault),
         image_links_checked=count_markdown_images(vault),
+        wiki_links_checked=count_wikilinks(vault),
     )
 
 
-def write_link_report(report: ValidationReport, path: Path) -> Path:
+def render_link_report(
+    report: ValidationReport,
+    *,
+    include_wikilinks: bool,
+) -> str:
     issue_lines = (
         [f"- {issue}" for issue in report.issues]
         if report.issues
@@ -875,27 +1421,33 @@ def write_link_report(report: ValidationReport, path: Path) -> Path:
         f"- 迁移前 Markdown：{report.markdown_files_before}",
         f"- 检查的 Markdown 链接：{report.local_links_checked}",
         f"- 检查的图片引用：{report.image_links_checked}",
-        "",
-        "## 问题",
-        "",
-        *issue_lines,
-        "",
     ]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    if include_wikilinks:
+        lines.append(f"- 检查的 WikiLink：{report.wiki_links_checked}")
+    lines.extend(["", "## 问题", "", *issue_lines, ""])
+    return "\n".join(lines)
+
+
+def write_link_report(report: ValidationReport, path: Path) -> Path:
+    path.write_text(
+        render_link_report(report, include_wikilinks=True),
+        encoding="utf-8",
+    )
     return path
 
 
-def write_migration_summary(
-    plan: MigrationPlan,
+def render_migration_summary(
+    vault: Path,
     report: ValidationReport,
-    path: Path,
+    *,
+    executed_at: str,
     old_directories_removed: bool,
-) -> Path:
+) -> str:
     lines = [
         "# Obsidian vault 迁移说明",
         "",
-        f"- 执行时间：{datetime.now().astimezone().isoformat()}",
-        f"- vault：`{plan.vault}`",
+        f"- 执行时间：{executed_at}",
+        f"- vault：`{vault}`",
         f"- 验证结果：{'通过' if report.passed else '失败'}",
         f"- 旧目录已清理：{'是' if old_directories_removed else '否'}",
         "- 快照：`2026-07-27-迁移前备份.zip`",
@@ -905,13 +1457,43 @@ def write_migration_summary(
         "## 路径映射",
         "",
     ]
-    for item in plan.items:
+    mappings = (
+        (
+            Path("AI相关知识库"),
+            Path("30_精选资料") / "AI",
+        ),
+        (
+            Path("Quant相关知识库") / QUANT_FILENAME,
+            Path("30_精选资料") / "Quant" / "2026年06月" / QUANT_FILENAME,
+        ),
+        (
+            Path("HYXX个人知识库") / CODEX_FILENAME,
+            Path("20_知识笔记") / "软件工程" / CODEX_FILENAME,
+        ),
+    )
+    for source, destination in mappings:
         lines.append(
-            f"- `{item.source.relative_to(plan.vault)}`"
-            f" → `{item.destination.relative_to(plan.vault)}`"
+            f"- `{source}` → `{destination}`"
         )
     lines.append("")
-    path.write_text("\n".join(lines), encoding="utf-8")
+    return "\n".join(lines)
+
+
+def write_migration_summary(
+    plan: MigrationPlan,
+    report: ValidationReport,
+    path: Path,
+    old_directories_removed: bool,
+) -> Path:
+    path.write_text(
+        render_migration_summary(
+            plan.vault,
+            report,
+            executed_at=datetime.now().astimezone().isoformat(),
+            old_directories_removed=old_directories_removed,
+        ),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -923,6 +1505,46 @@ def retry_readonly_removal(function, path, exception):
     function(path)
 
 
+def restore_old_directories_from_backup(
+    plan: MigrationPlan,
+    manifest_path: Path,
+    backup_path: Path,
+):
+    payload, issues = validate_manifest_and_backup(
+        plan.vault,
+        manifest_path,
+        backup_path,
+        completed=False,
+    )
+    if issues or payload is None:
+        raise RuntimeError(
+            "清理失败后无法验证恢复源:\n" + "\n".join(issues)
+        )
+    with zipfile.ZipFile(backup_path) as archive:
+        for info in archive.infolist():
+            relative = PurePosixPath(info.filename.rstrip("/"))
+            destination = plan.vault.joinpath(*relative.parts)
+            if info.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists() and not destination.is_file():
+                raise RuntimeError(f"恢复目标不是普通文件: {destination}")
+            if destination.is_file():
+                destination.chmod(destination.stat().st_mode | stat.S_IWRITE)
+            with archive.open(info) as source, destination.open("wb") as output:
+                shutil.copyfileobj(source, output)
+    restored_issues = validate_source_snapshot(
+        plan,
+        manifest_path,
+        backup_path,
+    )
+    if restored_issues:
+        raise RuntimeError(
+            "清理失败后的自动恢复不完整:\n" + "\n".join(restored_issues)
+        )
+
+
 def cleanup_old_directories(
     plan: MigrationPlan,
     report: ValidationReport,
@@ -930,11 +1552,10 @@ def cleanup_old_directories(
     if not report.passed:
         raise RuntimeError("迁移验证未通过，保留全部旧目录")
     records = plan.vault / "90_系统" / "迁移记录"
-    required_records = (
-        records / "2026-07-27-迁移前备份.zip",
-        records / "2026-07-27-文件清单.json",
-        records / "2026-07-27-链接检查.md",
-    )
+    backup = records / MIGRATION_RECORD_NAMES["backup"]
+    manifest = records / MIGRATION_RECORD_NAMES["manifest"]
+    link_report = records / MIGRATION_RECORD_NAMES["link_report"]
+    required_records = (backup, manifest, link_report)
     if not all(path.is_file() for path in required_records):
         raise RuntimeError("缺少迁移快照或文件清单，保留全部旧目录")
     if not all(path.is_dir() for path in plan.old_directories):
@@ -945,33 +1566,103 @@ def cleanup_old_directories(
             raise RuntimeError(f"拒绝删除非 vault 直接子目录: {resolved}")
         if resolved.name not in OLD_DIRECTORIES:
             raise RuntimeError(f"拒绝删除非白名单目录: {resolved}")
-    for old_directory in plan.old_directories:
-        shutil.rmtree(old_directory, onexc=retry_readonly_removal)
+    assert_source_snapshot_consistent(plan, manifest, backup)
+    try:
+        for old_directory in plan.old_directories:
+            shutil.rmtree(old_directory, onexc=retry_readonly_removal)
+    except Exception:
+        restore_old_directories_from_backup(plan, manifest, backup)
+        raise
 
 
 def verify_completed_vault(vault: Path) -> ValidationReport:
     vault = assert_vault(vault)
-    manifest = (
-        vault
-        / "90_系统"
-        / "迁移记录"
-        / "2026-07-27-文件清单.json"
-    )
-    report = validate_migration(vault, manifest)
-    remaining = [
-        name for name in OLD_DIRECTORIES if (vault / name).exists()
+    record_paths = migration_record_paths(vault)
+    issues = [
+        f"迁移记录不是普通文件: {path.name}"
+        for path in record_paths.values()
+        if not path.is_file()
     ]
-    if not remaining:
-        return report
-    issues = report.issues + tuple(
-        f"旧目录仍存在: {name}" for name in remaining
+    report = validate_migration(vault, record_paths["manifest"])
+    issues.extend(report.issues)
+    manifest, strict_issues = validate_manifest_and_backup(
+        vault,
+        record_paths["manifest"],
+        record_paths["backup"],
+        completed=True,
+    )
+    issues.extend(strict_issues)
+
+    is_current_manifest = (
+        isinstance(manifest, dict)
+        and set(manifest) == CURRENT_MANIFEST_KEYS
+    )
+    if is_current_manifest:
+        link_result = manifest.get("link_check_result")
+        expected_link_result = {
+            "result": "passed" if report.passed else "failed",
+            "issues": len(report.issues),
+            "markdown_links_checked": report.local_links_checked,
+            "image_links_checked": report.image_links_checked,
+            "wiki_links_checked": report.wiki_links_checked,
+        }
+        if link_result != expected_link_result:
+            issues.append("迁移清单记录的链接检查结果与重新计算结果不一致")
+
+    link_report_path = record_paths["link_report"]
+    if link_report_path.is_file():
+        try:
+            actual_link_report = link_report_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            issues.append(f"链接检查报告无法读取: {exc}")
+        else:
+            expected_link_report = render_link_report(
+                report,
+                include_wikilinks=is_current_manifest,
+            )
+            if actual_link_report != expected_link_report:
+                issues.append("链接检查报告与重新计算结果不一致")
+
+    summary_path = record_paths["summary"]
+    if summary_path.is_file():
+        try:
+            actual_summary = summary_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            issues.append(f"迁移说明无法读取: {exc}")
+        else:
+            match = re.search(
+                r"(?m)^- 执行时间：(.+)$",
+                actual_summary,
+            )
+            if match is None:
+                issues.append("迁移说明缺少执行时间")
+            else:
+                executed_at = match.group(1)
+                try:
+                    datetime.fromisoformat(executed_at)
+                except ValueError:
+                    issues.append("迁移说明执行时间无效")
+                expected_summary = render_migration_summary(
+                    vault,
+                    report,
+                    executed_at=executed_at,
+                    old_directories_removed=True,
+                )
+                if actual_summary != expected_summary:
+                    issues.append("迁移说明与当前 vault 验证结果不一致")
+
+    issues.extend(
+        f"旧目录仍存在: {name}"
+        for name in OLD_DIRECTORIES
+        if (vault / name).exists()
     )
     return ValidationReport(
-        passed=False,
-        issues=issues,
+        passed=not issues,
+        issues=tuple(issues),
         markdown_files_before=report.markdown_files_before,
         local_links_checked=report.local_links_checked,
         image_links_checked=report.image_links_checked,
+        wiki_links_checked=report.wiki_links_checked,
     )
 
 
@@ -1003,6 +1694,9 @@ def main(argv=None):
     sys.stderr.reconfigure(encoding="utf-8")
     if args.verify:
         report = verify_completed_vault(args.vault)
+        if not report.passed:
+            for issue in report.issues:
+                print(f"验证失败: {issue}", file=sys.stderr)
         return 0 if report.passed else 1
     if args.apply and args.confirm != CONFIRMATION:
         print(
@@ -1012,17 +1706,19 @@ def main(argv=None):
         return 2
     plan = build_migration_plan(args.vault)
     if args.apply:
-        records = plan.vault / "90_系统" / "迁移记录"
-        backup = records / "2026-07-27-迁移前备份.zip"
-        manifest = records / "2026-07-27-文件清单.json"
-        link_report_path = records / "2026-07-27-链接检查.md"
-        summary_path = records / "2026-07-27-迁移说明.md"
+        record_paths = migration_record_paths(plan.vault)
+        backup = record_paths["backup"]
+        manifest = record_paths["manifest"]
+        link_report_path = record_paths["link_report"]
+        summary_path = record_paths["summary"]
 
         create_backup(plan, backup)
         write_manifest(plan, manifest)
+        assert_source_snapshot_consistent(plan, manifest, backup)
         apply_copy_phase(plan)
         report = validate_migration(plan.vault, manifest)
         write_link_report(report, link_report_path)
+        record_manifest_results(manifest, report)
         if not report.passed:
             return 1
         cleanup_old_directories(plan, report)

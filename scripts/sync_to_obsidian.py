@@ -871,6 +871,20 @@ def find_all_note_metadata(
 
 # ─── 主同步 ────────────────────────────────────────────────
 
+def is_unified_llm_wiki_root(vault_path):
+    """判断目标是否为受生命周期目录约束的统一 LLM Wiki 根目录。"""
+    vault_path = Path(vault_path)
+    markers = (
+        vault_path / ".obsidian",
+        vault_path / "00_首页.md",
+        vault_path / "10_项目",
+        vault_path / "20_知识笔记",
+        vault_path / "30_精选资料",
+        vault_path / "90_系统",
+    )
+    return all(path.exists() for path in markers)
+
+
 def sync_to_obsidian(
     vault_path,
     state_file=None,
@@ -893,6 +907,13 @@ def sync_to_obsidian(
         f"HTML片段阈值: {CLIP_SIZE_THRESHOLD // 1024} KB"
     )
     print()
+
+    if is_unified_llm_wiki_root(vault_path):
+        print(
+            "❌ 拒绝全量同步到统一 LLM Wiki 根目录；"
+            "请改用独立暂存目录，再按精选导出规则迁入。"
+        )
+        return False
 
     token, note_store_url = load_config()
     if not token or not note_store_url:

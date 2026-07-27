@@ -214,7 +214,7 @@ def build_note_summary(markdown_text, title):
 
 
 def write_knowledge_base_index(root, domain="AI"):
-    """完整重建知识库根目录的 Markdown 索引。"""
+    """只收录契约匹配的本领域资料，并完整重建目录索引。"""
     root = Path(root)
     notes = []
     month_pattern = re.compile(r"^\d{4}年\d{2}月$")
@@ -223,11 +223,13 @@ def write_knowledge_base_index(root, domain="AI"):
             month_dir.name
         ):
             continue
-        notes.extend(
-            extract_note_metadata(path)
-            for path in month_dir.glob("*.md")
-            if path.name != INDEX_FILENAME
-        )
+        for path in month_dir.glob("*.md"):
+            if path.name == INDEX_FILENAME:
+                continue
+            fields, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+            if fields.get("type") != "资料" or fields.get("domain") != domain:
+                continue
+            notes.append(extract_note_metadata(path))
 
     grouped = {}
     for note in notes:
@@ -249,6 +251,7 @@ def write_knowledge_base_index(root, domain="AI"):
         f"> 本文件列出 {domain} 领域的全部精选资料，提供位置和简要说明。",
         "",
         "> [!info] 构建规则",
+        f"> 只收录 `type: 资料` 且 `domain: {domain}` 的文档；缺失或不匹配时忽略。",
         "> 扫描本目录的年月归档，按创建月份和创建时间倒序排列。",
         "> 简介由首段有效正文和目录大纲综合生成；本文件可由导出脚本完整重建，不保存人工评论。",
         "",

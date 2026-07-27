@@ -16,7 +16,7 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-在 `.env` 中填写令牌页面显示的 `EVERNOTE_TOKEN` 和 `EVERNOTE_NOTESTORE_URL`。可用 `OBSIDIAN_VAULT_PATH` 设置默认 vault。环境变量优先。
+在 `.env` 中填写令牌页面显示的 `EVERNOTE_TOKEN` 和 `EVERNOTE_NOTESTORE_URL`。`OBSIDIAN_VAULT_PATH` 只用于全量同步的独立暂存目录，不能指向统一 LLM Wiki 根目录。环境变量优先。
 
 ## 快速参考
 
@@ -27,7 +27,7 @@ Copy-Item .env.example .env
 | 搜索 | `python scripts/search_notes.py "intitle:Agent" --max-results 10` | 只读 |
 | 查看废纸篓 | `python scripts/list_trash.py --max-count 20` | 只读 |
 | 下载 ENML | `python scripts/get_note_enml.py --guid "GUID" --output ".\note.xml"` | 只读账户 |
-| 同步 vault | `python scripts/sync_to_obsidian.py --vault "D:\vault"` | 只读账户 |
+| 全量同步到暂存区 | `python scripts/sync_to_obsidian.py --vault "D:\OneDrive\文档\@_Obsidian_全量同步暂存"` | 只读账户 |
 | 创建 | `python scripts/create_note.py --title "标题" --content "<en-note>内容</en-note>"` | 修改账户 |
 | 更新 | `python scripts/update_note.py --guid "GUID" --title "新标题"` | 修改账户 |
 | 移入废纸篓 | `python scripts/delete_note.py --guid "GUID" --confirm` | 修改账户 |
@@ -44,8 +44,9 @@ Copy-Item .env.example .env
 python scripts/export_search_results.py `
   --since 2025-07-26 `
   --keywords AI Agent 人工智能 `
+  --domain AI `
   --limit 3 `
-  --target "D:\vault\AI相关知识库"
+  --target "D:\OneDrive\文档\@_Obsidian\30_精选资料\AI"
 ```
 
 输出契约：
