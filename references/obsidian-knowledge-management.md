@@ -62,7 +62,7 @@ python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsid
 python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT
 ```
 
-执行前会创建 ZIP 快照，并生成迁移清单和本地链接报告。验证失败不会删除旧目录；只有复制、元数据补齐、索引与链接验证均通过后，才允许在后续人工确认的清理阶段处理旧目录。迁移脚本不会访问印象笔记帐号，也不读取 Developer Token。
+执行前会创建 ZIP 快照，并生成迁移清单和本地链接报告。迁移保留 `30_精选资料/AI/_attachments` 中的图片文件以及文章对图片的相对引用布局，验证阶段会检查这些图片引用可解析。验证失败不会删除旧目录；只有复制、元数据补齐、索引与链接验证均通过后，才允许在后续人工确认的清理阶段处理旧目录。迁移脚本不会访问印象笔记帐号，也不读取 Developer Token。
 
 ## 双层内容与 Properties
 

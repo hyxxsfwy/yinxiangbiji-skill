@@ -213,30 +213,88 @@ class SkillDocumentationTests(unittest.TestCase):
         reference = (
             REPO_ROOT / "references" / "obsidian-knowledge-management.md"
         ).read_text(encoding="utf-8")
-        combined = self.skill + self.readme + reference
+        tree = re.search(
+            r"## 最终目录\n\n```text\n(.*?)\n```", reference, re.DOTALL
+        ).group(1)
+        top_level = re.findall(r"(?m)^[├└]── ([^\n]+)$", tree)
+        self.assertEqual(
+            top_level,
+            [
+                "00_首页.md",
+                "10_项目/",
+                "20_知识笔记/",
+                "30_精选资料/",
+                "90_系统/",
+                "99_归档/",
+            ],
+        )
 
-        for phrase in (
-            "10_项目",
-            "20_知识笔记",
-            "30_精选资料",
-            "90_系统/知识库治理",
-            "整个 vault 是 LLM Wiki",
-            "20_知识笔记/目录索引.md",
-            "20_知识笔记/知识地图.md",
-            "scripts/restructure_obsidian_vault.py",
-            "--confirm MIGRATE_OBSIDIAN_VAULT",
-            r"30_精选资料\AI",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, combined)
+        project_tree = tree.split("├── 10_项目/", 1)[1].split(
+            "├── 20_知识笔记/", 1
+        )[0]
+        self.assertEqual(
+            re.findall(r"(?m)^│   └── ([^\n]+)$", project_tree), ["目录索引.md"]
+        )
+        self.assertIn("暂不预建领域目录", reference)
 
-        for obsolete in (
-            "10_知识库",
-            "20_项目",
-            "90_系统/LLM Wiki/",
-        ):
-            with self.subTest(obsolete=obsolete):
-                self.assertNotIn(obsolete, reference)
+        knowledge_tree = tree.split("├── 20_知识笔记/", 1)[1].split(
+            "├── 30_精选资料/", 1
+        )[0]
+        knowledge_root_files = re.findall(
+            r"(?m)^│   [├└]── ([^/\n]+\.md)$", knowledge_tree
+        )
+        self.assertEqual(knowledge_root_files, ["目录索引.md", "知识地图.md"])
+
+        self.assertIn("整个 vault 是 LLM Wiki", reference)
+        self.assertNotIn("10_知识库", reference)
+        self.assertNotIn("20_项目", reference)
+        self.assertNotIn("90_系统/LLM Wiki/", reference)
+
+        self.assertEqual(
+            [
+                line
+                for line in self.skill.splitlines()
+                if "scripts/restructure_obsidian_vault.py" in line
+            ],
+            [
+                '| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian"` | 只读本地 |',
+                '| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |',
+                '| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian" --verify` | 只读本地 |',
+            ],
+        )
+
+        migration_commands = [
+            line.strip()
+            for block in re.findall(
+                r"```powershell\n(.*?)\n```",
+                self.readme,
+                re.DOTALL,
+            )
+            for line in block.splitlines()
+            if "restructure_obsidian_vault.py" in line
+        ]
+        self.assertEqual(
+            migration_commands,
+            [
+                'python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian"',
+                'python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT',
+                'python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian" --verify',
+            ],
+        )
+        preview, apply, verify = migration_commands
+        self.assertNotIn("--apply", preview)
+        self.assertNotIn("--confirm", preview)
+        self.assertIn("--verify", verify)
+        self.assertNotIn("--apply", verify)
+        self.assertIn("--apply --confirm MIGRATE_OBSIDIAN_VAULT", apply)
+        self.assertIn("预览和验证均只读本地 vault", reference)
+
+        export_block = next(
+            block
+            for block in re.findall(r"```powershell\n(.*?)\n```", self.readme, re.DOTALL)
+            if "scripts/export_search_results.py" in block and "--domain AI" in block
+        )
+        self.assertIn('--target "D:\\OneDrive\\文档\\@_Obsidian\\30_精选资料\\AI"', export_block)
 
     def test_documents_distinct_catalog_map_and_source_index_rules(self):
         reference = (
@@ -251,6 +309,25 @@ class SkillDocumentationTests(unittest.TestCase):
             "每个领域保留一份独立的 `目录索引.md`",
         ):
             self.assertIn(phrase, reference)
+
+    def test_documents_vault_environment_and_image_safety_contract(self):
+        reference = (
+            REPO_ROOT / "references" / "obsidian-knowledge-management.md"
+        ).read_text(encoding="utf-8")
+        environment = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+
+        vault_path = re.search(
+            r"(?m)^OBSIDIAN_VAULT_PATH=(.+)$", environment
+        ).group(1)
+        self.assertEqual(vault_path, r"D:\OneDrive\文档\@_Obsidian")
+        self.assertNotRegex(vault_path, r"30_精选资料|20_知识笔记|_attachments")
+
+        migration_section = reference.split("## 迁移与验证", 1)[1].split(
+            "## 双层内容与 Properties", 1
+        )[0]
+        self.assertIn("30_精选资料/AI/_attachments", migration_section)
+        self.assertIn("文章对图片的相对引用布局", migration_section)
+        self.assertIn("验证阶段会检查这些图片引用可解析", migration_section)
 
     def test_every_user_command_has_non_mutating_help(self):
         command_scripts = [
