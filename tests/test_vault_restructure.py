@@ -398,6 +398,72 @@ class LinkValidationTests(unittest.TestCase):
             self.assertEqual(scan_local_links(vault), ())
 
 
+class ValidationRobustnessTests(unittest.TestCase):
+    def test_required_markdown_directory_is_reported_as_missing_file(self):
+        from scripts.restructure_obsidian_vault import (
+            apply_copy_phase,
+            build_migration_plan,
+            validate_migration,
+            write_manifest,
+        )
+
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            plan = build_migration_plan(vault)
+            manifest = (
+                vault
+                / "90_系统"
+                / "迁移记录"
+                / "2026-07-27-文件清单.json"
+            )
+            write_manifest(plan, manifest)
+            apply_copy_phase(plan)
+            required_markdown = vault / "00_首页.md"
+            required_markdown.unlink()
+            required_markdown.mkdir()
+
+            report = validate_migration(vault, manifest)
+
+        self.assertFalse(report.passed)
+        self.assertIn(f"缺少必需路径: {required_markdown}", report.issues)
+
+    def test_arbitrary_markdown_directory_is_skipped_and_issue_is_reported(self):
+        from scripts.restructure_obsidian_vault import (
+            apply_copy_phase,
+            build_migration_plan,
+            validate_migration,
+            write_manifest,
+        )
+
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            plan = build_migration_plan(vault)
+            manifest = (
+                vault
+                / "90_系统"
+                / "迁移记录"
+                / "2026-07-27-文件清单.json"
+            )
+            write_manifest(plan, manifest)
+            apply_copy_phase(plan)
+            (vault / "A.md").mkdir()
+            (vault / "z-broken.md").write_text(
+                "[缺失](missing.txt)\n",
+                encoding="utf-8",
+            )
+
+            report = validate_migration(vault, manifest)
+
+        self.assertFalse(report.passed)
+        self.assertTrue(
+            any(
+                "missing.txt: 目标不存在" in issue
+                for issue in report.issues
+            ),
+            report.issues,
+        )
+
+
 class CleanupGateTests(unittest.TestCase):
     def test_validation_failure_keeps_all_old_directories(self):
         from scripts.restructure_obsidian_vault import (

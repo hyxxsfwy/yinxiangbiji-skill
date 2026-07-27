@@ -94,6 +94,8 @@ def assert_vault(vault: Path) -> Path:
 
 def iter_managed_markdown(vault: Path):
     for path in sorted(Path(vault).rglob("*.md")):
+        if not path.is_file():
+            continue
         relative = path.relative_to(vault)
         if ".obsidian" in relative.parts:
             continue
@@ -812,7 +814,7 @@ def validate_migration(
         for domain in DOMAINS
     )
     for path in required_paths:
-        if not path.exists():
+        if not path.is_file():
             issues.append(f"缺少必需路径: {path}")
 
     for record in manifest["files"]:
