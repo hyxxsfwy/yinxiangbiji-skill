@@ -135,4 +135,3 @@ python -m compileall -q scripts tests
 git diff --check
 python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --verify
 ```
-

@@ -21,11 +21,23 @@ except ModuleNotFoundError:
 
 CONFIRMATION = "MIGRATE_OBSIDIAN_VAULT"
 DOMAINS = ("AI", "Quant", "软件工程", "投资理财", "个人成长")
-OLD_DIRECTORIES = ("AI相关知识库", "Quant相关知识库", "HYXX个人知识库")
+LEGACY_CONTENT_DIRECTORIES = (
+    "AI相关知识库",
+    "Quant相关知识库",
+    "HYXX个人知识库",
+)
+LEGACY_LIFECYCLE_MAPPINGS = {
+    "90_系统": "80_系统",
+    "99_归档": "90_归档",
+}
+OLD_DIRECTORIES = (
+    *LEGACY_CONTENT_DIRECTORIES,
+    *LEGACY_LIFECYCLE_MAPPINGS,
+)
 QUANT_FILENAME = "GPT-6也救不了平庸策略：Vibe Quant 的反思.md"
 CODEX_FILENAME = "Codex CLI 使用技巧记录.md"
 INLINE_LINK_START = re.compile(r"(!?)\[[^\]\n]*\]\(")
-WIKILINK = re.compile(r"(!?)\[\[([^\]\n]+)\]\]")
+WIKILINK = re.compile(r"(!?)\[\[([^\]\n]+)\]\](?!\()")
 EXTERNAL_SCHEMES = ("http:", "https:", "mailto:", "data:")
 MIGRATION_RECORD_NAMES = {
     "backup": "2026-07-27-迁移前备份.zip",
@@ -193,7 +205,29 @@ def _destination_without_title(raw: str) -> str:
     return value
 
 
+def _without_markdown_code_blocks(markdown: str) -> str:
+    """移除围栏和缩进代码块，避免把示例链接当成真实引用。"""
+    rendered = []
+    fence = None
+    for line in markdown.splitlines(keepends=True):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            value = marker.group(1)
+            if fence is None:
+                fence = (value[0], len(value))
+            elif value[0] == fence[0] and len(value) >= fence[1]:
+                fence = None
+            rendered.append("\n" if line.endswith(("\n", "\r")) else "")
+            continue
+        if fence is not None or line.startswith(("    ", "\t")):
+            rendered.append("\n" if line.endswith(("\n", "\r")) else "")
+            continue
+        rendered.append(line)
+    return "".join(rendered)
+
+
 def iter_markdown_references(markdown: str):
+    markdown = _without_markdown_code_blocks(markdown)
     for match in INLINE_LINK_START.finditer(markdown):
         parsed = _inline_destination(markdown, match.end())
         if parsed is None:
@@ -338,7 +372,7 @@ def count_wikilinks(vault: Path) -> int:
 
 def build_migration_plan(vault: Path) -> MigrationPlan:
     vault = assert_vault(vault)
-    items = (
+    content_items = (
         MigrationItem(
             vault / "AI相关知识库",
             vault / "30_精选资料" / "AI",
@@ -355,14 +389,88 @@ def build_migration_plan(vault: Path) -> MigrationPlan:
             "copy_file",
         ),
     )
-    missing = [str(item.source) for item in items if not item.source.exists()]
-    if missing:
-        raise FileNotFoundError("缺少迁移源:\n" + "\n".join(missing))
+    items = []
+    if any((vault / name).exists() for name in LEGACY_CONTENT_DIRECTORIES):
+        missing = [
+            str(item.source)
+            for item in content_items
+            if not item.source.exists()
+        ]
+        if missing:
+            raise FileNotFoundError("缺少迁移源:\n" + "\n".join(missing))
+        items.extend(content_items)
+    for source_name, destination_name in LEGACY_LIFECYCLE_MAPPINGS.items():
+        source = vault / source_name
+        if source.exists():
+            items.append(
+                MigrationItem(
+                    source,
+                    vault / destination_name,
+                    "copy_tree",
+                )
+            )
     return MigrationPlan(
         vault=vault,
-        items=items,
-        old_directories=tuple(vault / name for name in OLD_DIRECTORIES),
+        items=tuple(items),
+        old_directories=tuple(
+            vault / name
+            for name in OLD_DIRECTORIES
+            if (vault / name).exists()
+        ),
     )
+
+
+def find_migration_conflicts(plan: MigrationPlan) -> tuple[str, ...]:
+    conflicts = []
+    for item in plan.items:
+        if item.source.name not in LEGACY_LIFECYCLE_MAPPINGS:
+            continue
+        if item.operation == "copy_file":
+            candidates = ((item.source, item.destination),)
+        else:
+            candidates = tuple(
+                (
+                    source,
+                    item.destination / source.relative_to(item.source),
+                )
+                for source in sorted(item.source.rglob("*"))
+            )
+            if item.destination.exists() and not item.destination.is_dir():
+                conflicts.append(
+                    f"目标类型冲突: {item.destination.relative_to(plan.vault).as_posix()}"
+                )
+        for source, destination in candidates:
+            if not destination.exists():
+                continue
+            relative = destination.relative_to(plan.vault).as_posix()
+            if source.is_dir():
+                if not destination.is_dir():
+                    conflicts.append(f"目标类型冲突: {relative}")
+                continue
+            if not destination.is_file():
+                conflicts.append(f"目标类型冲突: {relative}")
+            elif (
+                expected_migration_bytes(plan, source)
+                != destination.read_bytes()
+            ):
+                conflicts.append(f"目标内容冲突: {relative}")
+    return tuple(dict.fromkeys(conflicts))
+
+
+def expected_migration_bytes(plan: MigrationPlan, source: Path) -> bytes:
+    content = source.read_bytes()
+    relative = source.relative_to(plan.vault)
+    if (
+        relative.parts
+        and relative.parts[0] in LEGACY_LIFECYCLE_MAPPINGS
+        and source.suffix.lower() == ".md"
+    ):
+        return (
+            content
+            .replace("90_系统/".encode(), "80_系统/".encode())
+            .replace("99_归档/".encode(), "90_归档/".encode())
+        )
+    return content
 
 
 def sha256_file(path: Path) -> str:
@@ -383,6 +491,12 @@ def iter_old_files(plan: MigrationPlan):
 def destination_for_source(plan: MigrationPlan, source: Path) -> Path | None:
     relative = source.relative_to(plan.vault)
     parts = relative.parts
+    if parts[0] in LEGACY_LIFECYCLE_MAPPINGS:
+        return (
+            plan.vault
+            / LEGACY_LIFECYCLE_MAPPINGS[parts[0]]
+            / Path(*parts[1:])
+        )
     if parts[0] == "AI相关知识库":
         return plan.vault / "30_精选资料" / "AI" / Path(*parts[1:])
     if relative.as_posix() == (
@@ -537,8 +651,23 @@ def record_manifest_results(
     return manifest_path
 
 
-def migration_record_paths(vault: Path) -> dict[str, Path]:
-    records = Path(vault) / "90_系统" / "迁移记录"
+def migration_record_paths(
+    vault: Path,
+    plan: MigrationPlan | None = None,
+) -> dict[str, Path]:
+    records = Path(vault) / "80_系统" / "迁移记录"
+    if plan is not None and any(
+        path.name == "90_系统"
+        for path in plan.old_directories
+    ):
+        records = records / "目录重编号"
+    elif plan is None:
+        renumbered = records / "目录重编号"
+        if all(
+            (renumbered / filename).is_file()
+            for filename in MIGRATION_RECORD_NAMES.values()
+        ):
+            records = renumbered
     return {
         key: records / filename
         for key, filename in MIGRATION_RECORD_NAMES.items()
@@ -547,6 +676,14 @@ def migration_record_paths(vault: Path) -> dict[str, Path]:
 
 def expected_destination_for_source(source: str) -> str | None:
     relative = PurePosixPath(source)
+    if (
+        relative.parts
+        and relative.parts[0] in LEGACY_LIFECYCLE_MAPPINGS
+    ):
+        return PurePosixPath(
+            LEGACY_LIFECYCLE_MAPPINGS[relative.parts[0]],
+            *relative.parts[1:],
+        ).as_posix()
     if relative.parts and relative.parts[0] == "AI相关知识库":
         return PurePosixPath(
             "30_精选资料",
@@ -851,13 +988,14 @@ def ensure_target_structure(plan: MigrationPlan):
         "10_项目",
         "20_知识笔记",
         "30_精选资料",
-        "90_系统/模板",
-        "90_系统/Bases",
-        "90_系统/知识库治理/审核队列",
-        "90_系统/知识库治理/审核日志",
-        "90_系统/知识库治理/变更快照",
-        "90_系统/迁移记录",
-        "99_归档",
+        "80_系统/模板",
+        "80_系统/Bases",
+        "80_系统/知识库治理/审核队列",
+        "80_系统/知识库治理/审核日志",
+        "80_系统/知识库治理/变更快照",
+        "80_系统/迁移记录",
+        "90_归档",
+        "99_废纸篓",
     )
     for relative in fixed_directories:
         (vault / relative).mkdir(parents=True, exist_ok=True)
@@ -901,8 +1039,8 @@ llm_policy: strict
 
 ## 系统
 
-- [[90_系统/知识库治理/管理规则|管理规则]]
-- [[90_系统/知识库治理/主题词表|主题词表]]
+- [[80_系统/知识库治理/管理规则|管理规则]]
+- [[80_系统/知识库治理/主题词表|主题词表]]
 """
 
 
@@ -924,7 +1062,7 @@ llm_policy: strict
 > [!info] 构建规则
 > 暂不预建领域目录；出现实际项目后按项目名称建文件夹。
 > 项目完成后，通用认识提炼到 `20_知识笔记`，原始资料进入
-> `30_精选资料`，其余过程材料进入 `99_归档`。
+> `30_精选资料`，其余过程材料进入 `90_归档`。
 > AI 可以补充状态摘要，但不得自动移动、归档或删除项目。
 
 ## 当前项目
@@ -1195,7 +1333,7 @@ def install_templates(plan: MigrationPlan):
     }
     for source_name, destination_name in mappings.items():
         source = repo_root / "templates" / source_name
-        destination = plan.vault / "90_系统" / "模板" / destination_name
+        destination = plan.vault / "80_系统" / "模板" / destination_name
         write_expected_text(
             destination,
             source.read_text(encoding="utf-8"),
@@ -1204,6 +1342,8 @@ def install_templates(plan: MigrationPlan):
 
 def copy_mapped_content(plan: MigrationPlan):
     old_ai = plan.vault / "AI相关知识库"
+    if not old_ai.exists():
+        return
     new_ai = plan.vault / "30_精选资料" / "AI"
     for source in sorted(old_ai.rglob("*")):
         if not source.is_file() or source.name == "目录索引.md":
@@ -1287,8 +1427,40 @@ def copy_mapped_content(plan: MigrationPlan):
     write_expected_text(codex_destination, codex_expected)
 
 
+def copy_lifecycle_content(plan: MigrationPlan):
+    for old_name in LEGACY_LIFECYCLE_MAPPINGS:
+        source_root = plan.vault / old_name
+        if not source_root.is_dir():
+            continue
+        for source in sorted(source_root.rglob("*")):
+            destination = destination_for_source(plan, source)
+            if destination is None:
+                continue
+            if source.is_dir():
+                if destination.exists() and not destination.is_dir():
+                    raise FileExistsError(
+                        f"目标已存在且不是目录: {destination}"
+                    )
+                destination.mkdir(parents=True, exist_ok=True)
+            elif source.is_file():
+                expected = expected_migration_bytes(plan, source)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if destination.exists():
+                    if not destination.is_file():
+                        raise FileExistsError(
+                            f"目标已存在且不是文件: {destination}"
+                        )
+                    if destination.read_bytes() == expected:
+                        continue
+                    raise FileExistsError(
+                        f"目标已存在且内容不同: {destination}"
+                    )
+                destination.write_bytes(expected)
+
+
 def apply_copy_phase(plan: MigrationPlan):
     ensure_target_structure(plan)
+    copy_lifecycle_content(plan)
     copy_mapped_content(plan)
     install_templates(plan)
     write_vault_documents(plan)
@@ -1300,9 +1472,9 @@ def write_vault_documents(plan: MigrationPlan):
         vault / "00_首页.md": render_home(),
         vault / "10_项目" / "目录索引.md": render_project_index(),
         vault / "20_知识笔记" / "知识地图.md": render_knowledge_map(),
-        vault / "90_系统" / "知识库治理" / "管理规则.md": render_management_rules(),
-        vault / "90_系统" / "知识库治理" / "主题词表.md": render_topic_vocabulary(),
-        vault / "90_系统" / "知识库治理" / "别名词典.md": render_alias_dictionary(),
+        vault / "80_系统" / "知识库治理" / "管理规则.md": render_management_rules(),
+        vault / "80_系统" / "知识库治理" / "主题词表.md": render_topic_vocabulary(),
+        vault / "80_系统" / "知识库治理" / "别名词典.md": render_alias_dictionary(),
     }
     for destination, content in documents.items():
         write_expected_text(destination, content)
@@ -1325,22 +1497,34 @@ def validate_migration(
         completed=False,
     )
     issues = list(manifest_issues)
-    required_paths = [
+    required_files = [
         vault / "00_首页.md",
         vault / "10_项目" / "目录索引.md",
         vault / "20_知识笔记" / "目录索引.md",
         vault / "20_知识笔记" / "知识地图.md",
-        vault / "90_系统" / "知识库治理" / "管理规则.md",
-        vault / "90_系统" / "知识库治理" / "主题词表.md",
-        vault / "90_系统" / "知识库治理" / "别名词典.md",
+        vault / "80_系统" / "知识库治理" / "管理规则.md",
+        vault / "80_系统" / "知识库治理" / "主题词表.md",
+        vault / "80_系统" / "知识库治理" / "别名词典.md",
     ]
-    required_paths.extend(
+    required_files.extend(
         vault / "30_精选资料" / domain / "目录索引.md"
         for domain in DOMAINS
     )
-    for path in required_paths:
+    for path in required_files:
         if not path.is_file():
             issues.append(f"缺少必需路径: {path}")
+    required_directories = [
+        vault / "01_收件箱",
+        vault / "10_项目",
+        vault / "20_知识笔记",
+        vault / "30_精选资料",
+        vault / "80_系统",
+        vault / "90_归档",
+        vault / "99_废纸篓",
+    ]
+    for path in required_directories:
+        if not path.is_dir():
+            issues.append(f"缺少必需目录: {path}")
 
     records = (
         manifest.get("files", [])
@@ -1378,10 +1562,10 @@ def validate_migration(
 
     for markdown_path in iter_managed_markdown(vault):
         relative = markdown_path.relative_to(vault)
-        if relative.parts[:2] == ("90_系统", "迁移记录"):
+        if relative.parts[:2] == ("80_系统", "迁移记录"):
             continue
         text = markdown_path.read_text(encoding="utf-8")
-        for old_name in OLD_DIRECTORIES:
+        for old_name in LEGACY_CONTENT_DIRECTORIES:
             if old_name in text:
                 issues.append(
                     f"新结构仍引用旧目录: "
@@ -1442,6 +1626,7 @@ def render_migration_summary(
     *,
     executed_at: str,
     old_directories_removed: bool,
+    include_lifecycle_mappings: bool = True,
 ) -> str:
     lines = [
         "# Obsidian vault 迁移说明",
@@ -1457,7 +1642,7 @@ def render_migration_summary(
         "## 路径映射",
         "",
     ]
-    mappings = (
+    mappings = [
         (
             Path("AI相关知识库"),
             Path("30_精选资料") / "AI",
@@ -1470,7 +1655,14 @@ def render_migration_summary(
             Path("HYXX个人知识库") / CODEX_FILENAME,
             Path("20_知识笔记") / "软件工程" / CODEX_FILENAME,
         ),
-    )
+    ]
+    if include_lifecycle_mappings:
+        mappings.extend(
+            (
+                (Path("90_系统"), Path("80_系统")),
+                (Path("99_归档"), Path("90_归档")),
+            )
+        )
     for source, destination in mappings:
         lines.append(
             f"- `{source}` → `{destination}`"
@@ -1551,10 +1743,10 @@ def cleanup_old_directories(
 ):
     if not report.passed:
         raise RuntimeError("迁移验证未通过，保留全部旧目录")
-    records = plan.vault / "90_系统" / "迁移记录"
-    backup = records / MIGRATION_RECORD_NAMES["backup"]
-    manifest = records / MIGRATION_RECORD_NAMES["manifest"]
-    link_report = records / MIGRATION_RECORD_NAMES["link_report"]
+    record_paths = migration_record_paths(plan.vault, plan)
+    backup = record_paths["backup"]
+    manifest = record_paths["manifest"]
+    link_report = record_paths["link_report"]
     required_records = (backup, manifest, link_report)
     if not all(path.is_file() for path in required_records):
         raise RuntimeError("缺少迁移快照或文件清单，保留全部旧目录")
@@ -1648,7 +1840,14 @@ def verify_completed_vault(vault: Path) -> ValidationReport:
                     executed_at=executed_at,
                     old_directories_removed=True,
                 )
-                if actual_summary != expected_summary:
+                legacy_summary = render_migration_summary(
+                    vault,
+                    report,
+                    executed_at=executed_at,
+                    old_directories_removed=True,
+                    include_lifecycle_mappings=False,
+                )
+                if actual_summary not in (expected_summary, legacy_summary):
                     issues.append("迁移说明与当前 vault 验证结果不一致")
 
     issues.extend(
@@ -1706,7 +1905,18 @@ def main(argv=None):
         return 2
     plan = build_migration_plan(args.vault)
     if args.apply:
-        record_paths = migration_record_paths(plan.vault)
+        if not plan.old_directories:
+            report = verify_completed_vault(plan.vault)
+            if not report.passed:
+                for issue in report.issues:
+                    print(f"验证失败: {issue}", file=sys.stderr)
+            return 0 if report.passed else 1
+        conflicts = find_migration_conflicts(plan)
+        if conflicts:
+            for conflict in conflicts:
+                print(f"迁移冲突: {conflict}", file=sys.stderr)
+            return 1
+        record_paths = migration_record_paths(plan.vault, plan)
         backup = record_paths["backup"]
         manifest = record_paths["manifest"]
         link_report_path = record_paths["link_report"]

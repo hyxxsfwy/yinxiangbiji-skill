@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""按日期和关键词搜索印象笔记，并导出指定数量到 Obsidian。"""
+"""按日期区间和关键词搜索印象笔记，并导出到 Obsidian。"""
 
 import argparse
 from datetime import date, datetime
@@ -60,9 +60,12 @@ except ImportError:
     )
 
 
-def build_keyword_queries(keywords, since):
+def build_keyword_queries(keywords, since, until=None):
     since_text = since.strftime("%Y%m%d")
-    return [f"created:{since_text} {keyword}" for keyword in keywords]
+    date_terms = f"created:{since_text}"
+    if until is not None:
+        date_terms += f" -created:{until:%Y%m%d}"
+    return [f"{date_terms} {keyword}" for keyword in keywords]
 
 
 def positive_int(value):
@@ -70,6 +73,13 @@ def positive_int(value):
     if parsed <= 0:
         raise argparse.ArgumentTypeError("必须是大于 0 的整数")
     return parsed
+
+
+def export_limit(value):
+    """解析正整数或表示不限数量的 ``all``。"""
+    if str(value).casefold() == "all":
+        return None
+    return positive_int(value)
 
 
 def note_freshness_key(note):
@@ -125,6 +135,7 @@ def search_metadata_batches(
     keywords,
     since,
     max_per_keyword=250,
+    until=None,
 ):
     result_spec = NoteStore.NotesMetadataResultSpec(
         includeTitle=True,
@@ -135,7 +146,7 @@ def search_metadata_batches(
     )
     batches = []
     totals = []
-    for query in build_keyword_queries(keywords, since):
+    for query in build_keyword_queries(keywords, since, until=until):
         note_filter = NoteStore.NoteFilter(
             words=query,
             order=NoteSortOrder.UPDATED,
@@ -243,6 +254,11 @@ def main():
         help="创建日期下限，格式 YYYY-MM-DD",
     )
     parser.add_argument(
+        "--until",
+        type=date.fromisoformat,
+        help="创建日期上限（不含当日），格式 YYYY-MM-DD",
+    )
+    parser.add_argument(
         "--keywords",
         nargs="+",
         default=["AI", "Agent", "人工智能"],
@@ -250,9 +266,9 @@ def main():
     )
     parser.add_argument(
         "--limit",
-        type=positive_int,
+        type=export_limit,
         default=3,
-        help="导出数量",
+        help="导出数量，使用 all 导出全部候选",
     )
     parser.add_argument(
         "--max-per-keyword",
@@ -273,6 +289,8 @@ def main():
         help="精选资料所属领域（默认 AI）",
     )
     args = parser.parse_args()
+    if args.until is not None and args.until <= args.since:
+        parser.error("--until 必须晚于 --since")
 
     token, note_store_url = load_config()
     if not token or not note_store_url:
@@ -285,7 +303,8 @@ def main():
         token,
         args.keywords,
         args.since,
-        args.max_per_keyword,
+        max_per_keyword=args.max_per_keyword,
+        until=args.until,
     )
     for keyword, total, batch in zip(args.keywords, totals, batches):
         print(f"关键词 {keyword}: 共 {total} 条，拉取 {len(batch)} 条候选")
@@ -298,7 +317,7 @@ def main():
     notebooks = note_store.listNotebooks(token)
     notebook_map = {notebook.guid: notebook.name for notebook in notebooks}
 
-    print(f"\n选中前 {len(selected)} 篇：")
+    print(f"\n选中 {len(selected)} 篇：")
     exported_paths = []
     for index, metadata in enumerate(selected, 1):
         created = datetime.fromtimestamp(metadata.created / 1000)

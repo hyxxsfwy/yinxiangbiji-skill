@@ -175,7 +175,7 @@ class SkillDocumentationTests(unittest.TestCase):
             with self.subTest(operation=human_review_operation):
                 self.assertIn(human_review_operation, reference)
 
-        self.assertIn("90_系统/知识库治理/", reference)
+        self.assertIn("80_系统/知识库治理/", reference)
         for asset in (
             "管理规则.md",
             "主题词表.md",
@@ -225,8 +225,9 @@ class SkillDocumentationTests(unittest.TestCase):
                 "10_项目/",
                 "20_知识笔记/",
                 "30_精选资料/",
-                "90_系统/",
-                "99_归档/",
+                "80_系统/",
+                "90_归档/",
+                "99_废纸篓/",
             ],
         )
 
@@ -247,6 +248,10 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertEqual(knowledge_root_files, ["目录索引.md", "知识地图.md"])
 
         self.assertIn("整个 vault 是 LLM Wiki", reference)
+        self.assertIn(
+            "旧 `90_系统`和`99_归档`由重组脚本自动迁移",
+            reference,
+        )
         self.assertNotIn("10_知识库", reference)
         self.assertNotIn("20_项目", reference)
         self.assertNotIn("90_系统/LLM Wiki/", reference)

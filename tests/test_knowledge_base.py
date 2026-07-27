@@ -359,6 +359,28 @@ class ArchiveTests(unittest.TestCase):
             )
             self.assertFalse(newer.exists())
 
+    def test_does_not_rename_a_unique_archived_note_from_its_heading(self):
+        from scripts.knowledge_base import deduplicate_archived_notes
+
+        with workspace_temp_dir() as root:
+            original = write_note(
+                root / "2026年06月" / "稳定的历史文件名.md",
+                title="[标题链接](https://example.com/article)",
+                created="2026-06-12 10:00:00",
+                updated="2026-06-12 10:00:00",
+                guid="unique-note",
+                body="正文内容足够形成简介。",
+            )
+
+            removed = deduplicate_archived_notes(root)
+
+            self.assertEqual(removed, [])
+            self.assertTrue(original.exists())
+            self.assertEqual(
+                list((root / "2026年06月").glob("*.md")),
+                [original],
+            )
+
     def test_finalization_is_idempotent_and_rebuilds_index(self):
         from scripts.knowledge_base import finalize_knowledge_base
 

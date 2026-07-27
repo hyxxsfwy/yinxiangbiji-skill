@@ -61,7 +61,7 @@ def apply_fixture_vault(vault):
     )
     if result.returncode != 0:
         raise AssertionError(result.stderr or result.stdout)
-    return vault / "90_系统" / "迁移记录"
+    return vault / "80_系统" / "迁移记录"
 
 
 def prepare_cleanup_fixture(vault):
@@ -76,7 +76,7 @@ def prepare_cleanup_fixture(vault):
 
     seed_old_vault(vault)
     plan = build_migration_plan(vault)
-    records = vault / "90_系统" / "迁移记录"
+    records = vault / "80_系统" / "迁移记录"
     backup = records / "2026-07-27-迁移前备份.zip"
     manifest = records / "2026-07-27-文件清单.json"
     create_backup(plan, backup)
@@ -122,6 +122,71 @@ class MigrationPlanTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r"\.obsidian"):
                 build_migration_plan(vault)
 
+    def test_plan_includes_existing_lifecycle_directories(self):
+        from scripts.restructure_obsidian_vault import build_migration_plan
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "90_系统" / "模板").mkdir(parents=True)
+            (vault / "90_系统" / "模板" / "旧模板.md").write_text(
+                "# 旧模板\n",
+                encoding="utf-8",
+            )
+            (vault / "99_归档" / "旧项目").mkdir(parents=True)
+            (vault / "99_归档" / "旧项目" / "结项.md").write_text(
+                "# 结项\n",
+                encoding="utf-8",
+            )
+
+            plan = build_migration_plan(vault)
+            mappings = {
+                item.source.relative_to(vault).as_posix():
+                item.destination.relative_to(vault).as_posix()
+                for item in plan.items
+            }
+
+        self.assertEqual(mappings["90_系统"], "80_系统")
+        self.assertEqual(mappings["99_归档"], "90_归档")
+
+    def test_preflight_accepts_same_content_but_rejects_different_content(self):
+        from scripts.restructure_obsidian_vault import (
+            build_migration_plan,
+            find_migration_conflicts,
+        )
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            source = vault / "90_系统" / "模板" / "模板.md"
+            destination = vault / "80_系统" / "模板" / "模板.md"
+            source.parent.mkdir(parents=True)
+            destination.parent.mkdir(parents=True)
+            source.write_text("# 相同\n", encoding="utf-8")
+            destination.write_text("# 相同\n", encoding="utf-8")
+            plan = build_migration_plan(vault)
+
+            self.assertEqual(find_migration_conflicts(plan), ())
+
+            destination.write_text("# 冲突\n", encoding="utf-8")
+            conflicts = find_migration_conflicts(plan)
+
+        self.assertEqual(len(conflicts), 1)
+        self.assertIn("80_系统/模板/模板.md", conflicts[0])
+
+    def test_lifecycle_only_vault_does_not_require_retired_content_directories(self):
+        from scripts.restructure_obsidian_vault import build_migration_plan
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "90_系统").mkdir()
+            (vault / "99_归档").mkdir()
+
+            plan = build_migration_plan(vault)
+
+        self.assertEqual(
+            tuple(path.name for path in plan.old_directories),
+            ("90_系统", "99_归档"),
+        )
+
 
 class SnapshotTests(unittest.TestCase):
     def test_backup_contains_all_old_directories_and_manifest_has_hashes(self):
@@ -134,7 +199,7 @@ class SnapshotTests(unittest.TestCase):
         with workspace_temp_dir() as vault:
             seed_old_vault(vault)
             plan = build_migration_plan(vault)
-            records_dir = vault / "90_系统" / "迁移记录"
+            records_dir = vault / "80_系统" / "迁移记录"
             backup = records_dir / "2026-07-27-迁移前备份.zip"
             manifest = records_dir / "2026-07-27-文件清单.json"
             create_backup(plan, backup)
@@ -157,7 +222,7 @@ class SnapshotTests(unittest.TestCase):
         with workspace_temp_dir() as vault:
             seed_old_vault(vault)
             plan = build_migration_plan(vault)
-            backup = vault / "90_系统" / "迁移记录" / "backup.zip"
+            backup = vault / "80_系统" / "迁移记录" / "backup.zip"
             create_backup(plan, backup)
             original_backup = backup.read_bytes()
 
@@ -200,9 +265,11 @@ class ScaffoldTests(unittest.TestCase):
                 "30_精选资料/软件工程/目录索引.md",
                 "30_精选资料/投资理财/目录索引.md",
                 "30_精选资料/个人成长/目录索引.md",
-                "90_系统/知识库治理/管理规则.md",
-                "90_系统/知识库治理/主题词表.md",
-                "90_系统/知识库治理/别名词典.md",
+                "80_系统/知识库治理/管理规则.md",
+                "80_系统/知识库治理/主题词表.md",
+                "80_系统/知识库治理/别名词典.md",
+                "90_归档",
+                "99_废纸篓",
             )
             for relative in expected:
                 self.assertTrue(vault.joinpath(relative).exists(), relative)
@@ -223,6 +290,15 @@ class ScaffoldTests(unittest.TestCase):
             self.assertIn("可由脚本或 AI 完整重建", catalog)
             self.assertIn("<!-- llmwiki:auto:start -->", knowledge_map)
             self.assertIn("<!-- llmwiki:auto:end -->", knowledge_map)
+
+            home = (vault / "00_首页.md").read_text(encoding="utf-8")
+            project_index = (
+                vault / "10_项目" / "目录索引.md"
+            ).read_text(encoding="utf-8")
+            self.assertIn("[[80_系统/知识库治理/管理规则", home)
+            self.assertNotIn("[[90_系统/", home)
+            self.assertIn("进入 `90_归档`", project_index)
+            self.assertNotIn("进入 `99_归档`", project_index)
 
 
 class CopyAndMetadataTests(unittest.TestCase):
@@ -462,6 +538,37 @@ class LinkValidationTests(unittest.TestCase):
         self.assertEqual(issues[0].target, "缺失笔记#章节")
         self.assertEqual(issues[0].reason, "目标不存在")
 
+    def test_ignores_links_inside_indented_and_fenced_code_blocks(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "note.md").write_text(
+                "    [参考](references/REFERENCE.md)\n"
+                "    [[实体/Karpathy]]\n\n"
+                "```markdown\n"
+                "[示例](missing.md)\n"
+                "[[概念/LLM Wiki]]\n"
+                "```\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(scan_local_links(vault), ())
+
+    def test_does_not_treat_double_bracket_external_link_labels_as_wikilinks(
+        self,
+    ):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "note.md").write_text(
+                "[[1]](https://example.com/article)\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(scan_local_links(vault), ())
+
     def test_supports_angle_destination_optional_title_and_nested_parentheses(self):
         from scripts.restructure_obsidian_vault import scan_local_links
 
@@ -517,6 +624,56 @@ class LinkValidationTests(unittest.TestCase):
 
 
 class ValidationRobustnessTests(unittest.TestCase):
+    def test_lifecycle_names_in_plain_prose_are_not_structure_residue(self):
+        from scripts.restructure_obsidian_vault import (
+            validate_migration,
+        )
+
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            note = vault / "20_知识笔记" / "AI" / "历史说明.md"
+            note.write_text(
+                "旧目录曾名为 `90_系统` 和 `99_归档`。\n",
+                encoding="utf-8",
+            )
+
+            report = validate_migration(
+                vault,
+                records / "2026-07-27-文件清单.json",
+            )
+
+        self.assertTrue(report.passed, report.issues)
+
+    def test_completed_verify_accepts_legacy_summary_after_manual_renumbering(self):
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            summary = records / "2026-07-27-迁移说明.md"
+            legacy_lines = [
+                line
+                for line in summary.read_text(encoding="utf-8").splitlines()
+                if not line.startswith("- `90_系统` →")
+                and not line.startswith("- `99_归档` →")
+            ]
+            summary.write_text(
+                "\n".join(legacy_lines) + "\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--verify",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_required_markdown_directory_is_reported_as_missing_file(self):
         from scripts.restructure_obsidian_vault import (
             apply_copy_phase,
@@ -530,7 +687,7 @@ class ValidationRobustnessTests(unittest.TestCase):
             plan = build_migration_plan(vault)
             manifest = (
                 vault
-                / "90_系统"
+                / "80_系统"
                 / "迁移记录"
                 / "2026-07-27-文件清单.json"
             )
@@ -558,7 +715,7 @@ class ValidationRobustnessTests(unittest.TestCase):
             plan = build_migration_plan(vault)
             manifest = (
                 vault
-                / "90_系统"
+                / "80_系统"
                 / "迁移记录"
                 / "2026-07-27-文件清单.json"
             )
@@ -775,14 +932,14 @@ class CleanupGateTests(unittest.TestCase):
             plan = build_migration_plan(vault)
             manifest = (
                 vault
-                / "90_系统"
+                / "80_系统"
                 / "迁移记录"
                 / "2026-07-27-文件清单.json"
             )
             create_backup(
                 plan,
                 vault
-                / "90_系统"
+                / "80_系统"
                 / "迁移记录"
                 / "2026-07-27-迁移前备份.zip",
             )
@@ -816,14 +973,14 @@ class CleanupGateTests(unittest.TestCase):
             plan = build_migration_plan(vault)
             manifest = (
                 vault
-                / "90_系统"
+                / "80_系统"
                 / "迁移记录"
                 / "2026-07-27-文件清单.json"
             )
             create_backup(
                 plan,
                 vault
-                / "90_系统"
+                / "80_系统"
                 / "迁移记录"
                 / "2026-07-27-迁移前备份.zip",
             )
@@ -833,7 +990,7 @@ class CleanupGateTests(unittest.TestCase):
             write_link_report(
                 report,
                 vault
-                / "90_系统"
+                / "80_系统"
                 / "迁移记录"
                 / "2026-07-27-链接检查.md",
             )
@@ -934,6 +1091,46 @@ class CleanupGateTests(unittest.TestCase):
                 self.assertEqual(source.stat().st_size, record["size"])
                 self.assertEqual(migration.sha256_file(source), record["sha256"])
 
+    def test_cleanup_failure_restores_lifecycle_sources(self):
+        import scripts.restructure_obsidian_vault as migration
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            system_file = vault / "90_系统" / "模板" / "旧模板.md"
+            archive_file = vault / "99_归档" / "旧项目" / "结项.md"
+            system_file.parent.mkdir(parents=True)
+            archive_file.parent.mkdir(parents=True)
+            system_file.write_text("# 旧模板\n", encoding="utf-8")
+            archive_file.write_text("# 结项\n", encoding="utf-8")
+            plan = migration.build_migration_plan(vault)
+            record_paths = migration.migration_record_paths(vault, plan)
+            backup = record_paths["backup"]
+            manifest = record_paths["manifest"]
+            link_report = record_paths["link_report"]
+            migration.create_backup(plan, backup)
+            migration.write_manifest(plan, manifest)
+            report = migration.ValidationReport(True, (), 2, 0, 0)
+            migration.write_link_report(report, link_report)
+            original_rmtree = migration.shutil.rmtree
+            call_count = 0
+
+            def fail_on_second_directory(path, *args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return original_rmtree(path, *args, **kwargs)
+                raise OSError("生命周期目录删除失败")
+
+            with patch(
+                "scripts.restructure_obsidian_vault.shutil.rmtree",
+                side_effect=fail_on_second_directory,
+            ):
+                with self.assertRaisesRegex(OSError, "生命周期目录删除失败"):
+                    migration.cleanup_old_directories(plan, report)
+
+            self.assertEqual(system_file.read_text(encoding="utf-8"), "# 旧模板\n")
+            self.assertEqual(archive_file.read_text(encoding="utf-8"), "# 结项\n")
+
     @unittest.skipUnless(
         sys.platform == "win32",
         "Windows ReadOnly 目录行为回归",
@@ -952,7 +1149,7 @@ class CleanupGateTests(unittest.TestCase):
         with workspace_temp_dir() as vault:
             seed_old_vault(vault)
             plan = build_migration_plan(vault)
-            records = vault / "90_系统" / "迁移记录"
+            records = vault / "80_系统" / "迁移记录"
             manifest = records / "2026-07-27-文件清单.json"
             create_backup(plan, records / "2026-07-27-迁移前备份.zip")
             write_manifest(plan, manifest)
@@ -1043,6 +1240,141 @@ class CommandLineTests(unittest.TestCase):
             self.assertIn("MIGRATE_OBSIDIAN_VAULT", result.stderr)
             self.assertFalse((vault / "20_知识笔记").exists())
 
+    def test_apply_moves_old_lifecycle_files_and_creates_trash(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            system_file = vault / "90_系统" / "模板" / "旧模板.md"
+            archive_file = vault / "99_归档" / "旧项目" / "结项.md"
+            system_file.parent.mkdir(parents=True)
+            archive_file.parent.mkdir(parents=True)
+            system_file.write_text("# 旧模板\n", encoding="utf-8")
+            archive_file.write_text("# 结项\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--apply",
+                    "--confirm",
+                    "MIGRATE_OBSIDIAN_VAULT",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((vault / "80_系统" / "模板" / "旧模板.md").is_file())
+            self.assertTrue((vault / "90_归档" / "旧项目" / "结项.md").is_file())
+            self.assertTrue((vault / "99_废纸篓").is_dir())
+            self.assertFalse((vault / "90_系统").exists())
+            self.assertFalse((vault / "99_归档").exists())
+
+    def test_apply_merges_identical_lifecycle_file(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            source = vault / "90_系统" / "模板" / "相同.md"
+            destination = vault / "80_系统" / "模板" / "相同.md"
+            source.parent.mkdir(parents=True)
+            destination.parent.mkdir(parents=True)
+            source.write_text("# 相同\n", encoding="utf-8")
+            destination.write_text("# 相同\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--apply",
+                    "--confirm",
+                    "MIGRATE_OBSIDIAN_VAULT",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(destination.read_text(encoding="utf-8"), "# 相同\n")
+            self.assertFalse((vault / "90_系统").exists())
+
+    def test_apply_rewrites_lifecycle_paths_inside_markdown(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            system_note = vault / "90_系统" / "说明.md"
+            archive_note = vault / "99_归档" / "旧项目.md"
+            system_note.parent.mkdir(parents=True)
+            archive_note.parent.mkdir(parents=True)
+            system_note.write_text(
+                "[[90_系统/模板/知识笔记模板|模板]]\n",
+                encoding="utf-8",
+            )
+            archive_note.write_text(
+                "[归档](../99_归档/旧项目.md)\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--apply",
+                    "--confirm",
+                    "MIGRATE_OBSIDIAN_VAULT",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            migrated_system = (
+                vault / "80_系统" / "说明.md"
+            ).read_text(encoding="utf-8")
+            migrated_archive = (
+                vault / "90_归档" / "旧项目.md"
+            ).read_text(encoding="utf-8")
+            self.assertIn("[[80_系统/模板/知识笔记模板|模板]]", migrated_system)
+            self.assertIn("[归档](../90_归档/旧项目.md)", migrated_archive)
+            self.assertNotIn("90_系统/", migrated_system)
+            self.assertNotIn("99_归档/", migrated_archive)
+
+    def test_apply_stops_before_snapshot_when_lifecycle_file_conflicts(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            source = vault / "90_系统" / "模板" / "冲突.md"
+            destination = vault / "80_系统" / "模板" / "冲突.md"
+            source.parent.mkdir(parents=True)
+            destination.parent.mkdir(parents=True)
+            source.write_text("# 旧内容\n", encoding="utf-8")
+            destination.write_text("# 新内容\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--apply",
+                    "--confirm",
+                    "MIGRATE_OBSIDIAN_VAULT",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("80_系统/模板/冲突.md", result.stderr)
+            self.assertEqual(source.read_text(encoding="utf-8"), "# 旧内容\n")
+            self.assertEqual(destination.read_text(encoding="utf-8"), "# 新内容\n")
+            self.assertEqual(tuple(vault.rglob("*迁移前备份.zip")), ())
+
     def test_confirmed_apply_creates_records_and_removes_old_directories(self):
         with workspace_temp_dir() as vault:
             seed_old_vault(vault)
@@ -1061,7 +1393,7 @@ class CommandLineTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            records = vault / "90_系统" / "迁移记录"
+            records = vault / "80_系统" / "迁移记录"
             for record in (
                 "2026-07-27-迁移前备份.zip",
                 "2026-07-27-文件清单.json",
@@ -1134,6 +1466,83 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(verified.returncode, 0, verified.stderr)
             self.assertEqual(after, before)
 
+    def test_reapplying_completed_vault_is_idempotent(self):
+        with workspace_temp_dir() as vault:
+            apply_fixture_vault(vault)
+            before = {
+                path.relative_to(vault): path.read_bytes()
+                for path in vault.rglob("*")
+                if path.is_file()
+            }
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--apply",
+                    "--confirm",
+                    "MIGRATE_OBSIDIAN_VAULT",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            after = {
+                path.relative_to(vault): path.read_bytes()
+                for path in vault.rglob("*")
+                if path.is_file()
+            }
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(after, before)
+
+    def test_verify_rejects_missing_canonical_lifecycle_directory(self):
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            (vault / "99_废纸篓").rmdir()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--verify",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("99_废纸篓", result.stderr)
+            self.assertTrue(records.is_dir())
+
+    def test_verify_rejects_remaining_legacy_lifecycle_directories(self):
+        with workspace_temp_dir() as vault:
+            apply_fixture_vault(vault)
+            (vault / "90_系统").mkdir()
+            (vault / "99_归档").mkdir()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                    "--vault",
+                    str(vault),
+                    "--verify",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("90_系统", result.stderr)
+            self.assertIn("99_归档", result.stderr)
+
     def test_failed_validation_keeps_old_directories_and_writes_link_report(self):
         with workspace_temp_dir() as vault:
             seed_old_vault(vault)
@@ -1161,7 +1570,7 @@ class CommandLineTests(unittest.TestCase):
                 "HYXX个人知识库",
             ):
                 self.assertTrue((vault / old_directory).exists())
-            records = vault / "90_系统" / "迁移记录"
+            records = vault / "80_系统" / "迁移记录"
             self.assertIn(
                 "- 结果：失败",
                 (records / "2026-07-27-链接检查.md").read_text(
@@ -1174,7 +1583,7 @@ class CommandLineTests(unittest.TestCase):
         with workspace_temp_dir() as vault:
             seed_old_vault(vault)
             conflicting_template = (
-                vault / "90_系统" / "模板" / "精选资料模板.md"
+                vault / "80_系统" / "模板" / "精选资料模板.md"
             )
             conflicting_template.parent.mkdir(parents=True)
             conflicting_template.write_text("用户内容\n", encoding="utf-8")
@@ -1195,7 +1604,7 @@ class CommandLineTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertNotEqual(first.returncode, 0)
-            records = vault / "90_系统" / "迁移记录"
+            records = vault / "80_系统" / "迁移记录"
             backup = records / "2026-07-27-迁移前备份.zip"
             manifest = records / "2026-07-27-文件清单.json"
             original_backup = backup.read_bytes()

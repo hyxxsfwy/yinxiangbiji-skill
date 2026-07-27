@@ -223,7 +223,7 @@ class SyncDestinationSafetyTests(unittest.TestCase):
         with workspace_temp_dir() as vault:
             (vault / ".obsidian").mkdir()
             (vault / "00_首页.md").write_text("# 首页\n", encoding="utf-8")
-            for name in ("10_项目", "20_知识笔记", "30_精选资料", "90_系统"):
+            for name in ("10_项目", "20_知识笔记", "30_精选资料", "80_系统"):
                 (vault / name).mkdir()
 
             with patch(
@@ -234,6 +234,17 @@ class SyncDestinationSafetyTests(unittest.TestCase):
 
             self.assertFalse(succeeded)
             self.assertFalse((vault / ".yinxiang_sync_state.json").exists())
+
+    def test_old_system_directory_alone_is_not_the_new_root_marker(self):
+        from scripts.sync_to_obsidian import is_unified_llm_wiki_root
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "00_首页.md").write_text("# 首页\n", encoding="utf-8")
+            for name in ("10_项目", "20_知识笔记", "30_精选资料", "90_系统"):
+                (vault / name).mkdir()
+
+            self.assertFalse(is_unified_llm_wiki_root(vault))
 
 
 class FilenameTests(unittest.TestCase):

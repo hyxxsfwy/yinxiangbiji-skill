@@ -50,11 +50,14 @@ python scripts/get_note_enml.py --guid "NOTE_GUID" --output ".\note.xml"
 ```powershell
 python scripts/export_search_results.py `
   --since 2025-07-26 `
+  --until 2025-08-26 `
   --keywords AI Agent 人工智能 `
   --domain AI `
   --limit 3 `
   --target "D:\OneDrive\文档\@_Obsidian\30_精选资料\AI"
 ```
+
+`--since` 包含当日，`--until` 不包含当日，因此两者可表达稳定的左闭右开创建时间区间。使用 `--limit all` 可导出全部候选；此时应把 `--max-per-keyword` 设为足够大的值，并确认命令输出中每个关键词的“共 N 条”与“拉取 N 条候选”一致，避免候选上限造成遗漏。
 
 标题完全一致时依次按 `updated`、`created`、GUID 保留最新版本，去重发生在 `--limit` 之前。文章按 `created` 归入 `YYYY年MM月/`；图片和附件统一保存在知识库根目录 `_attachments/`，月度文章使用 `../_attachments/`。同名附件内容不同时会自动追加内容哈希，正文已经引用的图片不会在文末重复展示。
 
@@ -107,6 +110,21 @@ type: "inline-images"
 
 迁移只作用于本地 Obsidian vault，不访问印象笔记帐号。先预览迁移计划，再在用户明确授权后执行；执行会创建 ZIP 快照，验证失败不会删除旧目录。
 
+唯一有效的生命周期目录是：
+
+```text
+@_Obsidian/
+├── 01_收件箱/
+├── 10_项目/
+├── 20_知识笔记/
+├── 30_精选资料/
+├── 80_系统/
+├── 90_归档/
+└── 99_废纸篓/
+```
+
+重组脚本会把旧 `90_系统`自动迁入 `80_系统`，把旧 `99_归档`自动迁入 `90_归档`，并创建 `99_废纸篓`。预检发现同路径异内容或文件类型冲突时，会在创建快照和迁移写入前中止。
+
 ```powershell
 # 预览：只读本地 vault
 python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian"
@@ -123,6 +141,7 @@ python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsid
 ```powershell
 python scripts/export_search_results.py `
   --since 2025-07-27 `
+  --until 2025-08-27 `
   --keywords AI Agent 人工智能 `
   --domain AI `
   --limit 3 `

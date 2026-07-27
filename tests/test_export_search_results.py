@@ -33,6 +33,23 @@ class SearchQueryTests(unittest.TestCase):
             ],
         )
 
+    def test_builds_an_exclusive_end_date_into_each_keyword_query(self):
+        from scripts.export_search_results import build_keyword_queries
+
+        queries = build_keyword_queries(
+            ["AI", "量化"],
+            since=date(2026, 7, 1),
+            until=date(2026, 8, 1),
+        )
+
+        self.assertEqual(
+            queries,
+            [
+                "created:20260701 -created:20260801 AI",
+                "created:20260701 -created:20260801 量化",
+            ],
+        )
+
     def test_deduplicates_and_prioritizes_recent_title_matches(self):
         try:
             from scripts.export_search_results import select_top_notes
@@ -146,6 +163,31 @@ class SearchQueryTests(unittest.TestCase):
 
         self.assertEqual([note.guid for note in selected], ["zzz-guid"])
 
+    def test_selects_every_unique_title_when_limit_is_unbounded(self):
+        from scripts.export_search_results import select_top_notes
+
+        notes = [
+            SimpleNamespace(
+                guid=f"guid-{index}",
+                title=f"AI 笔记 {index}",
+                created=index,
+                updated=index,
+            )
+            for index in range(5)
+        ]
+
+        selected = select_top_notes(
+            [notes],
+            keywords=["AI"],
+            limit=None,
+        )
+
+        self.assertEqual(len(selected), 5)
+        self.assertEqual(
+            {note.guid for note in selected},
+            {f"guid-{index}" for index in range(5)},
+        )
+
     def test_searches_each_keyword_with_updated_descending_order(self):
         try:
             from scripts.export_search_results import search_metadata_batches
@@ -185,12 +227,16 @@ class SearchQueryTests(unittest.TestCase):
             token="test-token",
             keywords=["AI", "Agent"],
             since=date(2025, 7, 26),
+            until=date(2025, 8, 1),
             max_per_keyword=25,
         )
 
         self.assertEqual(
             [call["words"] for call in note_store.calls],
-            ["created:20250726 AI", "created:20250726 Agent"],
+            [
+                "created:20250726 -created:20250801 AI",
+                "created:20250726 -created:20250801 Agent",
+            ],
         )
         self.assertTrue(
             all(
@@ -575,6 +621,12 @@ class CommandLineTests(unittest.TestCase):
             positive_int("0")
         with self.assertRaises(ArgumentTypeError):
             positive_int("-1")
+
+    def test_export_limit_accepts_all_as_unbounded(self):
+        from scripts.export_search_results import export_limit
+
+        self.assertIsNone(export_limit("all"))
+        self.assertEqual(export_limit("12"), 12)
 
 
 if __name__ == "__main__":

@@ -355,6 +355,8 @@ def deduplicate_archived_notes(root):
 
     removed = []
     for title, notes in groups.items():
+        if len(notes) == 1:
+            continue
         winner = max(notes, key=_archived_freshness_key)
         group_paths = {note.path for note in notes}
         canonical = winner.path.parent / f"{safe_filename(title)}.md"

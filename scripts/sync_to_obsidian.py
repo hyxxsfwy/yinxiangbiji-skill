@@ -880,7 +880,7 @@ def is_unified_llm_wiki_root(vault_path):
         vault_path / "10_项目",
         vault_path / "20_知识笔记",
         vault_path / "30_精选资料",
-        vault_path / "90_系统",
+        vault_path / "80_系统",
     )
     return all(path.exists() for path in markers)
 
