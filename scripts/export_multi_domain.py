@@ -434,6 +434,17 @@ def _adopt_legacy_job_state(paths, job, payload):
         raise
 
 
+def _replace_path_with_retry(source, destination):
+    for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+        try:
+            Path(source).replace(destination)
+            return
+        except PermissionError:
+            if attempt + 1 == _ATOMIC_REPLACE_ATTEMPTS:
+                raise
+            time_module.sleep(_ATOMIC_REPLACE_RETRY_SECONDS)
+
+
 def _atomic_json(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -448,14 +459,7 @@ def _atomic_json(path, payload):
         + "\n",
         encoding="utf-8",
     )
-    for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
-        try:
-            temporary.replace(path)
-            return
-        except PermissionError:
-            if attempt + 1 == _ATOMIC_REPLACE_ATTEMPTS:
-                raise
-            time_module.sleep(_ATOMIC_REPLACE_RETRY_SECONDS)
+    _replace_path_with_retry(temporary, path)
 
 
 def _catalog_path_is_current(job, entry, metadata):
@@ -786,6 +790,128 @@ def _keyword_entry_from_note(
         last_fetched_at=now,
         last_seen_at=now,
     )
+
+
+def reconcile_keyword_outputs(job, catalog, selection_hash, task_id):
+    """将当前关键词任务判定为非规范的旧副本移入可恢复隔离区。"""
+    state_root = VaultStatePaths.for_vault(job.vault).root
+    quarantine_root = state_root / "quarantine" / task_id
+    manifest_path = quarantine_root / "manifest.json"
+    records = []
+
+    for directory_domain in job.domains:
+        root = job.target_for(directory_domain)
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.md")):
+            if path.name == INDEX_FILENAME:
+                continue
+            try:
+                fields, _body_lines = _split_frontmatter(
+                    path.read_text(encoding="utf-8")
+                )
+                metadata = extract_note_metadata(path)
+                updated_ms = int(fields["source_updated_ms"])
+            except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+                continue
+            if not (
+                job.since <= metadata.created.date() < job.until
+            ):
+                continue
+
+            entry = catalog.get_keyword_current(
+                metadata.guid,
+                updated_ms,
+                selection_hash,
+            )
+            if entry is None:
+                continue
+            relative = path.relative_to(job.vault).as_posix()
+            if (
+                entry.outcome == "accepted"
+                and entry.canonical_path == relative
+            ):
+                continue
+
+            if entry.outcome == "accepted":
+                if not entry.canonical_path:
+                    continue
+                canonical = (
+                    job.vault
+                    / Path(*Path(entry.canonical_path).parts)
+                ).resolve()
+                try:
+                    canonical.relative_to(job.vault)
+                except ValueError:
+                    continue
+                if not markdown_attachments_complete(canonical):
+                    continue
+                reason = "noncanonical_path"
+            elif entry.outcome in {"rejected", "duplicate_title"}:
+                reason = entry.outcome
+            else:
+                continue
+
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            destination = (
+                quarantine_root
+                / "files"
+                / Path(*Path(relative).parts)
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                existing_digest = hashlib.sha256(
+                    destination.read_bytes()
+                ).hexdigest()
+                if existing_digest != digest:
+                    raise RuntimeError(
+                        f"隔离区文件冲突，未移动旧副本: {destination}"
+                    )
+                path.unlink()
+            else:
+                _replace_path_with_retry(path, destination)
+            records.append(
+                {
+                    "guid": metadata.guid,
+                    "reason": reason,
+                    "sha256": digest,
+                    "source": relative,
+                    "quarantine": destination.relative_to(
+                        job.vault
+                    ).as_posix(),
+                }
+            )
+
+    previous_records = []
+    if manifest_path.is_file():
+        try:
+            previous = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+            previous_records = list(previous.get("records", ()))
+        except (OSError, TypeError, UnicodeError, ValueError):
+            previous_records = []
+    combined = {
+        item["source"]: item
+        for item in (*previous_records, *records)
+    }
+    if records or not manifest_path.exists():
+        _atomic_json(
+            manifest_path,
+            {
+                "job_id": task_id,
+                "selection_hash": selection_hash,
+                "records": [
+                    combined[key]
+                    for key in sorted(combined)
+                ],
+            },
+        )
+    return {
+        "quarantined": len(records),
+        "quarantined_total": len(combined),
+        "manifest": str(manifest_path),
+    }
 
 
 def _run_keyword_union_job(
@@ -1128,6 +1254,12 @@ def _run_keyword_union_job(
                 selection_hash,
             )
         )
+        reconciliation = reconcile_keyword_outputs(
+            job,
+            catalog,
+            selection_hash,
+            _job_id(job),
+        )
         catalog_stats = catalog.keyword_stats(selection_hash)
         candidate_manifest = [
             {
@@ -1236,6 +1368,7 @@ def _run_keyword_union_job(
         "candidate_manifest": candidate_manifest,
         "cache": cache_counts,
         "materialization": materialization,
+        "reconciliation": reconciliation,
         "snapshot": snapshot_result.to_dict(),
         "rate_limit": wait_stats,
         "catalog": catalog_stats,

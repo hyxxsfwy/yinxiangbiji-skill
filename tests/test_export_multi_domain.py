@@ -1445,6 +1445,64 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                 entry.canonical_path.endswith("AI Agent.md")
             )
 
+    def test_keyword_job_quarantines_legacy_noncanonical_duplicate(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+
+        item = metadata("guid-legacy", "AI Agent", 1780000000000)
+        store = FakeNoteStore(
+            {"AI": [item]},
+            {
+                "guid-legacy": full_note(
+                    item,
+                    "<en-note>AI Agent</en-note>",
+                )
+            },
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            legacy = seed_keyword_markdown(
+                vault,
+                domain="Quant",
+                title="AI Agent",
+                guid="guid-legacy",
+                created="2026-05-02 10:00:00",
+                body="AI Agent",
+                updated_ms=item.updated,
+            )
+            job = normalize_job(
+                {
+                    "since": "2026-04-01",
+                    "until": "2026-08-01",
+                    "selection_mode": "keyword_union",
+                    "domains": {
+                        "AI": {"keywords": ["AI"]},
+                        "Quant": {"keywords": ["Quant"]},
+                    },
+                },
+                vault,
+            )
+            report = run_export_job(
+                job,
+                store,
+                "token",
+                catalog_path=temp_dir / "catalog.sqlite3",
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+            quarantine_manifest = Path(
+                report["reconciliation"]["manifest"]
+            )
+
+            self.assertFalse(legacy.exists())
+            self.assertTrue(quarantine_manifest.is_file())
+            self.assertEqual(report["reconciliation"]["quarantined"], 1)
+            self.assertTrue(report["ok"])
+
     def test_keyword_bootstrap_skips_out_of_range_or_missing_attachment(self):
         from scripts.export_catalog import ExportCatalog
         from scripts.export_multi_domain import (
