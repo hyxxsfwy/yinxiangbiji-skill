@@ -52,6 +52,49 @@ def keyword_union_payload():
     }
 
 
+def seed_keyword_markdown(
+    vault,
+    *,
+    domain,
+    title,
+    guid,
+    created,
+    body,
+    updated="2026-05-03 10:00:00",
+    updated_ms=1777773600000,
+):
+    path = (
+        vault
+        / "30_精选资料"
+        / domain
+        / f"{created[:4]}年{created[5:7]}月"
+        / f"{title}.md"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            (
+                "---",
+                "type: 资料",
+                f"domain: {domain}",
+                f"created: {created}",
+                f"updated: {updated}",
+                f"source_guid: {guid}",
+                f"source_updated_ms: {updated_ms}",
+                "notebook: 收件箱",
+                "---",
+                "",
+                f"# {title}",
+                "",
+                body,
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def legacy_v1_job_id(payload):
     legacy_vault = Path(payload["vault"]).expanduser().resolve()
     job_id_payload = {
@@ -900,6 +943,96 @@ class CommandLinePathTests(unittest.TestCase):
 
 
 class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
+    def test_existing_keyword_markdown_bootstraps_keyword_cache(self):
+        from scripts.export_catalog import ExportCatalog
+        from scripts.export_multi_domain import (
+            bootstrap_keyword_catalog_from_vault,
+            normalize_job,
+        )
+        from scripts.keyword_selection import keyword_selection_hash
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            seed_keyword_markdown(
+                vault,
+                domain="AI",
+                title="AI Agent",
+                guid="guid-existing",
+                created="2026-05-02 10:00:00",
+                body="AI Agent 与 MCP",
+            )
+            job = normalize_job(keyword_union_payload(), vault)
+            selection_hash = keyword_selection_hash(
+                job.domains,
+                job.aliases,
+            )
+            catalog_path = temp_dir / "export-catalog.sqlite3"
+
+            with ExportCatalog(catalog_path) as catalog:
+                count = bootstrap_keyword_catalog_from_vault(
+                    job,
+                    catalog,
+                    selection_hash,
+                    "2026-07-29T10:00:00+08:00",
+                )
+                entry = catalog.get_keyword_current(
+                    "guid-existing",
+                    1777773600000,
+                    selection_hash,
+                )
+
+            self.assertEqual(count, 1)
+            self.assertEqual(entry.primary_domain, "AI")
+            self.assertIn("AI", entry.matched_keywords)
+            self.assertTrue(
+                entry.canonical_path.endswith("AI Agent.md")
+            )
+
+    def test_keyword_bootstrap_skips_out_of_range_or_missing_attachment(self):
+        from scripts.export_catalog import ExportCatalog
+        from scripts.export_multi_domain import (
+            bootstrap_keyword_catalog_from_vault,
+            normalize_job,
+        )
+        from scripts.keyword_selection import keyword_selection_hash
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            seed_keyword_markdown(
+                vault,
+                domain="AI",
+                title="AI 旧资料",
+                guid="old",
+                created="2026-03-31 23:59:59",
+                body="AI",
+            )
+            seed_keyword_markdown(
+                vault,
+                domain="AI",
+                title="AI 缺图",
+                guid="broken",
+                created="2026-04-01 00:00:00",
+                body="AI ![图](../_attachments/missing.png)",
+            )
+            job = normalize_job(keyword_union_payload(), vault)
+            selection_hash = keyword_selection_hash(
+                job.domains,
+                job.aliases,
+            )
+            catalog_path = temp_dir / "export-catalog.sqlite3"
+
+            with ExportCatalog(catalog_path) as catalog:
+                count = bootstrap_keyword_catalog_from_vault(
+                    job,
+                    catalog,
+                    selection_hash,
+                    "2026-07-29T10:00:00+08:00",
+                )
+
+            self.assertEqual(count, 0)
+
     def test_each_guid_is_fetched_once_and_titles_are_globally_deduplicated(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
 

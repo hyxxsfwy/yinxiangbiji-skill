@@ -18,7 +18,11 @@ import evernote.edam.notestore.NoteStore as NoteStore
 from evernote.edam.type.ttypes import NoteSortOrder
 
 try:
-    from .export_catalog import CatalogEntry, ExportCatalog
+    from .export_catalog import (
+        CatalogEntry,
+        ExportCatalog,
+        KeywordCatalogEntry,
+    )
     from .export_integrity import scan_export_integrity
     from .export_search_results import (
         DOMAIN_PROFILES,
@@ -36,6 +40,7 @@ try:
         extract_note_metadata,
         finalize_knowledge_base,
     )
+    from .keyword_selection import assess_keyword_union
     from .runtime import (
         RateLimitBudgetExceeded,
         call_with_rate_limit_retry,
@@ -52,7 +57,11 @@ try:
         runtime_write_lock,
     )
 except ImportError:
-    from export_catalog import CatalogEntry, ExportCatalog
+    from export_catalog import (
+        CatalogEntry,
+        ExportCatalog,
+        KeywordCatalogEntry,
+    )
     from export_integrity import scan_export_integrity
     from export_search_results import (
         DOMAIN_PROFILES,
@@ -70,6 +79,7 @@ except ImportError:
         extract_note_metadata,
         finalize_knowledge_base,
     )
+    from keyword_selection import assess_keyword_union
     from runtime import (
         RateLimitBudgetExceeded,
         call_with_rate_limit_retry,
@@ -540,6 +550,95 @@ def bootstrap_catalog_from_vault(job, catalog, policy_hash, seen_at):
                     domain_labels=labels,
                     scores=scores,
                     evidence=evidence,
+                    canonical_path=path.relative_to(job.vault).as_posix(),
+                    first_fetched_at=fetched_at,
+                    last_fetched_at=fetched_at,
+                    last_seen_at=seen_at,
+                )
+            )
+            bootstrapped += 1
+    return bootstrapped
+
+
+def bootstrap_keyword_catalog_from_vault(
+    job,
+    catalog,
+    selection_hash,
+    seen_at,
+):
+    """从完整且匹配当前关键词任务的现有 Markdown 回填分析缓存。"""
+    bootstrapped = 0
+    for directory_domain in job.domains:
+        root = job.target_for(directory_domain)
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.md")):
+            if path.name == INDEX_FILENAME:
+                continue
+            try:
+                markdown = path.read_text(encoding="utf-8")
+                fields, body_lines = _split_frontmatter(markdown)
+                metadata = extract_note_metadata(path)
+                updated_ms = int(fields["source_updated_ms"])
+            except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+                continue
+            if (
+                fields.get("type") != "资料"
+                or fields.get("domain") != directory_domain
+                or not (
+                    job.since
+                    <= metadata.created.date()
+                    < job.until
+                )
+                or not markdown_attachments_complete(path)
+            ):
+                continue
+            if (
+                catalog.get_keyword_current(
+                    metadata.guid,
+                    updated_ms,
+                    selection_hash,
+                )
+                is not None
+            ):
+                continue
+
+            body_markdown = "\n".join(body_lines)
+            assessment = assess_keyword_union(
+                metadata.title,
+                body_markdown,
+                job.domains,
+                job.aliases,
+            )
+            if (
+                not assessment.matched
+                or assessment.primary_domain != directory_domain
+            ):
+                continue
+
+            body = full_body_text(body_markdown)
+            summary = body[:360].strip()
+            if len(body) > 360:
+                summary = summary.rstrip("，。；; ") + "……"
+            fetched_at = datetime.fromtimestamp(
+                path.stat().st_mtime
+            ).astimezone().isoformat(timespec="seconds")
+            catalog.upsert_keyword(
+                KeywordCatalogEntry(
+                    guid=metadata.guid,
+                    updated_ms=updated_ms,
+                    selection_hash=selection_hash,
+                    title=metadata.title,
+                    created_ms=int(metadata.created.timestamp() * 1000),
+                    notebook_name=fields.get("notebook", "未知笔记本"),
+                    summary=summary,
+                    body_sha256=hashlib.sha256(
+                        body.encode("utf-8")
+                    ).hexdigest(),
+                    outcome="accepted",
+                    primary_domain=directory_domain,
+                    matched_keywords=assessment.matched_keywords,
+                    matched_terms=assessment.matched_terms,
                     canonical_path=path.relative_to(job.vault).as_posix(),
                     first_fetched_at=fetched_at,
                     last_fetched_at=fetched_at,
