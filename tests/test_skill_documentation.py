@@ -1,3 +1,4 @@
+import json
 import re
 import subprocess
 import sys
@@ -78,6 +79,44 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("通过正文门禁后再按完全一致标题去重", skill_gate)
         self.assertIn("最后应用 `--limit`", skill_gate)
 
+    def test_large_multi_domain_exports_use_orchestrated_verified_workflow(self):
+        combined = self.skill + self.readme
+        for phrase in (
+            "两个及以上领域",
+            "export_multi_domain.py",
+            "SQLite",
+            ".state/export-catalog.sqlite3",
+            "GUID + updated + 规则指纹",
+            "更改检索关键词",
+            "唯一主领域",
+            "全局标题去重",
+            "body_requests_saved",
+            "跨领域重复",
+            "完整性验收",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, combined)
+
+        self.assertIn(
+            "不得用多领域标签代替唯一主领域",
+            self.skill,
+        )
+        self.assertIn(
+            "索引、附件、日期范围和重复项全部通过",
+            self.skill,
+        )
+
+        template = json.loads(
+            (
+                REPO_ROOT
+                / "templates"
+                / "multi-domain-export-job.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(template["since"], "2026-04-01")
+        self.assertEqual(template["until"], "2026-07-01")
+        self.assertGreaterEqual(len(template["domains"]), 2)
+
     def test_examples_do_not_contain_a_real_developer_token(self):
         combined = (
             self.skill
@@ -95,6 +134,11 @@ class SkillDocumentationTests(unittest.TestCase):
             + (REPO_ROOT / "templates" / "obsidian-knowledge-map.md").read_text(
                 encoding="utf-8"
             )
+            + (
+                REPO_ROOT
+                / "templates"
+                / "multi-domain-export-job.json"
+            ).read_text(encoding="utf-8")
         )
         token_pattern = r"S=s[0-9]+:U=[0-9a-f]+:E=[0-9a-f]+:"
         self.assertIsNone(re.search(token_pattern, combined))
@@ -400,6 +444,7 @@ class SkillDocumentationTests(unittest.TestCase):
             "create_note.py",
             "delete_note.py",
             "empty_trash.py",
+            "export_multi_domain.py",
             "export_search_results.py",
             "get_note_enml.py",
             "list_notebooks.py",

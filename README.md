@@ -45,7 +45,7 @@ python scripts/get_note_enml.py --guid "NOTE_GUID" --output ".\note.xml"
 
 ### 搜索并导出到 Obsidian
 
-以下命令分别搜索 AI、Agent、人工智能。搜索关键词只用于产生候选；脚本会逐篇拉取完整正文，确认正文主旨属于 AI 后才选择并导出前三篇：
+以下单领域命令适合少量结果。它分别搜索 AI、Agent、人工智能；搜索关键词只用于产生候选，脚本会逐篇拉取完整正文，确认正文主旨属于 AI 后才选择并导出前三篇：
 
 ```powershell
 python scripts/export_search_results.py `
@@ -75,6 +75,28 @@ python scripts/export_search_results.py `
     ├── 一张图看懂 AI Agent 全流程.md
     └── 删掉80%的Skill，Agent反而更听话了.md
 ```
+
+### 大规模多领域导出与历史解析目录
+
+两个及以上领域、关键词重叠或全量导出时，使用任务文件驱动的编排命令：
+
+```powershell
+Copy-Item templates\multi-domain-export-job.json .state\jobs\2026-q2.json
+
+python scripts/export_multi_domain.py `
+  --job ".state\jobs\2026-q2.json" `
+  --catalog ".state\export-catalog.sqlite3" `
+  --rate-limit-mode wait `
+  --max-rate-limit-wait 3600
+```
+
+任务中的 `since` 包含当日，`until` 不包含当日。脚本为每个关键词自动分页到服务端总数，合并 GUID 后流式获取完整正文，并在所有已知领域之间选择唯一主领域。不得用多领域标签代替唯一主领域；领域并列或任务外领域占优的文章不落盘。通过门禁后再执行全部目标领域范围内的全局标题去重。
+
+SQLite 历史解析目录默认位于 `.state/export-catalog.sqlite3`。首次运行会扫描现有 `30_精选资料` Markdown，用已有正文自动补建历史记录；此后每次完整正文分析都会写入标题、GUID、内容摘要、正文哈希、自动领域标签、各领域得分和证据、唯一主领域、规范文件路径及审计时间。缓存以 `GUID + updated + 规则指纹` 验证，与搜索关键词无关；因此更改检索关键词后，只要正文和规则未变化，就可以复用领域判断和摘要。缓存命中的拒绝项、被新版本淘汰的同标题文章，以及已有完整规范文件的文章都不重复请求正文；确实需要重新落盘但本地正文或附件缺失时才重新读取。
+
+限流等待、断点和报告保存在 `.state/`，不会提交到 Git。默认日志只显示汇总；JSON 报告中的 `catalog_hits`、`catalog_stale` 和 `body_requests_saved` 分别表示历史目录命中、失效和实际节省的正文请求数。
+
+只有 `ok: true` 且索引、附件、日期范围和重复项全部通过时任务才算完成。完整性验收会检查关键词搜索是否拉全、图片和附件是否存在、索引位置是否有效、领域内及跨领域重复是否为零，并区分任务日期范围内数量和目录现存总数。
 
 ### 增量同步整个 vault
 
@@ -205,6 +227,9 @@ python scripts/empty_trash.py --confirm DELETE_ALL
 | `search_notes.py` | 搜索笔记元数据 | 只读 |
 | `get_note_enml.py` | 下载原始 ENML 到本地 | 只读账户；写本地文件 |
 | `export_search_results.py` | 搜索并导出 Markdown、图片、附件 | 只读账户；写本地文件 |
+| `export_multi_domain.py` | 多领域全量搜索、历史解析复用、唯一归属和验收 | 只读账户；写本地 vault 和 `.state/` |
+| `export_catalog.py` | 维护本地 SQLite 历史解析目录 | 只读本地 |
+| `export_integrity.py` | 验证索引、附件、范围和跨领域重复 | 只读本地 |
 | `sync_to_obsidian.py` | 增量同步全部或指定笔记本 | 只读账户；写本地 vault |
 | `create_note.py` | 创建笔记 | 修改账户 |
 | `update_note.py` | 更新标题、内容、标签 | 修改账户 |

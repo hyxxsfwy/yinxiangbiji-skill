@@ -289,6 +289,63 @@ class MultiDomainJobTests(unittest.TestCase):
                 1,
             )
 
+    def test_existing_export_bootstraps_catalog_before_new_keyword_task(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+        from scripts.export_search_results import export_note_to_obsidian
+
+        item = metadata("historical-guid", "历史已拉取文章", 1780000000000)
+        note = full_note(
+            item,
+            "<en-note>大语言模型、RAG、智能体、机器学习和模型推理。</en-note>",
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            export_note_to_obsidian(
+                note,
+                notebook_name="微信",
+                target_dir=vault / "30_精选资料" / "AI",
+                domain="AI",
+            )
+            job = normalize_job(
+                {
+                    "since": "2026-04-01",
+                    "until": "2026-07-01",
+                    "vault": str(vault),
+                    "domains": {
+                        "AI": {"keywords": ["新关键词"]},
+                    },
+                }
+            )
+            store = FakeNoteStore(
+                {"新关键词": [item]},
+                {},
+                forbid_body=True,
+            )
+            report = run_export_job(
+                job,
+                store,
+                "token",
+                catalog_path=temp_dir / "catalog.sqlite3",
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+            self.assertEqual(store.body_calls, [])
+            self.assertEqual(
+                report["candidates"]["catalog_bootstrapped"],
+                1,
+            )
+            self.assertEqual(report["candidates"]["catalog_hits"], 1)
+            self.assertEqual(
+                report["candidates"]["body_requests_saved"],
+                1,
+            )
+            self.assertTrue(report["ok"])
+
     def test_interrupted_job_resumes_from_catalog_without_refetching_completed_body(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
         from scripts.runtime import RateLimitBudgetExceeded

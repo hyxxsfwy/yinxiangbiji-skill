@@ -26,7 +26,12 @@ try:
         full_body_text,
         markdown_attachments_complete,
     )
-    from .knowledge_base import extract_note_metadata, finalize_knowledge_base
+    from .knowledge_base import (
+        INDEX_FILENAME,
+        _split_frontmatter,
+        extract_note_metadata,
+        finalize_knowledge_base,
+    )
     from .runtime import (
         RateLimitBudgetExceeded,
         call_with_rate_limit_retry,
@@ -48,7 +53,12 @@ except ImportError:
         full_body_text,
         markdown_attachments_complete,
     )
-    from knowledge_base import extract_note_metadata, finalize_knowledge_base
+    from knowledge_base import (
+        INDEX_FILENAME,
+        _split_frontmatter,
+        extract_note_metadata,
+        finalize_knowledge_base,
+    )
     from runtime import (
         RateLimitBudgetExceeded,
         call_with_rate_limit_retry,
@@ -188,8 +198,8 @@ def _catalog_path_is_current(job, entry, metadata):
         return False
     return (
         exported.guid == metadata.guid
-        and int(exported.updated.timestamp() * 1000)
-        == int(metadata.updated)
+        and int(exported.updated.timestamp())
+        == int(metadata.updated / 1000)
         and candidate.parent.parent.name == entry.primary_domain
     )
 
@@ -209,6 +219,79 @@ def _content_analysis(content):
     if len(body) > 360:
         summary = summary.rstrip("，,；;。 ") + "……"
     return body, scores, evidence, tuple(labels), summary
+
+
+def bootstrap_catalog_from_vault(job, catalog, policy_hash, seen_at):
+    """用现有规范 Markdown 初始化跨任务目录，避免再次请求历史正文。"""
+    bootstrapped = 0
+    for directory_domain in job.domains:
+        root = job.target_for(directory_domain)
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.md")):
+            if path.name == INDEX_FILENAME:
+                continue
+            try:
+                markdown = path.read_text(encoding="utf-8")
+                fields, body_lines = _split_frontmatter(markdown)
+                metadata = extract_note_metadata(path)
+            except (OSError, UnicodeError, ValueError):
+                continue
+            if (
+                fields.get("type") != "资料"
+                or fields.get("domain") != directory_domain
+            ):
+                continue
+            updated_ms = int(metadata.updated.timestamp() * 1000)
+            if catalog.get_current(
+                metadata.guid,
+                updated_ms,
+                policy_hash,
+            ) is not None:
+                continue
+            body_markdown = "\n".join(body_lines)
+            assessment = assess_primary_domain(
+                title=metadata.title,
+                content=body_markdown,
+                allowed_domains=tuple(DOMAIN_PROFILES),
+            )
+            if (
+                not assessment.matched
+                or assessment.domain != directory_domain
+                or not markdown_attachments_complete(path)
+            ):
+                continue
+            body, scores, evidence, labels, summary = _content_analysis(
+                body_markdown
+            )
+            fetched_at = datetime.fromtimestamp(
+                path.stat().st_mtime
+            ).astimezone().isoformat(timespec="seconds")
+            catalog.upsert(
+                CatalogEntry(
+                    guid=metadata.guid,
+                    updated_ms=updated_ms,
+                    title=metadata.title,
+                    created_ms=int(metadata.created.timestamp() * 1000),
+                    notebook_name=fields.get("notebook", "未知笔记本"),
+                    summary=summary,
+                    body_sha256=hashlib.sha256(
+                        body.encode("utf-8")
+                    ).hexdigest(),
+                    policy_hash=policy_hash,
+                    outcome="accepted",
+                    primary_domain=directory_domain,
+                    domain_labels=labels,
+                    scores=scores,
+                    evidence=evidence,
+                    canonical_path=path.relative_to(job.vault).as_posix(),
+                    first_fetched_at=fetched_at,
+                    last_fetched_at=fetched_at,
+                    last_seen_at=seen_at,
+                )
+            )
+            bootstrapped += 1
+    return bootstrapped
 
 
 def _updated_seconds(metadata):
@@ -247,6 +330,7 @@ def run_export_job(
         "body_requests": 0,
         "catalog_hits": 0,
         "catalog_stale": 0,
+        "catalog_bootstrapped": 0,
         "body_requests_saved": 0,
         "accepted": 0,
         "rejected": 0,
@@ -333,6 +417,12 @@ def run_export_job(
     now = datetime.now().astimezone().isoformat(timespec="seconds")
 
     with ExportCatalog(catalog_path) as catalog:
+        counts["catalog_bootstrapped"] = bootstrap_catalog_from_vault(
+            job,
+            catalog,
+            policy_hash,
+            now,
+        )
         for metadata in sorted(
             candidates.values(),
             key=_candidate_sort_key,

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 新增一次任务完成多领域搜索、正文审核、唯一归属、全局去重、限流续跑和完整性验收的大规模导出命令。
+**Goal:** 新增一次任务完成多领域搜索、正文审核、唯一归属、全局去重、跨任务解析缓存、限流续跑和完整性验收的大规模导出命令。
 
 **Architecture:** 保留单领域导出命令，把限流和分页下沉到共享运行时，把领域判定和规则指纹保留在现有导出模块，新增独立完整性扫描模块与多领域编排模块。编排过程按 GUID 流式处理完整正文，每处理一篇便保存不含正文的原子状态，结束后统一重建索引并执行硬性验收。
 
@@ -12,6 +12,7 @@
 
 - 使用简体中文编写文档、命令帮助和 Git 提交消息。
 - 不打印、记录或提交 Developer Token，不把完整 ENML 或附件持久化进 `.state/`。
+- 历史解析目录只保存标题、GUID、摘要、领域标签、规则指纹和审计元数据，不保存完整正文。
 - 日期区间固定为左闭右开；目标目录固定为 `<vault>/30_精选资料/<domain>`。
 - 同一 GUID 在一次正常任务中只请求一次完整正文，限流后的同操作重试除外。
 - 只有正文唯一主领域、全局标题去重和附件保存全部成功后才记录 accepted。
@@ -111,7 +112,55 @@ Run: `python -m unittest tests.test_export_search_results -v`
 
 Expected: PASS。
 
-### Task 3: 精选资料完整性扫描器
+### Task 3: 跨任务历史解析目录
+
+**Files:**
+- Create: `scripts/export_catalog.py`
+- Create: `tests/test_export_catalog.py`
+
+**Interfaces:**
+- Produces: `CatalogEntry`
+- Produces: `ExportCatalog(path: Path)`
+- Produces: `ExportCatalog.get_current(guid, updated_ms, policy_hash) -> CatalogEntry | None`
+- Produces: `ExportCatalog.upsert(entry: CatalogEntry) -> None`
+- Produces: `ExportCatalog.mark_seen(guid, seen_at) -> None`
+- Produces: `ExportCatalog.stats() -> dict`
+
+- [ ] **Step 1: 写目录建表和持久化失败测试**
+
+在临时路径创建目录，写入包含标题、GUID、摘要、主领域、领域标签、得分、证据和规范路径的记录；关闭后重新打开，断言所有字段完整且 SQLite 文件不包含完整正文夹具。
+
+- [ ] **Step 2: 运行持久化测试并确认 RED**
+
+Run: `python -m unittest tests.test_export_catalog.ExportCatalogTests.test_catalog_persists_summary_domain_labels_and_audit_metadata -v`
+
+Expected: FAIL，模块不存在。
+
+- [ ] **Step 3: 实现 schema 和 upsert**
+
+以 GUID 为主键；JSON 字段写入排序后的 UTF-8 JSON。使用 SQLite 事务逐条提交，创建 `updated_ms`、`primary_domain` 和规范化标题索引。
+
+- [ ] **Step 4: 写跨关键词复用和失效失败测试**
+
+同一 GUID、updated 和规则指纹应命中；关键词不参与缓存键。updated 或规则指纹任一变化时返回 `None`，但保留旧记录供统计。
+
+- [ ] **Step 5: 运行复用测试并确认 RED**
+
+Run: `python -m unittest tests.test_export_catalog.ExportCatalogTests.test_cache_key_ignores_keywords_but_invalidates_updated_or_policy -v`
+
+Expected: FAIL，尚未实现当前记录判定。
+
+- [ ] **Step 6: 实现查询、最近出现时间和统计**
+
+`get_current` 只返回完整且当前的记录；`mark_seen` 不修改最近正文获取时间；统计区分总记录、当前任务命中、失效和正文请求节省量，由编排层累计任务统计。
+
+- [ ] **Step 7: 运行解析目录测试**
+
+Run: `python -m unittest tests.test_export_catalog -v`
+
+Expected: PASS。
+
+### Task 4: 精选资料完整性扫描器
 
 **Files:**
 - Create: `scripts/export_integrity.py`
@@ -158,7 +207,7 @@ Run: `python -m unittest tests.test_export_integrity -v`
 
 Expected: PASS。
 
-### Task 4: 多领域流式编排
+### Task 5: 多领域流式编排
 
 **Files:**
 - Create: `scripts/export_multi_domain.py`
@@ -169,7 +218,7 @@ Expected: PASS。
 - Produces: `load_job(path: Path) -> ExportJob`
 - Produces: `normalize_job(payload: dict) -> ExportJob`
 - Produces: `run_export_job(job, note_store, token, *, state_file, report_file, rate_limit_mode, max_rate_limit_wait, verbose=False) -> dict`
-- Consumes: `find_all_notes_metadata`、`call_with_rate_limit_retry`、`assess_primary_domain`、`export_note_to_obsidian`、`finalize_knowledge_base`、`scan_export_integrity`
+- Consumes: `ExportCatalog`、`find_all_notes_metadata`、`call_with_rate_limit_retry`、`assess_primary_domain`、`export_note_to_obsidian`、`finalize_knowledge_base`、`scan_export_integrity`
 
 - [ ] **Step 1: 写任务校验失败测试**
 
@@ -183,7 +232,7 @@ Expected: FAIL，模块不存在。
 
 - [ ] **Step 3: 实现任务模型和 CLI**
 
-使用冻结 dataclass 保存日期、vault、领域关键词；CLI 提供 `--job`、`--rate-limit-mode {wait,stop}`、`--max-rate-limit-wait`、`--state-file`、`--report-file` 和 `--verbose`。
+使用冻结 dataclass 保存日期、vault、领域关键词；CLI 提供 `--job`、`--catalog`、`--rate-limit-mode {wait,stop}`、`--max-rate-limit-wait`、`--state-file`、`--report-file` 和 `--verbose`。
 
 - [ ] **Step 4: 写单次正文和全局标题去重失败测试**
 
@@ -209,17 +258,31 @@ Run: `python -m unittest tests.test_export_multi_domain.MultiDomainJobTests.test
 
 Expected: FAIL，尚未实现状态恢复和报告。
 
-- [ ] **Step 9: 实现原子状态、汇总日志和验收门禁**
+- [ ] **Step 9: 写历史目录复用失败测试**
 
-状态与报告先写 `.tmp` 再替换。处理完后重建所有声明领域索引，调用完整性扫描；报告 `ok=false` 时 CLI 返回非零且不能打印完成语句。
+第一次任务用关键词 `Claude` 拉取并解析一篇正文；第二次任务改为 `LLM`，搜索仍返回相同 GUID 和 updated。断言第二次不调用 `getNote`，报告 `catalog_hits=1`、`body_requests_saved=1`。若该篇需要落盘但规范文件不存在，则只为物化请求一次正文。
 
-- [ ] **Step 10: 运行多领域端到端测试**
+- [ ] **Step 10: 运行目录复用测试并确认 RED**
+
+Run: `python -m unittest tests.test_export_multi_domain.MultiDomainJobTests.test_changed_keywords_reuse_catalog_without_refetching_body -v`
+
+Expected: FAIL，编排层尚未查询历史目录。
+
+- [ ] **Step 11: 实现目录优先、延迟物化和原子状态**
+
+先用历史目录参与领域归属和标题去重。缓存拒绝项、已有完整规范文件和被新版本淘汰项不请求正文；只有目录未命中、失效或最终入选但缺少规范文件时调用 `getNote`。状态与报告先写 `.tmp` 再替换。
+
+- [ ] **Step 12: 实现汇总日志和验收门禁**
+
+处理完后重建所有声明领域索引，调用完整性扫描；报告增加 `catalog_hits`、`catalog_stale`、`body_requests_saved`。报告 `ok=false` 时 CLI 返回非零且不能打印完成语句。
+
+- [ ] **Step 13: 运行多领域端到端测试**
 
 Run: `python -m unittest tests.test_export_multi_domain -v`
 
 Expected: PASS。
 
-### Task 5: Skill 行为规则与用户文档
+### Task 6: Skill 行为规则与用户文档
 
 **Files:**
 - Modify: `SKILL.md`
@@ -228,7 +291,7 @@ Expected: PASS。
 - Modify: `tests/test_skill_documentation.py`
 
 **Interfaces:**
-- Documents: 大规模任务触发条件、唯一主领域、全局去重、规则指纹、限流预算、汇总报告和验收契约。
+- Documents: 大规模任务触发条件、唯一主领域、全局去重、跨任务历史目录、规则指纹、限流预算、汇总报告和验收契约。
 - Provides: 可复制的多领域任务模板。
 
 - [ ] **Step 1: 执行无新规则的基线行为测试**
@@ -237,7 +300,7 @@ Expected: PASS。
 
 - [ ] **Step 2: 写文档契约失败测试**
 
-在 `test_skill_documentation.py` 中验证 Skill 明确要求：两个及以上领域使用 `export_multi_domain.py`；同一 GUID 只取一次正文；规则指纹不匹配要重审；成功必须通过索引、附件和跨领域重复验收。
+在 `test_skill_documentation.py` 中验证 Skill 明确要求：两个及以上领域使用 `export_multi_domain.py`；新关键词先查询 SQLite 历史目录；同一 GUID 只取一次正文；规则指纹不匹配要重审；成功必须通过索引、附件和跨领域重复验收。
 
 - [ ] **Step 3: 运行文档测试并确认 RED**
 
@@ -259,7 +322,7 @@ Run: `python -m unittest tests.test_skill_documentation -v`
 
 Expected: PASS。
 
-### Task 6: 全量验证与提交
+### Task 7: 全量验证与提交
 
 **Files:**
 - Modify as required by verification failures.
@@ -294,4 +357,3 @@ Expected: 帮助为 UTF-8；模板可解析且目标只位于 `30_精选资料`�
 - [ ] **Step 4: 审阅最终差异并提交**
 
 确认没有 `.state/`、Token、真实笔记正文或 Obsidian 文件进入提交；提交消息使用简体中文。
-

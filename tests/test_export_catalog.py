@@ -101,7 +101,7 @@ class ExportCatalogTests(unittest.TestCase):
                 self.assertIsNone(
                     catalog.get_current(
                         "note-guid",
-                        1780000000001,
+                        1780000001000,
                         "policy-v1",
                     )
                 )

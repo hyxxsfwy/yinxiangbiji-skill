@@ -1,0 +1,48 @@
+{
+  "since": "2026-04-01",
+  "until": "2026-07-01",
+  "vault": "D:\\OneDrive\\文档\\@_Obsidian",
+  "domains": {
+    "AI": {
+      "keywords": [
+        "AI",
+        "人工智能",
+        "机器学习",
+        "深度学习",
+        "大模型",
+        "LLM",
+        "GPT",
+        "RAG",
+        "Agent",
+        "MCP",
+        "Skills",
+        "Claude",
+        "Codex",
+        "DeepSeek",
+        "Qwen"
+      ]
+    },
+    "Quant": {
+      "keywords": [
+        "量化",
+        "量化交易",
+        "Quant"
+      ]
+    },
+    "投资理财": {
+      "keywords": [
+        "金融",
+        "理财",
+        "定投",
+        "基金",
+        "ETF",
+        "区块链",
+        "比特币",
+        "BTC",
+        "以太坊",
+        "ETH",
+        "SOL"
+      ]
+    }
+  }
+}

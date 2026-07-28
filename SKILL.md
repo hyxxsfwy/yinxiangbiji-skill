@@ -28,6 +28,7 @@ Copy-Item .env.example .env
 | 查看废纸篓 | `python scripts/list_trash.py --max-count 20` | 只读 |
 | 下载 ENML | `python scripts/get_note_enml.py --guid "GUID" --output ".\note.xml"` | 只读账户 |
 | 全量同步到暂存区 | `python scripts/sync_to_obsidian.py --vault "D:\OneDrive\文档\@_Obsidian_全量同步暂存"` | 只读账户 |
+| 大规模多领域导出 | `python scripts/export_multi_domain.py --job ".state\jobs\任务.json"` | 只读账户；修改本地 vault |
 | 创建 | `python scripts/create_note.py --title "标题" --content "<en-note>内容</en-note>"` | 修改账户 |
 | 更新 | `python scripts/update_note.py --guid "GUID" --title "新标题"` | 修改账户 |
 | 移入废纸篓 | `python scripts/delete_note.py --guid "GUID" --confirm` | 修改账户 |
@@ -41,7 +42,7 @@ Copy-Item .env.example .env
 
 ## 搜索并导出
 
-涉及“最近一年、多个关键词、导出前 N 篇”时，直接使用组合命令：
+只涉及一个领域且数量较小时，使用单领域组合命令：
 
 ```powershell
 python scripts/export_search_results.py `
@@ -79,6 +80,32 @@ python scripts/export_search_results.py `
 3. 每个 `../_attachments/...` 引用都有对应文件。
 4. 同标题文章只保留按上述新旧规则选中的一篇；同名不同内容附件仍分别存在。
 5. 日志中的错域或无法确定项在目标目录内没有 Markdown 和附件残留。
+
+### 大规模多领域导出
+
+任务涉及两个及以上领域、关键词大量重叠、要求 `all` 或预计会触发 API 限流时，必须使用 `export_multi_domain.py`，不能分别运行多个单领域命令后再人工去重。
+
+先复制 `templates/multi-domain-export-job.json` 到 Git 忽略的 `.state/jobs/` 并修改日期、vault 和关键词，然后运行：
+
+```powershell
+python scripts/export_multi_domain.py `
+  --job ".state\jobs\任务.json" `
+  --catalog ".state\export-catalog.sqlite3" `
+  --rate-limit-mode wait `
+  --max-rate-limit-wait 3600
+```
+
+多领域流程的固定契约：
+
+1. 每个关键词自动分页到服务端 `totalNotes`，合并 GUID 后才请求正文；不得用候选上限代替全量分页。
+2. 新任务先用现有 `30_精选资料` Markdown 自动补建 SQLite 历史解析目录，再查询目录。缓存身份是 `GUID + updated + 规则指纹`，与关键词无关；因此更改检索关键词后，未变化且按当前规则解析过的文章可以直接复用。
+3. 历史目录保存标题、GUID、内容摘要、正文哈希、领域标签与得分证据、唯一主领域、规范文件路径和审计时间，不保存完整正文、附件或 Token。规则或 `updated` 变化时缓存失效；规范文件缺失或附件不完整时只为重新落盘请求正文。
+4. 一个 GUID 在一次任务中只审核一次。正文统一比较全部已知领域，只允许一个唯一主领域；并列、证据不足或任务外领域占优时拒绝。不得用多领域标签代替唯一主领域，目录中的多领域标签只保留为历史分析证据。
+5. 主领域判定后进行全局标题去重，全部目标领域只保留按 `updated`、`created`、GUID 选出的最新匹配版本。
+6. 限流在等待预算内按服务端时长继续；超预算时状态和 SQLite 目录已经逐篇提交，可直接续跑。
+7. 默认终端只显示汇总，完整搜索、审核、限流和验收结果写入 JSON。报告中的 `catalog_hits` 和 `body_requests_saved` 用于确认历史目录实际节省的正文请求。
+
+只有报告为 `ok: true`，且索引、附件、日期范围和重复项全部通过，才可以声称完成。至少检查：每个关键词 `pulled == total`、缺失附件为零、领域内和跨领域重复标题/GUID 为零、索引位置全部存在、任务范围内数量与按月统计一致。进程退出码为零但完整性验收未通过时，只能报告部分完成。
 
 ## Obsidian 精选知识管理
 
@@ -124,6 +151,8 @@ python scripts/export_search_results.py `
 | Markdown 没图片 | `getNote` 是否请求资源数据；月度文章是否使用 `../_attachments/` |
 | 重复剪藏仍出现 | 是否在 `--limit` 前按完全一致标题比较 `updated`、`created`、GUID |
 | 标题相关但正文错域 | 是否先拉取完整正文并通过正文主旨门禁；拒绝项不得写入 Markdown 或附件 |
+| 新关键词又重复拉正文 | 是否使用 `.state/export-catalog.sqlite3`；GUID、updated 或规则指纹是否变化 |
+| 同一文章进入多个领域 | 是否使用多领域编排器选择唯一主领域并执行全局标题去重 |
 | 目录索引缺文章 | 文章是否有可解析的 `created`、`updated` 和 `source_guid` |
 | 同名附件只剩一个 | 文件名冲突时是否追加内容哈希 |
 | 整库同步漏笔记 | 是否分页读取元数据；整库同步不按标题去重，组合导出才按标题去重 |
