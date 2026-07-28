@@ -58,7 +58,9 @@ def load_config(env_path=None):
 def load_setting(name, env_path=None):
     """读取任意环境配置项，环境变量优先于仓库根目录 .env。"""
     path = Path(env_path) if env_path is not None else SKILL_ROOT / ".env"
-    return os.environ.get(name) or _read_dotenv(path).get(name)
+    if name in os.environ:
+        return os.environ[name]
+    return _read_dotenv(path).get(name)
 
 
 def load_vault_root(explicit=None, env_path=None):

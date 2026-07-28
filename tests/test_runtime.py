@@ -218,8 +218,34 @@ class RuntimeConfigTests(unittest.TestCase):
 
                 selected_materials = configured / "30_精选资料"
                 selected_materials.mkdir()
+                (selected_materials / ".obsidian").mkdir()
                 with self.assertRaises(ValueError):
                     load_vault_root(explicit=selected_materials)
+
+
+    def test_load_vault_root_rejects_explicitly_empty_environment_value(self):
+        from scripts.runtime import load_vault_root
+
+        with workspace_temp_dir() as temp_dir:
+            configured = temp_dir / "vault"
+            configured.mkdir()
+            (configured / ".obsidian").mkdir()
+            env_file = temp_dir / ".env"
+            env_file.write_text(
+                f"OBSIDIAN_VAULT_PATH={configured}\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {"OBSIDIAN_VAULT_PATH": ""},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "未配置 OBSIDIAN_VAULT_PATH",
+                ):
+                    load_vault_root(env_path=env_file)
 
 
 if __name__ == "__main__":
