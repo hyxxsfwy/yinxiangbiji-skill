@@ -31,6 +31,26 @@ class CatalogEntry:
     last_seen_at: str
 
 
+@dataclass(frozen=True)
+class KeywordCatalogEntry:
+    guid: str
+    updated_ms: int
+    selection_hash: str
+    title: str
+    created_ms: int
+    notebook_name: str
+    summary: str
+    body_sha256: str
+    outcome: str
+    primary_domain: str | None
+    matched_keywords: tuple[str, ...]
+    matched_terms: tuple[str, ...]
+    canonical_path: str | None
+    first_fetched_at: str
+    last_fetched_at: str
+    last_seen_at: str
+
+
 def _normalized_title(title):
     return unicodedata.normalize("NFKC", str(title or "")).casefold().strip()
 
@@ -83,6 +103,34 @@ class ExportCatalog:
                 ON parsed_notes(primary_domain);
             CREATE INDEX IF NOT EXISTS idx_parsed_notes_title
                 ON parsed_notes(normalized_title);
+            CREATE TABLE IF NOT EXISTS keyword_analyses (
+                guid TEXT NOT NULL,
+                updated_ms INTEGER NOT NULL,
+                selection_hash TEXT NOT NULL,
+                title TEXT NOT NULL,
+                normalized_title TEXT NOT NULL,
+                created_ms INTEGER NOT NULL,
+                notebook_name TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                body_sha256 TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                primary_domain TEXT,
+                matched_keywords_json TEXT NOT NULL,
+                matched_terms_json TEXT NOT NULL,
+                canonical_path TEXT,
+                first_fetched_at TEXT NOT NULL,
+                last_fetched_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (guid, selection_hash)
+            );
+            CREATE INDEX IF NOT EXISTS idx_keyword_analyses_updated
+                ON keyword_analyses(updated_ms);
+            CREATE INDEX IF NOT EXISTS idx_keyword_analyses_domain
+                ON keyword_analyses(primary_domain);
+            CREATE INDEX IF NOT EXISTS idx_keyword_analyses_title
+                ON keyword_analyses(normalized_title);
+            CREATE INDEX IF NOT EXISTS idx_keyword_analyses_selection
+                ON keyword_analyses(selection_hash);
             """
         )
         self.connection.commit()
@@ -218,6 +266,142 @@ class ExportCatalog:
             "domains": domains,
         }
 
+    def upsert_keyword(self, entry):
+        if entry.outcome not in {
+            "accepted",
+            "rejected",
+            "duplicate_title",
+        }:
+            raise ValueError(
+                "outcome 只能是 accepted、rejected 或 duplicate_title"
+            )
+        values = (
+            entry.guid,
+            int(entry.updated_ms),
+            entry.selection_hash,
+            entry.title,
+            _normalized_title(entry.title),
+            int(entry.created_ms),
+            entry.notebook_name,
+            entry.summary,
+            entry.body_sha256,
+            entry.outcome,
+            entry.primary_domain,
+            _json_dump(list(entry.matched_keywords)),
+            _json_dump(list(entry.matched_terms)),
+            entry.canonical_path,
+            entry.first_fetched_at,
+            entry.last_fetched_at,
+            entry.last_seen_at,
+        )
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO keyword_analyses (
+                    guid, updated_ms, selection_hash, title,
+                    normalized_title, created_ms, notebook_name, summary,
+                    body_sha256, outcome, primary_domain,
+                    matched_keywords_json, matched_terms_json,
+                    canonical_path, first_fetched_at, last_fetched_at,
+                    last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guid, selection_hash) DO UPDATE SET
+                    updated_ms = excluded.updated_ms,
+                    title = excluded.title,
+                    normalized_title = excluded.normalized_title,
+                    created_ms = excluded.created_ms,
+                    notebook_name = excluded.notebook_name,
+                    summary = excluded.summary,
+                    body_sha256 = excluded.body_sha256,
+                    outcome = excluded.outcome,
+                    primary_domain = excluded.primary_domain,
+                    matched_keywords_json = excluded.matched_keywords_json,
+                    matched_terms_json = excluded.matched_terms_json,
+                    canonical_path = excluded.canonical_path,
+                    first_fetched_at = keyword_analyses.first_fetched_at,
+                    last_fetched_at = excluded.last_fetched_at,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                values,
+            )
+
+    def get_keyword(self, guid, selection_hash):
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM keyword_analyses
+            WHERE guid = ? AND selection_hash = ?
+            """,
+            (guid, selection_hash),
+        ).fetchone()
+        return (
+            self._row_to_keyword_entry(row)
+            if row is not None
+            else None
+        )
+
+    def get_keyword_current(self, guid, updated_ms, selection_hash):
+        entry = self.get_keyword(guid, selection_hash)
+        if entry is None or entry.updated_ms != int(updated_ms):
+            return None
+        return entry
+
+    def mark_keyword_seen(self, guid, selection_hash, seen_at):
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE keyword_analyses
+                SET last_seen_at = ?
+                WHERE guid = ? AND selection_hash = ?
+                """,
+                (seen_at, guid, selection_hash),
+            )
+
+    def keyword_stats(self, selection_hash):
+        outcomes = {
+            row["outcome"]: row["count"]
+            for row in self.connection.execute(
+                """
+                SELECT outcome, COUNT(*) AS count
+                FROM keyword_analyses
+                WHERE selection_hash = ?
+                GROUP BY outcome
+                """,
+                (selection_hash,),
+            )
+        }
+        domains = {
+            row["primary_domain"]: row["count"]
+            for row in self.connection.execute(
+                """
+                SELECT primary_domain, COUNT(*) AS count
+                FROM keyword_analyses
+                WHERE selection_hash = ? AND primary_domain IS NOT NULL
+                GROUP BY primary_domain
+                ORDER BY primary_domain
+                """,
+                (selection_hash,),
+            )
+        }
+        return {
+            "total": sum(outcomes.values()),
+            "accepted": outcomes.get("accepted", 0),
+            "rejected": outcomes.get("rejected", 0),
+            "duplicate_titles": outcomes.get("duplicate_title", 0),
+            "domains": domains,
+        }
+
+    def count_keyword_current(self, expected_candidates, selection_hash):
+        return sum(
+            self.get_keyword_current(
+                guid,
+                updated_ms,
+                selection_hash,
+            )
+            is not None
+            for guid, updated_ms in expected_candidates.items()
+        )
+
     @staticmethod
     def _row_to_entry(row):
         evidence = json.loads(row["evidence_json"])
@@ -241,6 +425,31 @@ class ExportCatalog:
                 key: tuple(items)
                 for key, items in evidence.items()
             },
+            canonical_path=row["canonical_path"],
+            first_fetched_at=row["first_fetched_at"],
+            last_fetched_at=row["last_fetched_at"],
+            last_seen_at=row["last_seen_at"],
+        )
+
+    @staticmethod
+    def _row_to_keyword_entry(row):
+        return KeywordCatalogEntry(
+            guid=row["guid"],
+            updated_ms=row["updated_ms"],
+            selection_hash=row["selection_hash"],
+            title=row["title"],
+            created_ms=row["created_ms"],
+            notebook_name=row["notebook_name"],
+            summary=row["summary"],
+            body_sha256=row["body_sha256"],
+            outcome=row["outcome"],
+            primary_domain=row["primary_domain"],
+            matched_keywords=tuple(
+                json.loads(row["matched_keywords_json"])
+            ),
+            matched_terms=tuple(
+                json.loads(row["matched_terms_json"])
+            ),
             canonical_path=row["canonical_path"],
             first_fetched_at=row["first_fetched_at"],
             last_fetched_at=row["last_fetched_at"],
