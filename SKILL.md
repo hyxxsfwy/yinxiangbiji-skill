@@ -130,6 +130,34 @@ python scripts/export_multi_domain.py `
 
 只有报告为 `ok: true`，且索引、附件、检索范围对账和重复项全部通过，才可以声称完成。至少检查：每个关键词 `pulled == total`、缺失附件为零、领域内和跨领域重复标题/GUID 为零、索引位置全部存在、任务范围内数量与按月统计一致。目标领域既有的其他月份是历史知识库，只计入目录总量，不作为本次任务越界错误。进程退出码为零但完整性验收未通过时，只能报告部分完成。
 
+### 关键词穷尽并集导出
+
+当用户要求“标题或完整正文命中任一关键词就导出”，任务必须声明 `selection_mode: keyword_union`。该模式不同于高精度正文主旨门禁：它逐一搜索所有规范关键词及别名，按 GUID 合并候选，然后用 ASCII 字母数字边界和 Unicode NFKC 规则重新核验标题及完整正文。短词 `AI`、`SOL` 不得误命中 `training`、`solution`。目录归属按各目录命中的规范关键词数量决定；数量并列时使用任务文件中的目录顺序。
+
+本次正式任务使用 `templates/keyword-union-export-job.json`，日期区间为 `[2026-04-01, 2026-08-01)`，即包含 2026-04-01、不包含 2026-08-01。模板保留用户输入的规范词 `HugginFace`，并额外搜索 `HuggingFace` 和 `Hugging Face`；报告仍归并到规范词。禁止把中文 JSON 通过 PowerShell 管道或 `python -` 传递，必须从 UTF-8 文件加载：
+
+```powershell
+$env:PYTHONUTF8 = "1"
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
+$jobDir = Join-Path $vault ".state\yinxiang-notes\jobs"
+New-Item -ItemType Directory -Force -Path $jobDir | Out-Null
+$job = Join-Path $jobDir "2026-04-01-to-2026-08-01-keyword-union.json"
+Copy-Item -LiteralPath "templates\keyword-union-export-job.json" -Destination $job
+python scripts/export_multi_domain.py `
+  --job $job `
+  --rate-limit-mode wait `
+  --max-rate-limit-wait 3600
+```
+
+关键词分析写入 SQLite 独立表 `keyword_analyses`，不会覆盖高精度模式使用的 `parsed_notes`。缓存保存 GUID、更新时间、摘要、正文哈希、匹配证据、唯一目录、结果和规范路径，不保存完整正文、附件二进制、Token 或 NoteStore URL。每篇分析先提交 SQLite，再物化 Markdown 和附件；发生中断时使用同一命令续跑。已拒绝项和完整的已导出项不重复请求正文，已接受但文件缺失的项目只重新请求一次用于物化。
+
+第一次正式文件写入前，脚本为任务声明的七个目录创建 `snapshots/<job-id>-before.zip` 和 SHA-256 清单。完成门禁同时要求所有查询项 `pulled == total`、每个候选都有当前 `keyword_analyses` 记录、候选恒等式成立、关键词 frontmatter 与选择指纹一致、附件和索引完整、日期无越界、领域内及跨领域重复为零，最终 JSON 报告为 `ok: true`。
+
+退出码 75 表示限流等待预算耗尽：保留 SQLite、快照、运行状态和已物化文件，等待后使用同一命令续跑。退出码 1 表示验收未通过：必须读取 JSON 报告并修复后续跑，不得声称完成，也不得手工修改报告中的 `ok`。
+
 ## Obsidian 精选知识管理
 
 默认精选迁移，不复制印象笔记的笔记本组、年份归档和自动采集目录；历史剪藏继续保留在印象笔记。五项迁移条件中至少两项满足时才按需迁移：正在用于项目、仍有效且不易重找、能说明保留价值、可关联或形成知识笔记、预计会再次引用。

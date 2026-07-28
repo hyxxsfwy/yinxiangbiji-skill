@@ -33,6 +33,25 @@ class SkillDocumentationTests(unittest.TestCase):
         self.skill = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
+    def test_keyword_union_workflow_is_documented(self):
+        for text in (self.skill, self.readme):
+            for phrase in (
+                "selection_mode",
+                "keyword_union",
+                "keyword_analyses",
+                "HuggingFace",
+                "pulled == total",
+                "2026-08-01",
+                "不保存完整正文",
+                "退出码 75",
+                "退出码 1",
+                "同一命令续跑",
+                "禁止把中文 JSON",
+                "keyword-union-export-job.json",
+            ):
+                with self.subTest(document=text[:20], phrase=phrase):
+                    self.assertIn(phrase, text)
+
     def test_keyword_union_template_contains_every_requested_keyword(self):
         payload = json.loads(
             (

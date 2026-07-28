@@ -118,6 +118,34 @@ SQLite 历史解析目录默认位于 `<vault>/.state/yinxiang-notes/export-cata
 
 只有 `ok: true` 且索引、附件、检索范围对账和重复项全部通过时任务才算完成。完整性验收会检查关键词搜索是否拉全、图片和附件是否存在、索引位置是否有效、领域内及跨领域重复是否为零，并区分任务日期范围内数量和目录现存总数。目标领域中已经存在的其他月份属于历史知识库，只参与总量统计，不会被误判为本次任务越界。
 
+### 关键词穷尽并集导出
+
+需要把“标题或完整正文命中任一关键词”的全部笔记同步到精选资料时，在任务 JSON 中设置 `selection_mode: keyword_union`。编排器会逐项搜索规范关键词和别名，完整分页后合并 GUID，再以 ASCII 字母数字边界和 Unicode NFKC 规则核验标题及正文。`AI` 不会误命中 `training`，`SOL` 不会误命中 `solution`。一篇笔记命中多个目录时，规范关键词命中数量最多的目录成为唯一目录；数量并列时按任务中的目录顺序决定。
+
+仓库提供的 `templates/keyword-union-export-job.json` 包含 63 个规范关键词和 65 个查询项，日期范围是 `[2026-04-01, 2026-08-01)`，即不包含 2026-08-01。规范词 `HugginFace` 同时扩展搜索 `HuggingFace` 与 `Hugging Face`，统计结果归并回规范词。禁止把中文 JSON 通过 PowerShell 管道或 `python -` 传入 Python，应从 UTF-8 任务文件运行：
+
+```powershell
+$env:PYTHONUTF8 = "1"
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
+$jobDir = Join-Path $vault ".state\yinxiang-notes\jobs"
+New-Item -ItemType Directory -Force -Path $jobDir | Out-Null
+$job = Join-Path $jobDir "2026-04-01-to-2026-08-01-keyword-union.json"
+Copy-Item -LiteralPath "templates\keyword-union-export-job.json" -Destination $job
+python scripts/export_multi_domain.py `
+  --job $job `
+  --rate-limit-mode wait `
+  --max-rate-limit-wait 3600
+```
+
+关键词模式在同一个 SQLite 文件中使用独立表 `keyword_analyses`，不会覆盖 `parsed_notes`。它只保存元数据、摘要、正文哈希、命中证据、结果、规范路径和审计时间，不保存完整正文、附件二进制或凭据。分析记录先于 Markdown 物化逐篇提交；中断后再次执行同一命令即可续跑。当前拒绝缓存和完整规范文件可以跳过正文请求，缓存已接受但文件缺失时只重新获取一次正文和资源。
+
+首次物化前会在 `.state/yinxiang-notes/snapshots/` 中生成 `<job-id>-before.zip` 与 SHA-256 清单。最终报告只有在所有查询项 `pulled == total`、候选全部进入 `keyword_analyses`、候选总数恒等式成立、frontmatter 指纹一致、附件和索引完整、日期无越界且重复项为零时才会得到 `ok: true`。
+
+退出码 75 表示本次限流等待预算耗尽，所有状态和快照都会保留；等待后使用同一命令续跑。退出码 1 表示 JSON 验收报告未通过，必须按报告修复并续跑，不得声称任务完成或手工改写 `ok`。
+
 ### 增量同步整个 vault
 
 ```powershell
