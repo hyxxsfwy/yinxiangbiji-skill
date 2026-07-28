@@ -33,6 +33,7 @@ try:
         create_note_store,
         find_notes_metadata,
         load_config,
+        load_vault_root,
     )
 except ImportError:
     from runtime import (
@@ -40,6 +41,20 @@ except ImportError:
         create_note_store,
         find_notes_metadata,
         load_config,
+        load_vault_root,
+    )
+
+try:
+    from .vault_state import (
+        VaultStatePaths,
+        migrate_legacy_state,
+        runtime_write_lock,
+    )
+except ImportError:
+    from vault_state import (
+        VaultStatePaths,
+        migrate_legacy_state,
+        runtime_write_lock,
     )
 
 try:
@@ -586,15 +601,24 @@ def discover_exported_versions(target_dir):
     return versions
 
 
-def export_state_path(target_dir, domain):
-    """为目标目录生成不进入 Obsidian 的本地续跑状态路径。"""
-    target_key = str(Path(target_dir).resolve()).casefold()
-    digest = hashlib.sha256(target_key.encode("utf-8")).hexdigest()[:16]
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def derive_domain_target(vault, domain, explicit=None):
+    """将单领域导出严格限制在全局 Vault 的对应领域目录。"""
+    expected = Path(vault).resolve() / "30_精选资料" / domain
+    candidate = Path(explicit).resolve() if explicit else expected
+    if candidate != expected:
+        raise ValueError(f"目标目录必须是 {expected}")
+    return candidate
+
+
+def export_state_path(vault, domain):
+    """返回跟随 Vault 同步的单领域导出续跑状态路径。"""
     safe_domain = re.sub(r"[^\w-]+", "_", domain)
     return (
-        Path(__file__).resolve().parent.parent
-        / ".state"
-        / f"export-{safe_domain}-{digest}.json"
+        VaultStatePaths.for_vault(vault).single_domain
+        / f"export-{safe_domain}.json"
     )
 
 
@@ -948,8 +972,7 @@ def main():
     parser.add_argument(
         "--target",
         type=Path,
-        required=True,
-        help="Obsidian 目标目录",
+        help="Obsidian 目标目录（默认使用全局 Vault 的对应领域目录）",
     )
     parser.add_argument(
         "--domain",
@@ -960,6 +983,19 @@ def main():
     args = parser.parse_args()
     if args.until is not None and args.until <= args.since:
         parser.error("--until 必须晚于 --since")
+
+    try:
+        vault = load_vault_root()
+        args.target = derive_domain_target(
+            vault,
+            args.domain,
+            explicit=args.target,
+        )
+        state_paths = VaultStatePaths.for_vault(vault)
+        state_file = export_state_path(vault, args.domain)
+        migrate_legacy_state(state_paths, REPO_ROOT / ".state")
+    except ValueError as exc:
+        parser.error(str(exc))
 
     token, note_store_url = load_config()
     if not token or not note_store_url:
@@ -986,16 +1022,21 @@ def main():
     notebooks = note_store.listNotebooks(token)
     notebook_map = {notebook.guid: notebook.name for notebook in notebooks}
 
-    result = export_domain_candidates(
-        note_store=note_store,
-        token=token,
-        candidates=candidates,
-        notebook_map=notebook_map,
-        target_dir=args.target,
-        domain=args.domain,
-        limit=args.limit,
-        state_file=export_state_path(args.target, args.domain),
-    )
+    with runtime_write_lock(state_paths, f"single-domain-{args.domain}"):
+        result = export_domain_candidates(
+            note_store=note_store,
+            token=token,
+            candidates=candidates,
+            notebook_map=notebook_map,
+            target_dir=args.target,
+            domain=args.domain,
+            limit=args.limit,
+            state_file=state_file,
+        )
+        finalization = finalize_knowledge_base(
+            args.target,
+            domain=args.domain,
+        )
     for review in result.rejected:
         evidence = "、".join(review.assessment.evidence[:6]) or "无"
         print(
@@ -1030,7 +1071,6 @@ def main():
             f"{review.assessment.reason}"
         )
 
-    finalization = finalize_knowledge_base(args.target, domain=args.domain)
     print(f"\n已导出到: {args.target}")
     for exported_path in result.exported_paths:
         print(f"- {exported_path.relative_to(args.target)}")

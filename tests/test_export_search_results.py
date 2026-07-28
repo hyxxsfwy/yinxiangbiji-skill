@@ -2,10 +2,12 @@ import unittest
 from datetime import date
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from evernote.edam.type.ttypes import NoteSortOrder
 
@@ -1211,6 +1213,96 @@ class AttachmentLinkTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_global_vault_derives_domain_target_and_state(self):
+        from scripts import export_search_results
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            candidate = SimpleNamespace(
+                guid="candidate-guid",
+                title="AI 笔记",
+                created=1_700_000_000_000,
+                updated=1_700_000_000_000,
+            )
+            captured = {}
+
+            class FakeNoteStore:
+                def listNotebooks(self, token):
+                    return []
+
+            def export_candidates(**kwargs):
+                captured.update(kwargs)
+                return export_search_results.DomainExportResult(
+                    selected=(),
+                    rejected=(),
+                    already_exported=(candidate,),
+                    previously_rejected=(),
+                    exported_paths=(),
+                )
+
+            expected_target = vault / "30_精选资料" / "AI"
+            expected_state = (
+                vault
+                / ".state"
+                / "yinxiang-notes"
+                / "single-domain"
+                / "export-AI.json"
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    {"OBSIDIAN_VAULT_PATH": str(vault)},
+                    clear=False,
+                ),
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "export_search_results.py",
+                        "--since",
+                        "2026-07-01",
+                    ],
+                ),
+                patch.object(
+                    export_search_results,
+                    "load_config",
+                    return_value=("token", "https://example.invalid"),
+                ),
+                patch.object(
+                    export_search_results,
+                    "create_note_store",
+                    return_value=FakeNoteStore(),
+                ),
+                patch.object(
+                    export_search_results,
+                    "search_metadata_batches",
+                    return_value=([[candidate]], [1]),
+                ),
+                patch.object(
+                    export_search_results,
+                    "rank_note_candidates",
+                    return_value=[candidate],
+                ),
+                patch.object(
+                    export_search_results,
+                    "export_domain_candidates",
+                    side_effect=export_candidates,
+                ),
+                patch.object(
+                    export_search_results,
+                    "finalize_knowledge_base",
+                    return_value=SimpleNamespace(
+                        index_path=expected_target / "目录索引.md",
+                        errors=(),
+                    ),
+                ),
+            ):
+                self.assertEqual(export_search_results.main(), 0)
+
+            self.assertEqual(captured["target_dir"], expected_target)
+            self.assertEqual(captured["state_file"], expected_state)
+
     def test_help_is_emitted_as_utf8_on_windows(self):
         script_path = (
             Path(__file__).resolve().parent.parent

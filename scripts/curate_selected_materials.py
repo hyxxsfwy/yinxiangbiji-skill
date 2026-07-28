@@ -17,9 +17,21 @@ from urllib.parse import unquote
 try:
     from scripts.knowledge_base import write_knowledge_base_index
     from scripts.restructure_obsidian_vault import iter_markdown_references
+    from scripts.runtime import load_vault_root
+    from scripts.vault_state import (
+        VaultStatePaths,
+        migrate_legacy_state,
+        runtime_write_lock,
+    )
 except ModuleNotFoundError:
     from knowledge_base import write_knowledge_base_index
     from restructure_obsidian_vault import iter_markdown_references
+    from runtime import load_vault_root
+    from vault_state import (
+        VaultStatePaths,
+        migrate_legacy_state,
+        runtime_write_lock,
+    )
 
 
 INDEX_FILENAME = "目录索引.md"
@@ -41,6 +53,7 @@ AUTO_LINK_TARGET = re.compile(
 SNAPSHOT_BASENAME = "2026-07-27-精选资料整理前"
 AUDIT_LOG_NAME = "2026-07-27-精选资料逐篇审阅.md"
 EXTERNAL_SCHEMES = ("http:", "https:", "mailto:", "data:")
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass(frozen=True)
@@ -717,7 +730,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="逐篇整理 Obsidian 精选资料并维护受控双向链接"
     )
-    parser.add_argument("--vault", type=Path, required=True)
+    parser.add_argument("--vault", type=Path)
     parser.add_argument("--review", type=Path, required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--verify", action="store_true")
@@ -729,6 +742,11 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
+    try:
+        args.vault = load_vault_root(args.vault)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if args.apply and args.verify:
         print("--apply 与 --verify 不能同时使用", file=sys.stderr)
         return 2
@@ -764,19 +782,22 @@ def main(argv=None) -> int:
             print("预览模式：未修改 vault")
             return 0
 
-        create_snapshot(
-            plan,
-            plan.snapshot_zip,
-            plan.snapshot_manifest,
-        )
-        apply_curation(plan)
-        completed_issues = validate_completed_curation(plan)
-        if completed_issues:
-            for issue in completed_issues:
-                print(f"验证失败: {issue}", file=sys.stderr)
-            return 1
-        print("整理完成并验证通过")
-        return 0
+        state_paths = VaultStatePaths.for_vault(args.vault)
+        migrate_legacy_state(state_paths, REPO_ROOT / ".state")
+        with runtime_write_lock(state_paths, "curate-selected-materials"):
+            create_snapshot(
+                plan,
+                plan.snapshot_zip,
+                plan.snapshot_manifest,
+            )
+            apply_curation(plan)
+            completed_issues = validate_completed_curation(plan)
+            if completed_issues:
+                for issue in completed_issues:
+                    print(f"验证失败: {issue}", file=sys.stderr)
+                return 1
+            print("整理完成并验证通过")
+            return 0
     except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
         print(str(exc), file=sys.stderr)
         return 1

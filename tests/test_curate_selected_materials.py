@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -528,6 +529,61 @@ def write_review_json(path):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_preview_and_verify_default_to_global_vault(self):
+        with workspace_temp_dir() as vault:
+            seed_curation_vault(vault)
+            review_path = vault / "review.json"
+            write_review_json(review_path)
+            environment = os.environ.copy()
+            environment["OBSIDIAN_VAULT_PATH"] = str(vault)
+
+            preview = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/curate_selected_materials.py",
+                    "--review",
+                    str(review_path),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=environment,
+            )
+            applied = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/curate_selected_materials.py",
+                    "--review",
+                    str(review_path),
+                    "--apply",
+                    "--confirm",
+                    "CURATE_SELECTED_MATERIALS",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=environment,
+            )
+            verified = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/curate_selected_materials.py",
+                    "--review",
+                    str(review_path),
+                    "--verify",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=environment,
+            )
+
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertIn("预览模式", preview.stdout)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertIn("验证通过", verified.stdout)
+
     def test_preview_is_read_only_and_reports_counts(self):
         with workspace_temp_dir() as vault:
             seed_curation_vault(vault)

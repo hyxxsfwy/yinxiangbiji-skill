@@ -2,6 +2,8 @@ import unittest
 from contextlib import redirect_stdout
 from datetime import datetime
 from io import StringIO
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -217,6 +219,65 @@ class SyncStateTests(unittest.TestCase):
 
 
 class SyncDestinationSafetyTests(unittest.TestCase):
+    def test_full_sync_defaults_only_to_dedicated_sync_vault(self):
+        from scripts import sync_to_obsidian
+
+        formal_vault = Path("D:/formal-vault")
+        staging_vault = Path("D:/staging-vault")
+        received = []
+
+        def load_setting(name):
+            return {
+                "OBSIDIAN_VAULT_PATH": str(formal_vault),
+                "YINXIANG_SYNC_VAULT_PATH": str(staging_vault),
+            }.get(name)
+
+        def run_sync(**kwargs):
+            received.append(kwargs["vault_path"])
+            return True
+
+        with (
+            patch.object(
+                sync_to_obsidian,
+                "load_setting",
+                side_effect=load_setting,
+            ),
+            patch.object(sync_to_obsidian, "sync_to_obsidian", run_sync),
+            patch.object(sys, "argv", ["sync_to_obsidian.py"]),
+        ):
+            self.assertEqual(sync_to_obsidian.main(), 0)
+
+        self.assertEqual(received, [staging_vault])
+
+    def test_full_sync_never_falls_back_to_formal_vault(self):
+        from scripts import sync_to_obsidian
+
+        def load_setting(name):
+            if name == "OBSIDIAN_VAULT_PATH":
+                return "D:/formal-vault"
+            return None
+
+        stderr = StringIO()
+        with (
+            patch.object(
+                sync_to_obsidian,
+                "load_setting",
+                side_effect=load_setting,
+            ),
+            patch.object(
+                sync_to_obsidian,
+                "sync_to_obsidian",
+                side_effect=AssertionError("不得调用全量同步"),
+            ),
+            patch.object(sys, "argv", ["sync_to_obsidian.py"]),
+            patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            sync_to_obsidian.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("YINXIANG_SYNC_VAULT_PATH", stderr.getvalue())
+
     def test_full_sync_rejects_unified_llm_wiki_root_before_loading_credentials(self):
         from scripts.sync_to_obsidian import sync_to_obsidian
 

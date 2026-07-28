@@ -1258,8 +1258,11 @@ def main():
     parser.add_argument(
         "--vault",
         type=Path,
-        default=load_setting("OBSIDIAN_VAULT_PATH"),
-        help="Obsidian vault 路径；也可在环境变量或 .env 中设置 OBSIDIAN_VAULT_PATH",
+        default=load_setting("YINXIANG_SYNC_VAULT_PATH"),
+        help=(
+            "全量同步专用暂存 Vault；也可在环境变量或 .env 中设置 "
+            "YINXIANG_SYNC_VAULT_PATH"
+        ),
     )
     parser.add_argument(
         "--state-file",
@@ -1283,7 +1286,10 @@ def main():
                         help='只同步此笔记本（名称匹配）')
     args = parser.parse_args()
     if not args.vault:
-        parser.error("请使用 --vault 或 OBSIDIAN_VAULT_PATH 指定 Obsidian vault")
+        parser.error(
+            "请使用 --vault 或配置 YINXIANG_SYNC_VAULT_PATH "
+            "指定全量同步专用暂存 Vault"
+        )
     succeeded = sync_to_obsidian(
         vault_path=args.vault,
         state_file=args.state_file,

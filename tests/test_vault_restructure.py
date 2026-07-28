@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -1239,6 +1240,27 @@ class CleanupGateTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_global_vault_is_used_when_vault_argument_is_omitted(self):
+        with workspace_temp_dir() as vault:
+            seed_old_vault(vault)
+            environment = os.environ.copy()
+            environment["OBSIDIAN_VAULT_PATH"] = str(vault)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/restructure_obsidian_vault.py",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=environment,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("预览模式", result.stdout)
+            self.assertFalse((vault / "20_知识笔记").exists())
+
     def test_default_command_only_prints_plan(self):
         with workspace_temp_dir() as vault:
             seed_old_vault(vault)

@@ -15,11 +15,24 @@ from urllib.parse import unquote
 
 try:
     from scripts.knowledge_base import write_knowledge_base_index
+    from scripts.runtime import load_vault_root
+    from scripts.vault_state import (
+        VaultStatePaths,
+        migrate_legacy_state,
+        runtime_write_lock,
+    )
 except ModuleNotFoundError:
     from knowledge_base import write_knowledge_base_index
+    from runtime import load_vault_root
+    from vault_state import (
+        VaultStatePaths,
+        migrate_legacy_state,
+        runtime_write_lock,
+    )
 
 
 CONFIRMATION = "MIGRATE_OBSIDIAN_VAULT"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 DOMAINS = ("AI", "Quant", "软件工程", "投资理财", "个人成长")
 LEGACY_CONTENT_DIRECTORIES = (
     "AI相关知识库",
@@ -1876,7 +1889,7 @@ def print_plan(plan: MigrationPlan):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="安全重组 HYXX Obsidian LLM Wiki")
-    parser.add_argument("--vault", type=Path, required=True)
+    parser.add_argument("--vault", type=Path)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument(
         "--verify",
@@ -1891,6 +1904,11 @@ def main(argv=None):
     args = parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
+    try:
+        args.vault = load_vault_root(args.vault)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if args.verify:
         report = verify_completed_vault(args.vault)
         if not report.passed:
@@ -1905,40 +1923,43 @@ def main(argv=None):
         return 2
     plan = build_migration_plan(args.vault)
     if args.apply:
-        if not plan.old_directories:
-            report = verify_completed_vault(plan.vault)
-            if not report.passed:
-                for issue in report.issues:
-                    print(f"验证失败: {issue}", file=sys.stderr)
-            return 0 if report.passed else 1
-        conflicts = find_migration_conflicts(plan)
-        if conflicts:
-            for conflict in conflicts:
-                print(f"迁移冲突: {conflict}", file=sys.stderr)
-            return 1
-        record_paths = migration_record_paths(plan.vault, plan)
-        backup = record_paths["backup"]
-        manifest = record_paths["manifest"]
-        link_report_path = record_paths["link_report"]
-        summary_path = record_paths["summary"]
+        state_paths = VaultStatePaths.for_vault(args.vault)
+        migrate_legacy_state(state_paths, REPO_ROOT / ".state")
+        with runtime_write_lock(state_paths, "restructure-vault"):
+            if not plan.old_directories:
+                report = verify_completed_vault(plan.vault)
+                if not report.passed:
+                    for issue in report.issues:
+                        print(f"验证失败: {issue}", file=sys.stderr)
+                return 0 if report.passed else 1
+            conflicts = find_migration_conflicts(plan)
+            if conflicts:
+                for conflict in conflicts:
+                    print(f"迁移冲突: {conflict}", file=sys.stderr)
+                return 1
+            record_paths = migration_record_paths(plan.vault, plan)
+            backup = record_paths["backup"]
+            manifest = record_paths["manifest"]
+            link_report_path = record_paths["link_report"]
+            summary_path = record_paths["summary"]
 
-        create_backup(plan, backup)
-        write_manifest(plan, manifest)
-        assert_source_snapshot_consistent(plan, manifest, backup)
-        apply_copy_phase(plan)
-        report = validate_migration(plan.vault, manifest)
-        write_link_report(report, link_report_path)
-        record_manifest_results(manifest, report)
-        if not report.passed:
-            return 1
-        cleanup_old_directories(plan, report)
-        write_migration_summary(
-            plan,
-            report,
-            summary_path,
-            old_directories_removed=True,
-        )
-        return 0
+            create_backup(plan, backup)
+            write_manifest(plan, manifest)
+            assert_source_snapshot_consistent(plan, manifest, backup)
+            apply_copy_phase(plan)
+            report = validate_migration(plan.vault, manifest)
+            write_link_report(report, link_report_path)
+            record_manifest_results(manifest, report)
+            if not report.passed:
+                return 1
+            cleanup_old_directories(plan, report)
+            write_migration_summary(
+                plan,
+                report,
+                summary_path,
+                old_directories_removed=True,
+            )
+            return 0
     print_plan(plan)
     return 0
 
