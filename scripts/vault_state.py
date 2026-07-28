@@ -350,8 +350,116 @@ def _operation_guard_path(paths):
     return paths.lock.with_name(f"{paths.lock.name}.guard")
 
 
+def _recovery_gate_path(paths):
+    guard = _operation_guard_path(paths)
+    return guard.with_name(f"{guard.name}.recovery")
+
+
+def _remove_owned_json_file(path, identity_key, identity):
+    current = _read_lock_payload(path)
+    if (
+        isinstance(current, dict)
+        and current.get(identity_key) == identity
+    ):
+        path.unlink(missing_ok=True)
+
+
 @contextmanager
-def _lock_operation_guard(paths, operation):
+def _guard_recovery_gate(paths):
+    gate = _recovery_gate_path(paths)
+    recovery_id = uuid.uuid4().hex
+    payload = {
+        "recovery_id": recovery_id,
+        "device": socket.gethostname(),
+        "pid": os.getpid(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        _create_lock(gate, payload)
+    except FileExistsError as exc:
+        raise StateLockConflict(
+            f"Vault guard 恢复 gate 已存在，拒绝并发恢复: {gate}"
+        ) from exc
+    try:
+        yield
+    finally:
+        _remove_owned_json_file(
+            gate,
+            "recovery_id",
+            recovery_id,
+        )
+
+
+def _archive_stale_guard(paths, guard):
+    paths.migrations.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    audit = paths.migrations / (
+        f"stale-guard-{timestamp}-{uuid.uuid4().hex}.json"
+    )
+    try:
+        os.replace(guard, audit)
+    except FileNotFoundError as exc:
+        raise StateLockConflict(
+            f"待恢复的 Vault operation guard 已消失: {guard}"
+        ) from exc
+    return audit
+
+
+def _recover_stale_operation_guard(paths):
+    guard = _operation_guard_path(paths)
+    with _guard_recovery_gate(paths):
+        payload = _read_lock_payload(guard)
+        live = _local_lock_is_live(payload)
+        if live is True:
+            raise StateLockConflict(
+                f"Vault operation guard 仍由本机存活进程持有: {guard}"
+            )
+        if live is not False:
+            raise StateLockConflict(
+                f"Vault operation guard 无法确认已失效: {guard}"
+            )
+        _archive_stale_guard(paths, guard)
+
+
+def _create_operation_guard(paths, payload, recover_stale):
+    guard = _operation_guard_path(paths)
+    gate = _recovery_gate_path(paths)
+    if gate.exists():
+        raise StateLockConflict(
+            f"Vault guard 正在恢复，拒绝获取 operation guard: {gate}"
+        )
+    try:
+        _create_lock(guard, payload)
+    except FileExistsError as exc:
+        if not recover_stale:
+            raise StateLockConflict(
+                f"Vault 锁操作 guard 已存在: {guard}"
+            ) from exc
+        _recover_stale_operation_guard(paths)
+        if gate.exists():
+            raise StateLockConflict(
+                f"Vault guard 恢复尚未结束: {gate}"
+            )
+        try:
+            _create_lock(guard, payload)
+        except FileExistsError as retry_exc:
+            raise StateLockConflict(
+                f"恢复后 operation guard 已被其他进程取得: {guard}"
+            ) from retry_exc
+
+    if gate.exists():
+        _remove_owned_json_file(
+            guard,
+            "guard_id",
+            payload["guard_id"],
+        )
+        raise StateLockConflict(
+            f"operation guard 创建期间恢复 gate 出现，已撤销: {gate}"
+        )
+
+
+@contextmanager
+def _lock_operation_guard(paths, operation, recover_stale=False):
     guard = _operation_guard_path(paths)
     guard_id = uuid.uuid4().hex
     payload = {
@@ -361,21 +469,11 @@ def _lock_operation_guard(paths, operation):
         "operation": operation,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    try:
-        _create_lock(guard, payload)
-    except FileExistsError as exc:
-        raise StateLockConflict(
-            f"Vault 锁操作 guard 已存在，拒绝自动清理: {guard}"
-        ) from exc
+    _create_operation_guard(paths, payload, recover_stale)
     try:
         yield
     finally:
-        current = _read_lock_payload(guard)
-        if (
-            isinstance(current, dict)
-            and current.get("guard_id") == guard_id
-        ):
-            guard.unlink(missing_ok=True)
+        _remove_owned_json_file(guard, "guard_id", guard_id)
 
 
 def _acquire_runtime_lock(paths, payload, recover_stale):
@@ -412,7 +510,11 @@ def runtime_write_lock(paths, task_id, recover_stale=False):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "lock_id": lock_id,
     }
-    with _lock_operation_guard(paths, "runtime"):
+    with _lock_operation_guard(
+        paths,
+        "runtime",
+        recover_stale=recover_stale,
+    ):
         _acquire_runtime_lock(paths, payload, recover_stale)
         try:
             yield payload

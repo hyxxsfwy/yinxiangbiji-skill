@@ -688,6 +688,153 @@ class RuntimeLockTests(unittest.TestCase):
             self.assertFalse(paths.lock.exists())
             self.assertEqual(len(contender_errors), 1)
 
+    def test_recover_stale_archives_dead_local_lock_and_guard(self):
+        from scripts.vault_state import runtime_write_lock
+
+        with workspace_temp_dir() as temp_dir:
+            paths = VaultStatePaths.for_vault(temp_dir / "vault")
+            paths.root.mkdir(parents=True)
+            guard = paths.lock.with_name(f"{paths.lock.name}.guard")
+            dead_pid = 424242
+            lock_payload = {
+                "device": socket.gethostname(),
+                "pid": dead_pid,
+                "task_id": "dead-task",
+                "created_at": "2026-07-28T00:00:00+00:00",
+                "lock_id": "dead-lock",
+            }
+            guard_payload = {
+                "guard_id": "dead-guard",
+                "device": socket.gethostname(),
+                "pid": dead_pid,
+                "operation": "runtime",
+                "created_at": "2026-07-28T00:00:00+00:00",
+            }
+            lock_bytes = (
+                json.dumps(lock_payload, ensure_ascii=False) + "\n"
+            ).encode("utf-8")
+            guard_bytes = (
+                json.dumps(guard_payload, ensure_ascii=False) + "\n"
+            ).encode("utf-8")
+            paths.lock.write_bytes(lock_bytes)
+            guard.write_bytes(guard_bytes)
+
+            with patch(
+                "scripts.vault_state.os.kill",
+                side_effect=ProcessLookupError,
+            ):
+                with runtime_write_lock(
+                    paths,
+                    "recovered-task",
+                    recover_stale=True,
+                ):
+                    active = json.loads(
+                        paths.lock.read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        active["task_id"],
+                        "recovered-task",
+                    )
+
+            self.assertFalse(paths.lock.exists())
+            self.assertFalse(guard.exists())
+            stale_locks = list(
+                paths.migrations.glob("stale-lock-*.json")
+            )
+            stale_guards = list(
+                paths.migrations.glob("stale-guard-*.json")
+            )
+            self.assertEqual(len(stale_locks), 1)
+            self.assertEqual(len(stale_guards), 1)
+            self.assertEqual(stale_locks[0].read_bytes(), lock_bytes)
+            self.assertEqual(stale_guards[0].read_bytes(), guard_bytes)
+
+    def test_recover_stale_never_overwrites_live_local_guard(self):
+        from scripts.vault_state import (
+            StateLockConflict,
+            runtime_write_lock,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            paths = VaultStatePaths.for_vault(temp_dir / "vault")
+            paths.root.mkdir(parents=True)
+            guard = paths.lock.with_name(f"{paths.lock.name}.guard")
+            lock_bytes = (
+                json.dumps(
+                    {
+                        "device": socket.gethostname(),
+                        "pid": os.getpid(),
+                        "task_id": "live-task",
+                        "created_at": "2026-07-28T00:00:00+00:00",
+                        "lock_id": "live-lock",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            ).encode("utf-8")
+            guard_bytes = (
+                json.dumps(
+                    {
+                        "guard_id": "live-guard",
+                        "device": socket.gethostname(),
+                        "pid": os.getpid(),
+                        "operation": "runtime",
+                        "created_at": "2026-07-28T00:00:00+00:00",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            ).encode("utf-8")
+            paths.lock.write_bytes(lock_bytes)
+            guard.write_bytes(guard_bytes)
+
+            with self.assertRaises(StateLockConflict):
+                with runtime_write_lock(
+                    paths,
+                    "intruder",
+                    recover_stale=True,
+                ):
+                    self.fail("活跃本机 guard 不得被恢复")
+
+            self.assertEqual(paths.lock.read_bytes(), lock_bytes)
+            self.assertEqual(guard.read_bytes(), guard_bytes)
+            self.assertFalse(paths.migrations.exists())
+
+    def test_guard_created_during_recovery_gate_is_withdrawn(self):
+        from scripts import vault_state
+        from scripts.vault_state import (
+            StateLockConflict,
+            _lock_operation_guard,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            paths = VaultStatePaths.for_vault(temp_dir / "vault")
+            guard = paths.lock.with_name(f"{paths.lock.name}.guard")
+            recovery_gate = guard.with_name(f"{guard.name}.recovery")
+            real_create = vault_state._create_lock
+
+            def create_guard_then_gate(path, payload):
+                result = real_create(path, payload)
+                if Path(path) == guard:
+                    recovery_gate.write_text(
+                        '{"recovery_id":"competitor"}\n',
+                        encoding="utf-8",
+                    )
+                return result
+
+            with (
+                patch(
+                    "scripts.vault_state._create_lock",
+                    side_effect=create_guard_then_gate,
+                ),
+                self.assertRaises(StateLockConflict),
+            ):
+                with _lock_operation_guard(paths, "contender"):
+                    self.fail("检测到 recovery gate 后不得持有普通 guard")
+
+            self.assertFalse(guard.exists())
+            self.assertTrue(recovery_gate.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
