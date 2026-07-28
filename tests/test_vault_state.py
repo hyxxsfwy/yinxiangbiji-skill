@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -276,6 +277,114 @@ class LegacyMigrationTests(unittest.TestCase):
                 hashlib.sha256(changed).hexdigest(),
             )
 
+    def test_rollback_has_no_identity_check_then_unlink_window_on_target(
+        self,
+    ):
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            legacy_root = temp_dir / "legacy"
+            vault.mkdir()
+            legacy_root.mkdir()
+            first_source = legacy_root / "export-AI-first.json"
+            second_source = legacy_root / "jobs" / "task.json"
+            second_source.parent.mkdir()
+            first_source.write_bytes(b"first")
+            second_source.write_bytes(b"second")
+            paths = VaultStatePaths.for_vault(vault)
+            first_target = paths.single_domain / first_source.name
+            second_target = paths.jobs / second_source.name
+            concurrent = b"concurrent-after-identity-check"
+            raced = []
+            real_samefile = os.path.samefile
+            real_link = os.link
+
+            def conflict_on_second(source_path, target_path):
+                if Path(target_path) == second_target:
+                    second_target.parent.mkdir(parents=True, exist_ok=True)
+                    second_target.write_bytes(b"second-conflict")
+                return real_link(source_path, target_path)
+
+            def replace_after_identity_check(first_path, second_path):
+                result = real_samefile(first_path, second_path)
+                if Path(second_path) == first_target and result:
+                    raced.append(True)
+                    first_target.unlink()
+                    first_target.write_bytes(concurrent)
+                return result
+
+            with (
+                patch(
+                    "scripts.vault_state.os.link",
+                    side_effect=conflict_on_second,
+                ),
+                patch(
+                    "scripts.vault_state.os.path.samefile",
+                    side_effect=replace_after_identity_check,
+                ),
+                self.assertRaises(StateMigrationConflict),
+            ):
+                migrate_legacy_state(paths, legacy_root)
+
+            self.assertEqual(raced, [])
+            self.assertFalse(first_target.exists())
+            self.assertEqual(
+                second_target.read_bytes(),
+                b"second-conflict",
+            )
+
+    def test_rollback_preserves_quarantine_if_restore_target_is_reoccupied(
+        self,
+    ):
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            legacy_root = temp_dir / "legacy"
+            vault.mkdir()
+            legacy_root.mkdir()
+            first_source = legacy_root / "export-AI-first.json"
+            second_source = legacy_root / "jobs" / "task.json"
+            second_source.parent.mkdir()
+            first_source.write_bytes(b"first")
+            second_source.write_bytes(b"second")
+            paths = VaultStatePaths.for_vault(vault)
+            first_target = paths.single_domain / first_source.name
+            second_target = paths.jobs / second_source.name
+            displaced = b"displaced-concurrent-file"
+            reoccupied = b"newer-concurrent-file"
+            real_link = os.link
+
+            def race_during_publish_or_restore(source_path, target_path):
+                source = Path(source_path)
+                target = Path(target_path)
+                if target == second_target:
+                    first_target.unlink()
+                    first_target.write_bytes(displaced)
+                    second_target.parent.mkdir(parents=True, exist_ok=True)
+                    second_target.write_bytes(b"second-conflict")
+                elif (
+                    target == first_target
+                    and "rollback-quarantine-" in source.as_posix()
+                ):
+                    first_target.write_bytes(reoccupied)
+                return real_link(source_path, target_path)
+
+            with (
+                patch(
+                    "scripts.vault_state.os.link",
+                    side_effect=race_during_publish_or_restore,
+                ),
+                self.assertRaises(StateMigrationConflict),
+            ):
+                migrate_legacy_state(paths, legacy_root)
+
+            self.assertEqual(first_target.read_bytes(), reoccupied)
+            quarantines = list(
+                paths.migrations.glob(
+                    "rollback-quarantine-*/*"
+                )
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), displaced)
+
 
 class RuntimeLockTests(unittest.TestCase):
     def test_lock_is_exclusive_contains_owner_metadata_and_exits_cleanly(self):
@@ -541,6 +650,43 @@ class RuntimeLockTests(unittest.TestCase):
 
             self.assertEqual(guard.read_bytes(), guard_bytes)
             self.assertFalse(paths.lock.exists())
+
+    def test_business_exception_is_not_masked_by_concurrent_guard(self):
+        from scripts.vault_state import (
+            StateLockConflict,
+            _lock_operation_guard,
+            runtime_write_lock,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            paths = VaultStatePaths.for_vault(temp_dir / "vault")
+            contender_ready = threading.Event()
+            release_contender = threading.Event()
+            contender_errors = []
+
+            def contend_for_guard():
+                try:
+                    with _lock_operation_guard(paths, "contender"):
+                        contender_ready.set()
+                        release_contender.wait(timeout=2)
+                except StateLockConflict as exc:
+                    contender_errors.append(exc)
+                    contender_ready.set()
+
+            contender = threading.Thread(target=contend_for_guard)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "业务失败"):
+                    with runtime_write_lock(paths, "failing-task"):
+                        contender.start()
+                        self.assertTrue(contender_ready.wait(timeout=2))
+                        raise RuntimeError("业务失败")
+            finally:
+                release_contender.set()
+                contender.join(timeout=2)
+
+            self.assertFalse(contender.is_alive())
+            self.assertFalse(paths.lock.exists())
+            self.assertEqual(len(contender_errors), 1)
 
 
 if __name__ == "__main__":

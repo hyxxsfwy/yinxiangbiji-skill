@@ -110,16 +110,61 @@ def _target_for(paths, relative_source):
     return paths.root / relative_source
 
 
-def _rollback_published(published):
-    for staged, target in reversed(published):
+def _rollback_published(paths, published):
+    if not published:
+        return
+    paths.migrations.mkdir(parents=True, exist_ok=True)
+    quarantine_root = paths.migrations / (
+        f"rollback-quarantine-{uuid.uuid4().hex}"
+    )
+    quarantine_root.mkdir()
+    preserved = []
+    failures = []
+    for index, (staged, target) in enumerate(reversed(published)):
+        quarantine = quarantine_root / f"{index:06d}-{target.name}"
         try:
-            if target.exists() and os.path.samefile(staged, target):
-                target.unlink()
-        except OSError:
+            os.replace(target, quarantine)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            failures.append(f"{target}: {exc}")
             continue
 
+        try:
+            owned_by_batch = os.path.samefile(staged, quarantine)
+        except OSError as exc:
+            preserved.append(quarantine)
+            failures.append(f"{quarantine}: 无法确认归属 ({exc})")
+            continue
 
-def _publish_staged(staged_items):
+        if owned_by_batch:
+            quarantine.unlink()
+            continue
+
+        try:
+            os.link(quarantine, target)
+        except FileExistsError:
+            preserved.append(quarantine)
+            failures.append(
+                f"{target}: 恢复时已被占用，原文件保留在 {quarantine}"
+            )
+        except OSError as exc:
+            preserved.append(quarantine)
+            failures.append(
+                f"{target}: 恢复失败，原文件保留在 {quarantine} ({exc})"
+            )
+        else:
+            quarantine.unlink()
+
+    if not preserved:
+        quarantine_root.rmdir()
+    if failures:
+        raise StateMigrationConflict(
+            "迁移回滚未能完全恢复并发文件: " + "; ".join(failures)
+        )
+
+
+def _publish_staged(paths, staged_items):
     published = []
     try:
         for staged, target, entry in staged_items:
@@ -132,7 +177,7 @@ def _publish_staged(staged_items):
                 ) from exc
             published.append((staged, target))
     except BaseException:
-        _rollback_published(published)
+        _rollback_published(paths, published)
         raise
     return tuple(entry for _staged, _target, entry in staged_items)
 
@@ -205,14 +250,14 @@ def migrate_legacy_state(paths, legacy_root):
                 staged_items.append((staged, target, entry))
 
         try:
-            copied = _publish_staged(staged_items)
+            copied = _publish_staged(paths, staged_items)
             published = [
                 (staged, target)
                 for staged, target, _entry in staged_items
             ]
             manifest = _write_manifest(paths, copied) if copied else None
         except BaseException:
-            _rollback_published(published)
+            _rollback_published(paths, published)
             raise
         return MigrationReport(
             copied=tuple(copied),
@@ -367,11 +412,9 @@ def runtime_write_lock(paths, task_id, recover_stale=False):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "lock_id": lock_id,
     }
-    with _lock_operation_guard(paths, "acquire"):
+    with _lock_operation_guard(paths, "runtime"):
         _acquire_runtime_lock(paths, payload, recover_stale)
-
-    try:
-        yield payload
-    finally:
-        with _lock_operation_guard(paths, "release"):
+        try:
+            yield payload
+        finally:
             _remove_owned_lock(paths.lock, lock_id)
