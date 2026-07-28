@@ -3,12 +3,111 @@ import importlib
 import io
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
+
+from evernote.edam.error.ttypes import EDAMSystemException
 
 from tests.support import workspace_temp_dir
 
 
 class RuntimeConfigTests(unittest.TestCase):
+    def test_find_all_notes_metadata_reads_until_server_total(self):
+        from scripts.runtime import find_all_notes_metadata
+
+        class FakeNoteStore:
+            def __init__(self):
+                self.calls = []
+
+            def findNotesMetadata(
+                self,
+                token,
+                note_filter,
+                offset,
+                limit,
+                result_spec,
+            ):
+                self.calls.append(
+                    (token, note_filter, offset, limit, result_spec)
+                )
+                pages = {
+                    0: ["note-1", "note-2"],
+                    2: ["note-3"],
+                }
+                return SimpleNamespace(
+                    totalNotes=3,
+                    notes=pages[offset],
+                )
+
+        store = FakeNoteStore()
+        notes, total = find_all_notes_metadata(
+            store,
+            "token",
+            "filter",
+            "spec",
+            page_size=2,
+        )
+
+        self.assertEqual(notes, ["note-1", "note-2", "note-3"])
+        self.assertEqual(total, 3)
+        self.assertEqual(
+            [(call[2], call[3]) for call in store.calls],
+            [(0, 2), (2, 1)],
+        )
+
+    def test_rate_limit_wait_retries_same_operation(self):
+        from scripts.runtime import call_with_rate_limit_retry
+
+        calls = []
+        sleeps = []
+        waits = []
+
+        def operation():
+            calls.append("call")
+            if len(calls) == 1:
+                raise EDAMSystemException(
+                    errorCode=19,
+                    rateLimitDuration=2,
+                )
+            return "ok"
+
+        result = call_with_rate_limit_retry(
+            operation,
+            mode="wait",
+            max_wait_seconds=10,
+            sleep=sleeps.append,
+            on_wait=waits.append,
+        )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sleeps, [2])
+        self.assertEqual(waits, [2])
+
+    def test_rate_limit_stop_and_budget_exhaustion_preserve_control(self):
+        from scripts.runtime import (
+            RateLimitBudgetExceeded,
+            call_with_rate_limit_retry,
+        )
+
+        def limited():
+            raise EDAMSystemException(
+                errorCode=19,
+                rateLimitDuration=3,
+            )
+
+        for mode, budget in (("stop", 10), ("wait", 2)):
+            with self.subTest(mode=mode, budget=budget):
+                with self.assertRaises(RateLimitBudgetExceeded):
+                    call_with_rate_limit_retry(
+                        limited,
+                        mode=mode,
+                        max_wait_seconds=budget,
+                        sleep=lambda _seconds: self.fail(
+                            "停止或超预算时不得等待"
+                        ),
+                    )
+
     def test_note_store_http_requests_have_a_finite_timeout(self):
         from scripts.runtime import create_note_store
 
