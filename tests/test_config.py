@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +9,20 @@ from tests.support import workspace_temp_dir
 
 
 class LoadConfigTests(unittest.TestCase):
+    def test_env_example_separates_formal_vault_from_sync_staging(self):
+        environment = (
+            Path(__file__).resolve().parent.parent / ".env.example"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            r"OBSIDIAN_VAULT_PATH=D:\OneDrive\文档\@_Obsidian",
+            environment,
+        )
+        self.assertIn(
+            r"YINXIANG_SYNC_VAULT_PATH=D:\OneDrive\文档\@_Obsidian_全量同步暂存",
+            environment,
+        )
+
     def test_reads_explicit_skill_local_env_file(self):
         with workspace_temp_dir() as temp_dir:
             env_path = temp_dir / ".env"

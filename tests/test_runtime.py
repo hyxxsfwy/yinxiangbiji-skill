@@ -183,6 +183,44 @@ class RuntimeConfigTests(unittest.TestCase):
 
         self.assertEqual(vault_path, r"D:\vault\知识库")
 
+    def test_load_vault_root_uses_device_local_environment_and_validates_marker(
+        self,
+    ):
+        from scripts.runtime import load_vault_root
+
+        with workspace_temp_dir() as temp_dir:
+            configured = temp_dir / "vault"
+            configured.mkdir()
+            (configured / ".obsidian").mkdir()
+            env_file = temp_dir / ".env"
+            env_file.write_text(
+                f"OBSIDIAN_VAULT_PATH={temp_dir / 'wrong'}\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"OBSIDIAN_VAULT_PATH": str(configured)},
+                clear=True,
+            ):
+                self.assertEqual(
+                    load_vault_root(env_path=env_file),
+                    configured.resolve(),
+                )
+
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(ValueError):
+                    load_vault_root(env_path=temp_dir / "missing.env")
+
+                ordinary = temp_dir / "ordinary"
+                ordinary.mkdir()
+                with self.assertRaises(ValueError):
+                    load_vault_root(explicit=ordinary)
+
+                selected_materials = configured / "30_精选资料"
+                selected_materials.mkdir()
+                with self.assertRaises(ValueError):
+                    load_vault_root(explicit=selected_materials)
+
 
 if __name__ == "__main__":
     unittest.main()

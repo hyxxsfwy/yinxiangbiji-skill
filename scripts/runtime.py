@@ -61,6 +61,26 @@ def load_setting(name, env_path=None):
     return os.environ.get(name) or _read_dotenv(path).get(name)
 
 
+def load_vault_root(explicit=None, env_path=None):
+    raw = explicit or load_setting("OBSIDIAN_VAULT_PATH", env_path)
+    if not raw:
+        raise ValueError("未配置 OBSIDIAN_VAULT_PATH")
+    root = Path(raw).expanduser().resolve()
+    if not root.is_dir() or not (root / ".obsidian").is_dir():
+        raise ValueError(f"不是有效的 Obsidian Vault 根目录: {root}")
+    if root.name in {
+        "01_收集箱",
+        "10_项目",
+        "20_知识笔记",
+        "30_精选资料",
+        "80_系统",
+        "90_归档",
+        "99_废纸篓",
+    }:
+        raise ValueError("OBSIDIAN_VAULT_PATH 必须指向 Vault 根目录")
+    return root
+
+
 def configure_utf8_output():
     """确保包含中文和 emoji 的命令输出在 Windows 上使用 UTF-8。"""
     for stream in (sys.stdout, sys.stderr):
