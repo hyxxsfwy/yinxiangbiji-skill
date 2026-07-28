@@ -34,6 +34,7 @@ try:
         full_body_text,
         markdown_attachments_complete,
     )
+    from .export_snapshot import create_domain_snapshot
     from .knowledge_base import (
         INDEX_FILENAME,
         _split_frontmatter,
@@ -77,6 +78,7 @@ except ImportError:
         full_body_text,
         markdown_attachments_complete,
     )
+    from export_snapshot import create_domain_snapshot
     from knowledge_base import (
         INDEX_FILENAME,
         _split_frontmatter,
@@ -864,6 +866,14 @@ def _run_keyword_union_job(
                 now,
             )
         )
+        snapshot_result = create_domain_snapshot(
+            job.vault,
+            tuple(job.domains),
+            VaultStatePaths.for_vault(job.vault).root / "snapshots",
+            _job_id(job),
+        )
+        state_payload["snapshot"] = snapshot_result.to_dict()
+        _atomic_json(state_file, state_payload)
         for metadata in sorted(
             candidates.values(),
             key=_candidate_sort_key,
@@ -1152,6 +1162,7 @@ def _run_keyword_union_job(
         "candidate_manifest": candidate_manifest,
         "cache": cache_counts,
         "materialization": materialization,
+        "snapshot": snapshot_result.to_dict(),
         "rate_limit": wait_stats,
         "catalog": catalog_stats,
         "integrity": integrity.to_dict(),

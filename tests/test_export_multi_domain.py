@@ -943,6 +943,72 @@ class CommandLinePathTests(unittest.TestCase):
 
 
 class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
+    def test_keyword_snapshot_exists_before_first_materialization(self):
+        from scripts import export_multi_domain
+        from scripts.export_multi_domain import (
+            _job_id,
+            normalize_job,
+            run_export_job,
+        )
+
+        item = metadata("guid-1", "AI Agent", 1780000000000)
+        store = FakeNoteStore(
+            {"AI": [item]},
+            {
+                "guid-1": full_note(
+                    item,
+                    "<en-note>AI Agent</en-note>",
+                )
+            },
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            seed_keyword_markdown(
+                vault,
+                domain="AI",
+                title="AI 旧文章",
+                guid="existing-guid",
+                created="2026-05-01 10:00:00",
+                body="AI before",
+            )
+            job = normalize_job(keyword_union_payload(), vault)
+            snapshot = (
+                vault
+                / ".state"
+                / "yinxiang-notes"
+                / "snapshots"
+                / f"{_job_id(job)}-before.zip"
+            )
+            real_export = export_multi_domain.export_note_to_obsidian
+
+            def assert_snapshot_first(note, *args, **kwargs):
+                self.assertTrue(snapshot.is_file())
+                return real_export(note, *args, **kwargs)
+
+            with patch(
+                "scripts.export_multi_domain.export_note_to_obsidian",
+                side_effect=assert_snapshot_first,
+            ):
+                report = run_export_job(
+                    job,
+                    store,
+                    "token",
+                    catalog_path=temp_dir / "catalog.sqlite3",
+                    state_file=temp_dir / "state.json",
+                    report_file=temp_dir / "report.json",
+                    rate_limit_mode="stop",
+                    max_rate_limit_wait=0,
+                )
+
+            self.assertEqual(
+                Path(report["snapshot"]["archive"]),
+                snapshot,
+            )
+            self.assertTrue(
+                Path(report["snapshot"]["manifest"]).is_file()
+            )
+
     def test_keyword_union_searches_every_query_term_and_merges_guid(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
         from scripts.keyword_selection import expanded_query_terms
