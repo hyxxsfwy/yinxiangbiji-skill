@@ -1,5 +1,11 @@
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
+import os
+from pathlib import Path
+import sys
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from evernote.edam.error.ttypes import EDAMSystemException
@@ -65,7 +71,74 @@ class FakeNoteStore:
         return self.notes[guid]
 
 
-class MultiDomainJobTests(unittest.TestCase):
+class MultiDomainJobTestMixin:
+    def test_template_is_device_path_independent(self):
+        template = (
+            Path(__file__).resolve().parent.parent
+            / "templates"
+            / "multi-domain-export-job.json"
+        )
+
+        payload = json.loads(template.read_text(encoding="utf-8"))
+
+        self.assertNotIn("vault", payload)
+
+    def test_job_id_is_device_path_independent(self):
+        from scripts.export_multi_domain import _job_id, normalize_job
+
+        payload = {
+            "since": "2026-04-01",
+            "until": "2026-07-01",
+            "domains": {
+                "AI": {"keywords": ["AI", "Agent"]},
+                "Quant": {"keywords": ["Quant"]},
+            },
+        }
+        with workspace_temp_dir() as temp_dir:
+            first_vault = temp_dir / "first-vault"
+            second_vault = temp_dir / "second-vault"
+            first_vault.mkdir()
+            second_vault.mkdir()
+
+            try:
+                first = normalize_job(payload, first_vault)
+                second = normalize_job(payload, second_vault)
+            except TypeError as exc:
+                self.fail(f"任务加载尚未接受正式 Vault 参数: {exc}")
+
+        self.assertEqual(_job_id(first), _job_id(second))
+
+    def test_legacy_vault_field_is_warned_and_ignored(self):
+        from scripts.export_multi_domain import load_job
+
+        with workspace_temp_dir() as temp_dir:
+            current_vault = temp_dir / "current-vault"
+            legacy_vault = temp_dir / "legacy-vault"
+            current_vault.mkdir()
+            legacy_vault.mkdir()
+            job_file = temp_dir / "job.json"
+            job_file.write_text(
+                json.dumps(
+                    {
+                        "since": "2026-04-01",
+                        "until": "2026-07-01",
+                        "vault": str(legacy_vault),
+                        "domains": {
+                            "AI": {"keywords": ["AI"]},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                job = load_job(job_file, current_vault)
+
+        self.assertEqual(job.vault, current_vault.resolve())
+        self.assertIn("vault 字段已废弃", output.getvalue())
+
     def test_job_validation_and_target_derivation(self):
         from scripts.export_multi_domain import normalize_job
 
@@ -74,12 +147,12 @@ class MultiDomainJobTests(unittest.TestCase):
                 {
                     "since": "2026-04-01",
                     "until": "2026-07-01",
-                    "vault": str(vault),
                     "domains": {
                         "AI": {"keywords": ["AI", "Agent"]},
                         "Quant": {"keywords": ["Quant"]},
                     },
-                }
+                },
+                vault,
             )
             self.assertEqual(
                 valid.target_for("AI"),
@@ -90,33 +163,186 @@ class MultiDomainJobTests(unittest.TestCase):
                 {
                     "since": "2026-07-01",
                     "until": "2026-07-01",
-                    "vault": str(vault),
                     "domains": {"AI": {"keywords": ["AI"]}},
                 },
                 {
                     "since": "2026-04-01",
                     "until": "2026-07-01",
-                    "vault": str(vault),
                     "domains": {"未知领域": {"keywords": ["AI"]}},
                 },
                 {
                     "since": "2026-04-01",
                     "until": "2026-07-01",
-                    "vault": str(vault),
                     "domains": {"AI": {"keywords": []}},
-                },
-                {
-                    "since": "2026-04-01",
-                    "until": "2026-07-01",
-                    "vault": str(vault / "30_精选资料"),
-                    "domains": {"AI": {"keywords": ["AI"]}},
                 },
             )
             for payload in invalid_payloads:
                 with self.subTest(payload=payload):
                     with self.assertRaises(ValueError):
-                        normalize_job(payload)
+                        normalize_job(payload, vault)
+            with self.assertRaises(ValueError):
+                normalize_job(
+                    {
+                        "since": "2026-04-01",
+                        "until": "2026-07-01",
+                        "domains": {"AI": {"keywords": ["AI"]}},
+                    },
+                    vault / "30_精选资料",
+                )
 
+
+class CommandLinePathTests(unittest.TestCase):
+    @staticmethod
+    def _payload():
+        return {
+            "since": "2026-04-01",
+            "until": "2026-07-01",
+            "domains": {
+                "AI": {"keywords": ["AI"]},
+            },
+        }
+
+    def _run_main(self, vault, job_file, *extra_args):
+        from scripts import export_multi_domain
+        from scripts.vault_state import VaultStatePaths
+
+        paths = VaultStatePaths.for_vault(vault)
+        dispatched = {}
+
+        def fake_run_export_job(_job, _store, _token, **kwargs):
+            self.assertTrue(
+                paths.lock.is_file(),
+                "run_export_job 必须在 runtime_write_lock 内执行",
+            )
+            dispatched.update(kwargs)
+            return {
+                "ok": True,
+                "candidates": {
+                    "unique_guids": 0,
+                    "body_requests": 0,
+                    "catalog_hits": 0,
+                    "body_requests_saved": 0,
+                },
+            }
+
+        argv = [
+            "export_multi_domain.py",
+            "--job",
+            str(job_file),
+            *map(str, extra_args),
+        ]
+        environment = {
+            "OBSIDIAN_VAULT_PATH": str(vault),
+            "EVERNOTE_TOKEN": "test-token",
+            "EVERNOTE_NOTESTORE_URL": "https://example.invalid",
+        }
+        with (
+            patch.object(sys, "argv", argv),
+            patch.dict(os.environ, environment, clear=False),
+            patch.object(
+                export_multi_domain,
+                "create_note_store",
+                return_value=object(),
+            ),
+            patch.object(
+                export_multi_domain,
+                "run_export_job",
+                side_effect=fake_run_export_job,
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            result = export_multi_domain.main()
+        self.assertFalse(paths.lock.exists())
+        return result, dispatched
+
+    def test_defaults_follow_each_vault_state_namespace(self):
+        from scripts.export_multi_domain import _job_id, normalize_job
+        from scripts.vault_state import VaultStatePaths
+
+        with workspace_temp_dir() as temp_dir:
+            job_file = temp_dir / "job.json"
+            job_file.write_text(
+                json.dumps(self._payload(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            dispatched_by_vault = []
+            task_ids = []
+            for name in ("first-vault", "second-vault"):
+                vault = temp_dir / name
+                (vault / ".obsidian").mkdir(parents=True)
+                result, dispatched = self._run_main(vault, job_file)
+                dispatched_by_vault.append((vault, dispatched))
+                task_ids.append(_job_id(normalize_job(self._payload(), vault)))
+                self.assertEqual(result, 0)
+
+        self.assertEqual(task_ids[0], task_ids[1])
+        for vault, dispatched in dispatched_by_vault:
+            paths = VaultStatePaths.for_vault(vault)
+            self.assertEqual(dispatched["catalog_path"], paths.catalog)
+            self.assertEqual(
+                dispatched["state_file"],
+                paths.runs / f"multi-export-{task_ids[0]}.json",
+            )
+            self.assertEqual(
+                dispatched["report_file"],
+                paths.reports / f"{task_ids[0]}.json",
+            )
+
+    def test_explicit_output_paths_cannot_escape_state_namespace(self):
+        from scripts import export_multi_domain
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            job_file = temp_dir / "job.json"
+            job_file.write_text(
+                json.dumps(self._payload(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            environment = {
+                "OBSIDIAN_VAULT_PATH": str(vault),
+                "EVERNOTE_TOKEN": "test-token",
+                "EVERNOTE_NOTESTORE_URL": "https://example.invalid",
+            }
+            for flag in ("--catalog", "--state-file", "--report-file"):
+                with self.subTest(flag=flag):
+                    argv = [
+                        "export_multi_domain.py",
+                        "--job",
+                        str(job_file),
+                        flag,
+                        str(temp_dir / "outside.json"),
+                    ]
+                    with (
+                        patch.object(sys, "argv", argv),
+                        patch.dict(os.environ, environment, clear=False),
+                        patch.object(
+                            export_multi_domain,
+                            "create_note_store",
+                            return_value=object(),
+                        ),
+                        patch.object(
+                            export_multi_domain,
+                            "run_export_job",
+                            return_value={
+                                "ok": True,
+                                "candidates": {
+                                    "unique_guids": 0,
+                                    "body_requests": 0,
+                                    "catalog_hits": 0,
+                                    "body_requests_saved": 0,
+                                },
+                            },
+                        ),
+                        redirect_stdout(io.StringIO()),
+                        redirect_stderr(io.StringIO()),
+                    ):
+                        with self.assertRaises(SystemExit) as raised:
+                            export_multi_domain.main()
+                    self.assertEqual(raised.exception.code, 2)
+
+
+class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
     def test_each_guid_is_fetched_once_and_titles_are_globally_deduplicated(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
 
@@ -150,12 +376,12 @@ class MultiDomainJobTests(unittest.TestCase):
                 {
                     "since": "2026-04-01",
                     "until": "2026-07-01",
-                    "vault": str(vault),
                     "domains": {
                         "AI": {"keywords": ["AI", "Agent"]},
                         "Quant": {"keywords": ["Quant"]},
                     },
-                }
+                },
+                vault,
             )
             store = FakeNoteStore(searches, notes)
             report = run_export_job(
@@ -221,7 +447,6 @@ class MultiDomainJobTests(unittest.TestCase):
             common = {
                 "since": "2026-04-01",
                 "until": "2026-07-01",
-                "vault": str(vault),
             }
             first_job = normalize_job(
                 {
@@ -229,7 +454,8 @@ class MultiDomainJobTests(unittest.TestCase):
                     "domains": {
                         "AI": {"keywords": ["Claude"]},
                     },
-                }
+                },
+                vault,
             )
             catalog_path = temp_dir / "catalog.sqlite3"
             first_store = FakeNoteStore(
@@ -254,7 +480,8 @@ class MultiDomainJobTests(unittest.TestCase):
                     "domains": {
                         "AI": {"keywords": ["LLM"]},
                     },
-                }
+                },
+                vault,
             )
             second_store = FakeNoteStore(
                 {"LLM": [item]},
@@ -305,13 +532,13 @@ class MultiDomainJobTests(unittest.TestCase):
             common = {
                 "since": "2026-04-01",
                 "until": "2026-07-01",
-                "vault": str(vault),
             }
             first_job = normalize_job(
                 {
                     **common,
                     "domains": {"AI": {"keywords": ["AI"]}},
-                }
+                },
+                vault,
             )
             first_store = FakeNoteStore(
                 {"AI": [item]},
@@ -334,7 +561,8 @@ class MultiDomainJobTests(unittest.TestCase):
                     "domains": {
                         "投资理财": {"keywords": ["基金"]},
                     },
-                }
+                },
+                vault,
             )
             second_store = FakeNoteStore(
                 {"基金": [item]},
@@ -395,9 +623,9 @@ class MultiDomainJobTests(unittest.TestCase):
                 {
                     "since": "2026-04-01",
                     "until": "2026-07-01",
-                    "vault": str(vault),
                     "domains": {"AI": {"keywords": ["AI"]}},
-                }
+                },
+                vault,
             )
             report = run_export_job(
                 job,
@@ -442,11 +670,11 @@ class MultiDomainJobTests(unittest.TestCase):
                 {
                     "since": "2026-04-01",
                     "until": "2026-07-01",
-                    "vault": str(vault),
                     "domains": {
                         "AI": {"keywords": ["新关键词"]},
                     },
-                }
+                },
+                vault,
             )
             store = FakeNoteStore(
                 {"新关键词": [item]},
@@ -510,9 +738,9 @@ class MultiDomainJobTests(unittest.TestCase):
                 {
                     "since": "2026-04-01",
                     "until": "2026-07-01",
-                    "vault": str(vault),
                     "domains": {"AI": {"keywords": ["AI"]}},
-                }
+                },
+                vault,
             )
             catalog_path = temp_dir / "catalog.sqlite3"
             state_path = temp_dir / "state.json"

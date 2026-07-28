@@ -39,6 +39,12 @@ try:
         create_note_store,
         find_all_notes_metadata,
         load_config,
+        load_vault_root,
+    )
+    from .vault_state import (
+        VaultStatePaths,
+        migrate_legacy_state,
+        runtime_write_lock,
     )
 except ImportError:
     from export_catalog import CatalogEntry, ExportCatalog
@@ -66,6 +72,12 @@ except ImportError:
         create_note_store,
         find_all_notes_metadata,
         load_config,
+        load_vault_root,
+    )
+    from vault_state import (
+        VaultStatePaths,
+        migrate_legacy_state,
+        runtime_write_lock,
     )
 
 
@@ -92,7 +104,7 @@ def _parse_job_date(value, field):
         raise ValueError(f"{field} 必须是 YYYY-MM-DD") from exc
 
 
-def normalize_job(payload):
+def normalize_job(payload, vault):
     if not isinstance(payload, dict):
         raise ValueError("任务文件根节点必须是对象")
     since = _parse_job_date(payload.get("since"), "since")
@@ -100,7 +112,7 @@ def normalize_job(payload):
     if until <= since:
         raise ValueError("until 必须晚于 since")
 
-    vault = Path(str(payload.get("vault") or "")).expanduser().resolve()
+    vault = Path(vault).expanduser().resolve()
     if vault.name == "30_精选资料":
         raise ValueError("vault 必须指向 Obsidian 根目录，不能指向 30_精选资料")
     if not vault.is_dir():
@@ -136,20 +148,25 @@ def normalize_job(payload):
     )
 
 
-def load_job(path):
+def load_job(path, vault):
     path = Path(path)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"无法读取任务文件 {path}: {exc}") from exc
-    return normalize_job(payload)
+    if "vault" in payload:
+        print(
+            "警告：任务文件中的 vault 字段已废弃，"
+            "使用 OBSIDIAN_VAULT_PATH"
+        )
+    return normalize_job(payload, vault)
 
 
 def _job_id(job):
     payload = {
+        "version": 2,
         "since": job.since.isoformat(),
         "until": job.until.isoformat(),
-        "vault": str(job.vault).casefold(),
         "domains": {
             domain: list(keywords)
             for domain, keywords in sorted(job.domains.items())
@@ -661,6 +678,17 @@ def positive_int_or_zero(value):
     return parsed
 
 
+def _state_output_path(value, default, paths, description):
+    candidate = Path(value or default).expanduser().resolve()
+    try:
+        candidate.relative_to(paths.root.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"{description}必须位于 Vault 状态目录: {paths.root}"
+        ) from exc
+    return candidate
+
+
 def main():
     configure_utf8_output()
     parser = argparse.ArgumentParser(
@@ -670,7 +698,6 @@ def main():
     parser.add_argument(
         "--catalog",
         type=Path,
-        default=REPO_ROOT / ".state" / "export-catalog.sqlite3",
     )
     parser.add_argument("--state-file", type=Path)
     parser.add_argument("--report-file", type=Path)
@@ -688,34 +715,48 @@ def main():
     args = parser.parse_args()
 
     try:
-        job = load_job(args.job)
+        vault = load_vault_root()
+        paths = VaultStatePaths.for_vault(vault)
+        migrate_legacy_state(paths, REPO_ROOT)
+        job = load_job(args.job, vault)
+        task_id = _job_id(job)
+        catalog = _state_output_path(
+            args.catalog,
+            paths.catalog,
+            paths,
+            "目录文件",
+        )
+        state_file = _state_output_path(
+            args.state_file,
+            paths.runs / f"multi-export-{task_id}.json",
+            paths,
+            "运行状态文件",
+        )
+        report_file = _state_output_path(
+            args.report_file,
+            paths.reports / f"{task_id}.json",
+            paths,
+            "验收报告文件",
+        )
     except ValueError as exc:
         parser.error(str(exc))
-    task_id = _job_id(job)
-    state_file = (
-        args.state_file
-        or REPO_ROOT / ".state" / f"multi-export-{task_id}.json"
-    )
-    report_file = (
-        args.report_file
-        or REPO_ROOT / ".state" / "reports" / f"{task_id}.json"
-    )
     token, note_store_url = load_config()
     if not token or not note_store_url:
         parser.error("未找到 EVERNOTE_TOKEN 或 EVERNOTE_NOTESTORE_URL")
     note_store = create_note_store(note_store_url, token)
     try:
-        report = run_export_job(
-            job,
-            note_store,
-            token,
-            catalog_path=args.catalog,
-            state_file=state_file,
-            report_file=report_file,
-            rate_limit_mode=args.rate_limit_mode,
-            max_rate_limit_wait=args.max_rate_limit_wait,
-            verbose=args.verbose,
-        )
+        with runtime_write_lock(paths, task_id):
+            report = run_export_job(
+                job,
+                note_store,
+                token,
+                catalog_path=catalog,
+                state_file=state_file,
+                report_file=report_file,
+                rate_limit_mode=args.rate_limit_mode,
+                max_rate_limit_wait=args.max_rate_limit_wait,
+                verbose=args.verbose,
+            )
     except RateLimitBudgetExceeded as exc:
         print(f"限流等待预算不足，已保留断点：{exc}")
         return 75
