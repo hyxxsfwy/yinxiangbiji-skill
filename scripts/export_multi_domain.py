@@ -819,9 +819,8 @@ def reconcile_keyword_outputs(job, catalog, selection_hash, task_id):
             ):
                 continue
 
-            entry = catalog.get_keyword_current(
+            entry = catalog.get_keyword(
                 metadata.guid,
-                updated_ms,
                 selection_hash,
             )
             if entry is None:

@@ -1469,7 +1469,7 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                 guid="guid-legacy",
                 created="2026-05-02 10:00:00",
                 body="AI Agent",
-                updated_ms=item.updated,
+                updated_ms=item.updated - 1000,
             )
             job = normalize_job(
                 {
