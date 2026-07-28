@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import time as time_module
 import uuid
 
 import evernote.edam.notestore.NoteStore as NoteStore
@@ -124,6 +125,8 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
+_ATOMIC_REPLACE_ATTEMPTS = 20
+_ATOMIC_REPLACE_RETRY_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -445,7 +448,14 @@ def _atomic_json(path, payload):
         + "\n",
         encoding="utf-8",
     )
-    temporary.replace(path)
+    for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt + 1 == _ATOMIC_REPLACE_ATTEMPTS:
+                raise
+            time_module.sleep(_ATOMIC_REPLACE_RETRY_SECONDS)
 
 
 def _catalog_path_is_current(job, entry, metadata):
