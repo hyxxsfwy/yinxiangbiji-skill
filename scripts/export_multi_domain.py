@@ -1678,11 +1678,26 @@ def main():
         return 75
 
     counts = report["candidates"]
-    print(
-        "候选 {unique_guids}，正文请求 {body_requests}，"
-        "目录命中 {catalog_hits}，节省正文请求 {body_requests_saved}"
-        .format(**counts)
-    )
+    if job.selection_mode == "keyword_union":
+        cache = report["cache"]
+        materialization = report["materialization"]
+        print(
+            "候选 {unique_guids}，接受 {accepted}，拒绝 {rejected}，"
+            "同标题重复 {duplicate_titles}，正文请求 {body_requests}，"
+            "缓存命中 {hits}，节省正文请求 {body_requests_saved}，"
+            "实际写入 {written}"
+            .format(
+                **counts,
+                **cache,
+                **materialization,
+            )
+        )
+    else:
+        print(
+            "候选 {unique_guids}，正文请求 {body_requests}，"
+            "目录命中 {catalog_hits}，节省正文请求 {body_requests_saved}"
+            .format(**counts)
+        )
     print(f"验收报告：{report_file}")
     if not report["ok"]:
         print("导出已结束，但完整性验收未通过")

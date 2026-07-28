@@ -354,6 +354,25 @@ class CommandLinePathTests(unittest.TestCase):
                 "run_export_job 必须在 runtime_write_lock 内执行",
             )
             dispatched.update(kwargs)
+            if _job.selection_mode == "keyword_union":
+                return {
+                    "ok": True,
+                    "candidates": {
+                        "unique_guids": 0,
+                        "body_requests": 0,
+                        "accepted": 0,
+                        "rejected": 0,
+                        "duplicate_titles": 0,
+                    },
+                    "cache": {
+                        "hits": 0,
+                        "body_requests_saved": 0,
+                    },
+                    "materialization": {
+                        "written": 0,
+                        "already_exported": 0,
+                    },
+                }
             return {
                 "ok": True,
                 "candidates": {
@@ -393,6 +412,23 @@ class CommandLinePathTests(unittest.TestCase):
             result = export_multi_domain.main()
         self.assertFalse(paths.lock.exists())
         return result, dispatched
+
+    def test_keyword_union_main_prints_new_report_shape_without_key_error(self):
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            job_file = temp_dir / "job.json"
+            job_file.write_text(
+                json.dumps(
+                    keyword_union_payload(),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result, _dispatched = self._run_main(vault, job_file)
+
+        self.assertEqual(result, 0)
 
     def test_defaults_follow_each_vault_state_namespace(self):
         from scripts.export_multi_domain import _job_id, normalize_job
