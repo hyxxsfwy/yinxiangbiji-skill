@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import datetime
 
@@ -45,7 +46,178 @@ def write_index(root, domain, relative_paths):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def seed_keyword_article(
+    root,
+    *,
+    domain,
+    title,
+    guid,
+    created,
+    updated_ms,
+    selection_hash,
+    matched_keywords,
+):
+    path = (
+        root
+        / "30_精选资料"
+        / domain
+        / f"{created[:4]}年{created[5:7]}月"
+        / f"{title}.md"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "---\n"
+        f'created: "{created}"\n'
+        f'updated: "{created}"\n'
+        f'source_guid: "{guid}"\n'
+        f"source_updated_ms: {updated_ms}\n"
+        'type: "资料"\n'
+        f'domain: "{domain}"\n'
+        'selection_mode: "keyword_union"\n'
+        f"matched_keywords: {json.dumps(matched_keywords, ensure_ascii=False)}\n"
+        f'selection_hash: "{selection_hash}"\n'
+        "---\n\n"
+        f"# {title}\n\n"
+        "AI Agent\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 class ExportIntegrityTests(unittest.TestCase):
+    def test_keyword_integrity_reports_missing_cache_and_wrong_selection(self):
+        from scripts.export_catalog import ExportCatalog
+        from scripts.export_integrity import scan_keyword_export_integrity
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            article = seed_keyword_article(
+                vault,
+                domain="AI",
+                title="AI Agent",
+                guid="guid-1",
+                created="2026-04-01 00:00:00",
+                updated_ms=1000,
+                selection_hash="wrong",
+                matched_keywords=["AI", "Agent"],
+            )
+            write_index(
+                vault,
+                "AI",
+                [
+                    article.relative_to(
+                        vault / "30_精选资料" / "AI"
+                    ).as_posix()
+                ],
+            )
+            catalog_path = temp_dir / "catalog.sqlite3"
+            with ExportCatalog(catalog_path):
+                pass
+
+            report = scan_keyword_export_integrity(
+                vault,
+                domains=("AI",),
+                since=datetime(2026, 4, 1),
+                until=datetime(2026, 8, 1),
+                selection_hash="selection-1",
+                catalog_path=catalog_path,
+                expected_candidates={"guid-1": 1000, "guid-2": 2000},
+                canonical_keywords=("AI", "Agent"),
+            )
+
+        kinds = {
+            issue.kind
+            for domain in report.domains.values()
+            for issue in domain.issues
+        }
+        self.assertIn("selection_hash_mismatch", kinds)
+        self.assertIn("missing_keyword_cache", kinds)
+        self.assertFalse(report.ok)
+
+    def test_keyword_integrity_accepts_reconciled_file_and_cached_rejections(self):
+        from scripts.export_catalog import (
+            ExportCatalog,
+            KeywordCatalogEntry,
+        )
+        from scripts.export_integrity import scan_keyword_export_integrity
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            article = seed_keyword_article(
+                vault,
+                domain="AI",
+                title="AI Agent",
+                guid="guid-1",
+                created="2026-04-01 00:00:00",
+                updated_ms=1000,
+                selection_hash="selection-1",
+                matched_keywords=["AI", "Agent"],
+            )
+            relative_domain = article.relative_to(
+                vault / "30_精选资料" / "AI"
+            ).as_posix()
+            relative_vault = article.relative_to(vault).as_posix()
+            write_index(vault, "AI", [relative_domain])
+            catalog_path = temp_dir / "catalog.sqlite3"
+            base = {
+                "selection_hash": "selection-1",
+                "created_ms": 900,
+                "notebook_name": "收件箱",
+                "summary": "摘要",
+                "body_sha256": "a" * 64,
+                "primary_domain": "AI",
+                "matched_keywords": ("AI", "Agent"),
+                "matched_terms": ("AI", "Agent"),
+                "first_fetched_at": "2026-07-29T10:00:00+08:00",
+                "last_fetched_at": "2026-07-29T10:00:00+08:00",
+                "last_seen_at": "2026-07-29T10:00:00+08:00",
+            }
+            with ExportCatalog(catalog_path) as catalog:
+                catalog.upsert_keyword(
+                    KeywordCatalogEntry(
+                        guid="guid-1",
+                        updated_ms=1000,
+                        title="AI Agent",
+                        outcome="accepted",
+                        canonical_path=relative_vault,
+                        **base,
+                    )
+                )
+                catalog.upsert_keyword(
+                    KeywordCatalogEntry(
+                        guid="guid-2",
+                        updated_ms=2000,
+                        title="training",
+                        outcome="rejected",
+                        canonical_path=None,
+                        matched_keywords=(),
+                        matched_terms=(),
+                        **{
+                            key: value
+                            for key, value in base.items()
+                            if key not in {
+                                "matched_keywords",
+                                "matched_terms",
+                            }
+                        },
+                    )
+                )
+
+            report = scan_keyword_export_integrity(
+                vault,
+                domains=("AI",),
+                since=datetime(2026, 4, 1),
+                until=datetime(2026, 8, 1),
+                selection_hash="selection-1",
+                catalog_path=catalog_path,
+                expected_candidates={"guid-1": 1000, "guid-2": 2000},
+                canonical_keywords=("AI", "Agent"),
+            )
+
+        self.assertTrue(report.ok, report.to_dict())
+
     def test_scanner_reports_index_attachment_and_range_facts(self):
         from scripts.export_integrity import scan_export_integrity
 

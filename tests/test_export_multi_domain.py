@@ -943,6 +943,63 @@ class CommandLinePathTests(unittest.TestCase):
 
 
 class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
+    def test_keyword_report_accounts_for_every_unique_guid(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+
+        newest = metadata("guid-new", "同标题 AI", 1780000000000)
+        older = metadata("guid-old", "同标题 AI", 1779000000000)
+        rejected = metadata("guid-rejected", "training", 1778000000000)
+        store = FakeNoteStore(
+            {"AI": [newest, older, rejected]},
+            {
+                "guid-new": full_note(
+                    newest,
+                    "<en-note>AI</en-note>",
+                ),
+                "guid-old": full_note(
+                    older,
+                    "<en-note>AI</en-note>",
+                ),
+                "guid-rejected": full_note(
+                    rejected,
+                    "<en-note>training</en-note>",
+                ),
+            },
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            job = normalize_job(keyword_union_payload(), vault)
+            report = run_export_job(
+                job,
+                store,
+                "token",
+                catalog_path=temp_dir / "catalog.sqlite3",
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+        counts = report["candidates"]
+        self.assertEqual(
+            counts["unique_guids"],
+            counts["accepted"]
+            + counts["rejected"]
+            + counts["duplicate_titles"],
+        )
+        self.assertEqual(
+            report["cache"]["rows_for_candidates"],
+            counts["unique_guids"],
+        )
+        self.assertEqual(len(store.body_calls), 3)
+        self.assertTrue(report["searches_complete"])
+        self.assertTrue(report["ok"], report)
+        self.assertTrue(
+            all(value == 0 for value in report["integrity_summary"].values())
+        )
+
     def test_keyword_snapshot_exists_before_first_materialization(self):
         from scripts import export_multi_domain
         from scripts.export_multi_domain import (

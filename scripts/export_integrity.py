@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
+import json
 from pathlib import Path
 import re
 from urllib.parse import unquote
 
 try:
+    from .export_catalog import ExportCatalog
     from .knowledge_base import (
         INDEX_FILENAME,
         _split_frontmatter,
@@ -18,6 +20,7 @@ try:
     )
     from .restructure_obsidian_vault import iter_markdown_references
 except ImportError:
+    from export_catalog import ExportCatalog
     from knowledge_base import (
         INDEX_FILENAME,
         _split_frontmatter,
@@ -294,4 +297,251 @@ def scan_export_integrity(vault, domains, since, until):
         domains=domain_reports,
         cross_domain_guid_duplicates=cross_guid,
         cross_domain_title_duplicates=cross_title,
+    )
+
+
+def _parse_matched_keywords(raw_value):
+    try:
+        value = json.loads(raw_value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(
+            not isinstance(item, str) or not item.strip()
+            for item in value
+        )
+    ):
+        return None
+    return tuple(value)
+
+
+def _canonical_entry_path(vault, entry):
+    if not entry.canonical_path:
+        return None
+    candidate = (
+        vault / Path(*Path(entry.canonical_path).parts)
+    ).resolve()
+    try:
+        candidate.relative_to(vault)
+    except ValueError:
+        return None
+    return candidate
+
+
+def scan_keyword_export_integrity(
+    vault,
+    domains,
+    since,
+    until,
+    selection_hash,
+    catalog_path,
+    expected_candidates,
+    canonical_keywords=(),
+):
+    """验收关键词导出文件、SQLite 分析与本次服务端候选的一致性。"""
+    vault = Path(vault).resolve()
+    domains = tuple(dict.fromkeys(domains))
+    if not domains:
+        raise ValueError("domains 不能为空")
+    base = scan_export_integrity(vault, domains, since, until)
+    allowed_keywords = set(canonical_keywords)
+    reports = dict(base.domains)
+    missing_cache_guids = set()
+    checked_entries = set()
+
+    with ExportCatalog(catalog_path) as catalog:
+        for domain in domains:
+            domain_report = reports[domain]
+            issues = list(domain_report.issues)
+            _unused_report, records = _scan_domain(
+                vault,
+                domain,
+                since,
+                until,
+            )
+            for path, relative, markdown, metadata in records:
+                fields, _body_lines = _split_frontmatter(markdown)
+                try:
+                    updated_ms = int(fields["source_updated_ms"])
+                except (KeyError, TypeError, ValueError):
+                    updated_ms = None
+                entry = (
+                    catalog.get_keyword_current(
+                        metadata.guid,
+                        updated_ms,
+                        selection_hash,
+                    )
+                    if updated_ms is not None
+                    else None
+                )
+                is_keyword_file = (
+                    fields.get("selection_mode") == "keyword_union"
+                    or metadata.guid in expected_candidates
+                    or entry is not None
+                )
+                if not is_keyword_file:
+                    continue
+                if not (since <= metadata.created < until):
+                    issues.append(
+                        IntegrityIssue(
+                            "out_of_range_article",
+                            domain,
+                            relative,
+                            metadata.created.isoformat(),
+                        )
+                    )
+                if fields.get("selection_mode") != "keyword_union":
+                    issues.append(
+                        IntegrityIssue(
+                            "selection_mode_mismatch",
+                            domain,
+                            relative,
+                            str(fields.get("selection_mode") or ""),
+                        )
+                    )
+                if fields.get("selection_hash") != selection_hash:
+                    issues.append(
+                        IntegrityIssue(
+                            "selection_hash_mismatch",
+                            domain,
+                            relative,
+                            str(fields.get("selection_hash") or ""),
+                        )
+                    )
+                matched_keywords = _parse_matched_keywords(
+                    fields.get("matched_keywords")
+                )
+                if (
+                    matched_keywords is None
+                    or (
+                        allowed_keywords
+                        and not set(matched_keywords) <= allowed_keywords
+                    )
+                ):
+                    issues.append(
+                        IntegrityIssue(
+                            "matched_keywords_invalid",
+                            domain,
+                            relative,
+                            str(fields.get("matched_keywords") or ""),
+                        )
+                    )
+                if entry is None:
+                    missing_cache_guids.add(metadata.guid)
+                    issues.append(
+                        IntegrityIssue(
+                            "missing_keyword_cache",
+                            domain,
+                            relative,
+                            metadata.guid,
+                        )
+                    )
+                    continue
+                checked_entries.add(metadata.guid)
+                if entry.outcome != "accepted":
+                    issues.append(
+                        IntegrityIssue(
+                            "unexpected_canonical_file",
+                            domain,
+                            relative,
+                            entry.outcome,
+                        )
+                    )
+                    continue
+                expected_path = _canonical_entry_path(vault, entry)
+                if (
+                    expected_path is None
+                    or expected_path != path.resolve()
+                    or not expected_path.is_file()
+                ):
+                    issues.append(
+                        IntegrityIssue(
+                            "canonical_path_mismatch",
+                            domain,
+                            relative,
+                            str(entry.canonical_path or ""),
+                        )
+                    )
+                if (
+                    matched_keywords is not None
+                    and tuple(entry.matched_keywords)
+                    != tuple(matched_keywords)
+                ):
+                    issues.append(
+                        IntegrityIssue(
+                            "matched_keywords_mismatch",
+                            domain,
+                            relative,
+                            json.dumps(
+                                list(entry.matched_keywords),
+                                ensure_ascii=False,
+                            ),
+                        )
+                    )
+            reports[domain] = replace(
+                domain_report,
+                issues=tuple(issues),
+            )
+
+        fallback_domain = domains[0]
+        fallback_report = reports[fallback_domain]
+        fallback_issues = list(fallback_report.issues)
+        for guid, updated_ms in expected_candidates.items():
+            entry = catalog.get_keyword_current(
+                guid,
+                int(updated_ms),
+                selection_hash,
+            )
+            if entry is None:
+                if guid not in missing_cache_guids:
+                    fallback_issues.append(
+                        IntegrityIssue(
+                            "missing_keyword_cache",
+                            fallback_domain,
+                            Path("."),
+                            guid,
+                        )
+                    )
+                continue
+            if guid in checked_entries:
+                continue
+            canonical = _canonical_entry_path(vault, entry)
+            if entry.outcome == "accepted":
+                valid = canonical is not None and canonical.is_file()
+                if valid:
+                    try:
+                        valid = (
+                            extract_note_metadata(canonical).guid == guid
+                        )
+                    except (OSError, UnicodeError, ValueError):
+                        valid = False
+                if not valid:
+                    fallback_issues.append(
+                        IntegrityIssue(
+                            "canonical_path_mismatch",
+                            fallback_domain,
+                            Path("."),
+                            f"{guid}: {entry.canonical_path}",
+                        )
+                    )
+            elif canonical is not None:
+                fallback_issues.append(
+                    IntegrityIssue(
+                        "unexpected_canonical_file",
+                        fallback_domain,
+                        Path("."),
+                        f"{guid}: {entry.canonical_path}",
+                    )
+                )
+        reports[fallback_domain] = replace(
+            fallback_report,
+            issues=tuple(fallback_issues),
+        )
+
+    return ExportIntegrityReport(
+        domains=reports,
+        cross_domain_guid_duplicates=base.cross_domain_guid_duplicates,
+        cross_domain_title_duplicates=base.cross_domain_title_duplicates,
     )

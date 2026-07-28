@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
 import hashlib
@@ -23,7 +24,10 @@ try:
         ExportCatalog,
         KeywordCatalogEntry,
     )
-    from .export_integrity import scan_export_integrity
+    from .export_integrity import (
+        scan_export_integrity,
+        scan_keyword_export_integrity,
+    )
     from .export_search_results import (
         DOMAIN_PROFILES,
         _score_domain,
@@ -67,7 +71,10 @@ except ImportError:
         ExportCatalog,
         KeywordCatalogEntry,
     )
-    from export_integrity import scan_export_integrity
+    from export_integrity import (
+        scan_export_integrity,
+        scan_keyword_export_integrity,
+    )
     from export_search_results import (
         DOMAIN_PROFILES,
         _score_domain,
@@ -671,6 +678,34 @@ def _candidate_sort_key(metadata):
     )
 
 
+def _keyword_integrity_summary(integrity):
+    issue_counts = Counter(
+        issue.kind
+        for domain in integrity.domains.values()
+        for issue in domain.issues
+    )
+    return {
+        "missing_attachments": issue_counts["missing_attachment"],
+        "missing_index_targets": issue_counts["missing_index_target"],
+        "index_missing_articles": issue_counts["index_missing_article"],
+        "domain_duplicates": (
+            issue_counts["duplicate_guid"]
+            + issue_counts["duplicate_title"]
+        ),
+        "cross_domain_guid_duplicates": len(
+            integrity.cross_domain_guid_duplicates
+        ),
+        "cross_domain_title_duplicates": len(
+            integrity.cross_domain_title_duplicates
+        ),
+        "selection_hash_mismatches": issue_counts[
+            "selection_hash_mismatch"
+        ],
+        "missing_keyword_cache": issue_counts["missing_keyword_cache"],
+        "out_of_range_articles": issue_counts["out_of_range_article"],
+    }
+
+
 def _keyword_catalog_path_is_current(job, entry, metadata):
     if not entry.canonical_path or not entry.primary_domain:
         return False
@@ -1092,11 +1127,19 @@ def _run_keyword_union_job(
                 f"{domain} 索引重建失败: {'; '.join(finalization.errors)}"
             )
 
-    integrity = scan_export_integrity(
+    integrity = scan_keyword_export_integrity(
         job.vault,
         domains=tuple(job.domains),
         since=datetime.combine(job.since, time.min),
         until=datetime.combine(job.until, time.min),
+        selection_hash=selection_hash,
+        catalog_path=catalog_path,
+        expected_candidates=expected_candidates,
+        canonical_keywords=tuple(
+            keyword
+            for keywords in job.domains.values()
+            for keyword in keywords
+        ),
     )
     searches_complete = all(
         item["pulled"] == item["total"]
@@ -1104,6 +1147,11 @@ def _run_keyword_union_job(
     )
     candidate_cache_complete = (
         cache_counts["rows_for_candidates"] == counts["unique_guids"]
+    )
+    integrity_summary = _keyword_integrity_summary(integrity)
+    materialization["attachment_references"] = sum(
+        domain.image_references
+        for domain in integrity.domains.values()
     )
     keyword_stats = []
     for domain, keywords in job.domains.items():
@@ -1166,6 +1214,7 @@ def _run_keyword_union_job(
         "rate_limit": wait_stats,
         "catalog": catalog_stats,
         "integrity": integrity.to_dict(),
+        "integrity_summary": integrity_summary,
     }
     _atomic_json(report_file, report)
     return report
