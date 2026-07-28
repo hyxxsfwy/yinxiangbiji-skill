@@ -3,6 +3,9 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
+import sys
+import textwrap
 import threading
 import unittest
 from unittest.mock import patch
@@ -627,11 +630,8 @@ class RuntimeLockTests(unittest.TestCase):
             self.assertEqual(raced, [])
             self.assertFalse(paths.lock.exists())
 
-    def test_existing_operation_guard_is_never_silently_recovered(self):
-        from scripts.vault_state import (
-            StateLockConflict,
-            runtime_write_lock,
-        )
+    def test_legacy_operation_guard_file_does_not_block_os_mutex(self):
+        from scripts.vault_state import runtime_write_lock
 
         with workspace_temp_dir() as temp_dir:
             paths = VaultStatePaths.for_vault(temp_dir / "vault")
@@ -640,13 +640,12 @@ class RuntimeLockTests(unittest.TestCase):
             guard_bytes = b'{"guard_id":"unknown-owner"}\n'
             guard.write_bytes(guard_bytes)
 
-            with self.assertRaises(StateLockConflict):
-                with runtime_write_lock(
-                    paths,
-                    "task",
-                    recover_stale=True,
-                ):
-                    self.fail("残留操作 guard 不得被静默覆盖")
+            with runtime_write_lock(
+                paths,
+                "task",
+                recover_stale=True,
+            ):
+                self.assertTrue(paths.lock.exists())
 
             self.assertEqual(guard.read_bytes(), guard_bytes)
             self.assertFalse(paths.lock.exists())
@@ -737,7 +736,8 @@ class RuntimeLockTests(unittest.TestCase):
                     )
 
             self.assertFalse(paths.lock.exists())
-            self.assertFalse(guard.exists())
+            self.assertTrue(guard.exists())
+            self.assertEqual(guard.read_bytes(), guard_bytes)
             stale_locks = list(
                 paths.migrations.glob("stale-lock-*.json")
             )
@@ -745,9 +745,8 @@ class RuntimeLockTests(unittest.TestCase):
                 paths.migrations.glob("stale-guard-*.json")
             )
             self.assertEqual(len(stale_locks), 1)
-            self.assertEqual(len(stale_guards), 1)
+            self.assertEqual(len(stale_guards), 0)
             self.assertEqual(stale_locks[0].read_bytes(), lock_bytes)
-            self.assertEqual(stale_guards[0].read_bytes(), guard_bytes)
 
     def test_recover_stale_never_overwrites_live_local_guard(self):
         from scripts.vault_state import (
@@ -800,40 +799,145 @@ class RuntimeLockTests(unittest.TestCase):
             self.assertEqual(guard.read_bytes(), guard_bytes)
             self.assertFalse(paths.migrations.exists())
 
-    def test_guard_created_during_recovery_gate_is_withdrawn(self):
-        from scripts import vault_state
-        from scripts.vault_state import (
-            StateLockConflict,
-            _lock_operation_guard,
-        )
+    def test_legacy_recovery_gate_file_is_inert(self):
+        from scripts.vault_state import _lock_operation_guard
 
         with workspace_temp_dir() as temp_dir:
             paths = VaultStatePaths.for_vault(temp_dir / "vault")
             guard = paths.lock.with_name(f"{paths.lock.name}.guard")
             recovery_gate = guard.with_name(f"{guard.name}.recovery")
-            real_create = vault_state._create_lock
+            recovery_gate.parent.mkdir(parents=True)
+            recovery_gate.write_text(
+                '{"recovery_id":"legacy"}\n',
+                encoding="utf-8",
+            )
 
-            def create_guard_then_gate(path, payload):
-                result = real_create(path, payload)
-                if Path(path) == guard:
-                    recovery_gate.write_text(
-                        '{"recovery_id":"competitor"}\n',
-                        encoding="utf-8",
-                    )
-                return result
+            with _lock_operation_guard(paths, "contender"):
+                pass
 
-            with (
-                patch(
-                    "scripts.vault_state._create_lock",
-                    side_effect=create_guard_then_gate,
-                ),
-                self.assertRaises(StateLockConflict),
-            ):
-                with _lock_operation_guard(paths, "contender"):
-                    self.fail("检测到 recovery gate 后不得持有普通 guard")
-
-            self.assertFalse(guard.exists())
+            self.assertTrue(guard.exists())
             self.assertTrue(recovery_gate.exists())
+
+    def test_operation_mutex_is_released_when_holder_process_crashes(self):
+        from scripts.vault_state import _lock_operation_guard
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    textwrap.dedent(
+                        """
+                        import os
+                        from pathlib import Path
+                        import sys
+                        from scripts.vault_state import (
+                            VaultStatePaths,
+                            _lock_operation_guard,
+                        )
+
+                        paths = VaultStatePaths.for_vault(Path(sys.argv[1]))
+                        with _lock_operation_guard(paths, "crashing-child"):
+                            os._exit(73)
+                        """
+                    ),
+                    str(vault),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            self.assertEqual(child.returncode, 73, child.stderr)
+
+            with _lock_operation_guard(
+                VaultStatePaths.for_vault(vault),
+                "parent-after-crash",
+            ):
+                pass
+
+    def test_crashed_recovery_gate_does_not_block_dead_lock_audit(self):
+        from scripts.vault_state import runtime_write_lock
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            paths = VaultStatePaths.for_vault(vault)
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    textwrap.dedent(
+                        """
+                        import json
+                        import os
+                        from pathlib import Path
+                        import socket
+                        import sys
+                        from scripts.vault_state import VaultStatePaths
+
+                        paths = VaultStatePaths.for_vault(Path(sys.argv[1]))
+                        paths.root.mkdir(parents=True, exist_ok=True)
+                        payload = {
+                            "device": socket.gethostname(),
+                            "pid": os.getpid(),
+                            "task_id": "crashed-recovery",
+                            "created_at": "2026-07-28T00:00:00+00:00",
+                            "lock_id": "crashed-recovery-lock",
+                        }
+                        paths.lock.write_text(
+                            json.dumps(payload, ensure_ascii=False) + "\\n",
+                            encoding="utf-8",
+                        )
+                        gate = paths.lock.with_name(
+                            f"{paths.lock.name}.guard.recovery"
+                        )
+                        gate.write_text(
+                            json.dumps(
+                                {
+                                    "recovery_id": "crashed-gate",
+                                    "device": socket.gethostname(),
+                                    "pid": os.getpid(),
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\\n",
+                            encoding="utf-8",
+                        )
+                        os._exit(74)
+                        """
+                    ),
+                    str(vault),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            self.assertEqual(child.returncode, 74, child.stderr)
+            stale_bytes = paths.lock.read_bytes()
+
+            with patch(
+                "scripts.vault_state.os.kill",
+                side_effect=ProcessLookupError,
+            ):
+                with runtime_write_lock(
+                    paths,
+                    "parent-recovery",
+                    recover_stale=True,
+                ):
+                    self.assertEqual(
+                        json.loads(paths.lock.read_text(encoding="utf-8"))[
+                            "task_id"
+                        ],
+                        "parent-recovery",
+                    )
+
+            audits = list(paths.migrations.glob("stale-lock-*.json"))
+            self.assertEqual(len(audits), 1)
+            self.assertEqual(audits[0].read_bytes(), stale_bytes)
 
 
 if __name__ == "__main__":

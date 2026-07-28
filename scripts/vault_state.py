@@ -14,6 +14,11 @@ import socket
 import tempfile
 import uuid
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 
 LEGACY_PATTERNS = (
     "export-catalog.sqlite3",
@@ -350,130 +355,42 @@ def _operation_guard_path(paths):
     return paths.lock.with_name(f"{paths.lock.name}.guard")
 
 
-def _recovery_gate_path(paths):
-    guard = _operation_guard_path(paths)
-    return guard.with_name(f"{guard.name}.recovery")
-
-
-def _remove_owned_json_file(path, identity_key, identity):
-    current = _read_lock_payload(path)
-    if (
-        isinstance(current, dict)
-        and current.get(identity_key) == identity
-    ):
-        path.unlink(missing_ok=True)
-
-
-@contextmanager
-def _guard_recovery_gate(paths):
-    gate = _recovery_gate_path(paths)
-    recovery_id = uuid.uuid4().hex
-    payload = {
-        "recovery_id": recovery_id,
-        "device": socket.gethostname(),
-        "pid": os.getpid(),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+def _acquire_operation_mutex(mutex_file, guard):
+    if os.fstat(mutex_file.fileno()).st_size == 0:
+        mutex_file.write(b"\0")
+        os.fsync(mutex_file.fileno())
+    mutex_file.seek(0)
     try:
-        _create_lock(gate, payload)
-    except FileExistsError as exc:
+        if os.name == "nt":
+            msvcrt.locking(
+                mutex_file.fileno(),
+                msvcrt.LK_NBLCK,
+                1,
+            )
+        else:
+            fcntl.flock(
+                mutex_file.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+            raise
         raise StateLockConflict(
-            f"Vault guard 恢复 gate 已存在，拒绝并发恢复: {gate}"
+            f"Vault 锁操作正在本机其他进程中执行: {guard}"
         ) from exc
-    try:
-        yield
-    finally:
-        _remove_owned_json_file(
-            gate,
-            "recovery_id",
-            recovery_id,
-        )
-
-
-def _archive_stale_guard(paths, guard):
-    paths.migrations.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    audit = paths.migrations / (
-        f"stale-guard-{timestamp}-{uuid.uuid4().hex}.json"
-    )
-    try:
-        os.replace(guard, audit)
-    except FileNotFoundError as exc:
-        raise StateLockConflict(
-            f"待恢复的 Vault operation guard 已消失: {guard}"
-        ) from exc
-    return audit
-
-
-def _recover_stale_operation_guard(paths):
-    guard = _operation_guard_path(paths)
-    with _guard_recovery_gate(paths):
-        payload = _read_lock_payload(guard)
-        live = _local_lock_is_live(payload)
-        if live is True:
-            raise StateLockConflict(
-                f"Vault operation guard 仍由本机存活进程持有: {guard}"
-            )
-        if live is not False:
-            raise StateLockConflict(
-                f"Vault operation guard 无法确认已失效: {guard}"
-            )
-        _archive_stale_guard(paths, guard)
-
-
-def _create_operation_guard(paths, payload, recover_stale):
-    guard = _operation_guard_path(paths)
-    gate = _recovery_gate_path(paths)
-    if gate.exists():
-        raise StateLockConflict(
-            f"Vault guard 正在恢复，拒绝获取 operation guard: {gate}"
-        )
-    try:
-        _create_lock(guard, payload)
-    except FileExistsError as exc:
-        if not recover_stale:
-            raise StateLockConflict(
-                f"Vault 锁操作 guard 已存在: {guard}"
-            ) from exc
-        _recover_stale_operation_guard(paths)
-        if gate.exists():
-            raise StateLockConflict(
-                f"Vault guard 恢复尚未结束: {gate}"
-            )
-        try:
-            _create_lock(guard, payload)
-        except FileExistsError as retry_exc:
-            raise StateLockConflict(
-                f"恢复后 operation guard 已被其他进程取得: {guard}"
-            ) from retry_exc
-
-    if gate.exists():
-        _remove_owned_json_file(
-            guard,
-            "guard_id",
-            payload["guard_id"],
-        )
-        raise StateLockConflict(
-            f"operation guard 创建期间恢复 gate 出现，已撤销: {gate}"
-        )
 
 
 @contextmanager
 def _lock_operation_guard(paths, operation, recover_stale=False):
+    del recover_stale
     guard = _operation_guard_path(paths)
-    guard_id = uuid.uuid4().hex
-    payload = {
-        "guard_id": guard_id,
-        "device": socket.gethostname(),
-        "pid": os.getpid(),
-        "operation": operation,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _create_operation_guard(paths, payload, recover_stale)
+    guard.parent.mkdir(parents=True, exist_ok=True)
+    mutex_file = guard.open("a+b", buffering=0)
     try:
+        _acquire_operation_mutex(mutex_file, guard)
         yield
     finally:
-        _remove_owned_json_file(guard, "guard_id", guard_id)
+        mutex_file.close()
 
 
 def _acquire_runtime_lock(paths, payload, recover_stale):
