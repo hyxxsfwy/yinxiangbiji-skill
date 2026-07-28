@@ -1,9 +1,13 @@
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+
+from tests.support import workspace_temp_dir
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -172,7 +176,8 @@ class SkillDocumentationTests(unittest.TestCase):
             "禁止两台设备同时写入同一个 Vault",
             "等待上一台设备完成 Vault 同步",
             "Token 和 `.env` 不随 Vault 同步",
-            "$vault = $env:OBSIDIAN_VAULT_PATH",
+            '$vault = python -c "from scripts.runtime import load_vault_root; '
+            'print(load_vault_root())"',
             '"$vault\\.state\\yinxiang-notes\\jobs\\2026-q2.json"',
         ):
             with self.subTest(phrase=phrase):
@@ -197,6 +202,106 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertNotIn(
             r"D:\OneDrive\文档\@_Obsidian",
             powershell_examples,
+        )
+
+    def test_powershell_examples_load_dotenv_through_runtime_contract(self):
+        reference = (
+            REPO_ROOT / "references" / "obsidian-knowledge-management.md"
+        ).read_text(encoding="utf-8")
+        legacy_design = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "specs"
+            / "2026-07-28-large-scale-multi-domain-export-design.md"
+        ).read_text(encoding="utf-8")
+        legacy_plan = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "plans"
+            / "2026-07-28-large-scale-multi-domain-export.md"
+        ).read_text(encoding="utf-8")
+        active_documents = self.skill + self.readme + reference
+        runtime_loader = (
+            '$vault = python -c "from scripts.runtime import load_vault_root; '
+            'print(load_vault_root())"'
+        )
+
+        for document_name, document in (
+            ("README", self.readme),
+            ("SKILL", self.skill),
+        ):
+            with self.subTest(document=document_name):
+                self.assertIn(runtime_loader, document)
+                self.assertNotIn("$env:OBSIDIAN_VAULT_PATH", document)
+                self.assertNotIn("$env:YINXIANG_SYNC_VAULT_PATH", document)
+                self.assertIn(
+                    "PowerShell 不会自动把 `.env` 注入 `$env:`",
+                    document,
+                )
+
+        with workspace_temp_dir() as root:
+            (root / "scripts").mkdir()
+            shutil.copy2(REPO_ROOT / "scripts" / "runtime.py", root / "scripts")
+            vault = root / "formal-vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            (root / ".env").write_text(
+                f"OBSIDIAN_VAULT_PATH={vault}\n",
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment.pop("OBSIDIAN_VAULT_PATH", None)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from scripts.runtime import load_vault_root; "
+                    "print(load_vault_root())",
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(Path(result.stdout.strip()), vault.resolve())
+
+        sync_blocks = [
+            block
+            for document in (self.readme, self.skill)
+            for block in re.findall(r"```powershell\n(.*?)\n```", document, re.DOTALL)
+            if "scripts/sync_to_obsidian.py" in block
+        ]
+        self.assertGreaterEqual(len(sync_blocks), 1)
+        for block in sync_blocks:
+            with self.subTest(block=block):
+                self.assertNotIn("--vault", block)
+                self.assertNotIn("$syncVault", block)
+
+        self.assertIn(
+            "`OBSIDIAN_VAULT_PATH` 是正式 Vault 根目录",
+            reference,
+        )
+        self.assertIn(
+            "`YINXIANG_SYNC_VAULT_PATH` 是独立的全量同步暂存目录",
+            reference,
+        )
+        self.assertNotIn(
+            "`OBSIDIAN_VAULT_PATH` 应指向独立的全量同步暂存目录",
+            active_documents,
+        )
+        self.assertIn("已废弃", legacy_design[:500])
+        self.assertIn("已废弃", legacy_plan[:500])
+        self.assertIn(
+            "2026-07-28-vault-scoped-runtime-state-design.md",
+            legacy_design[:500],
+        )
+        self.assertIn(
+            "2026-07-28-vault-scoped-runtime-state-design.md",
+            legacy_plan[:500],
         )
 
     def test_examples_do_not_contain_a_real_developer_token(self):
@@ -416,9 +521,9 @@ class SkillDocumentationTests(unittest.TestCase):
                 if "scripts/restructure_obsidian_vault.py" in line
             ],
             [
-                '| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH"` | 只读本地 |',
-                '| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH" --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |',
-                '| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH" --verify` | 只读本地 |',
+                "| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py` | 只读本地 |",
+                "| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |",
+                "| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --verify` | 只读本地 |",
             ],
         )
 
@@ -457,7 +562,11 @@ class SkillDocumentationTests(unittest.TestCase):
             for block in re.findall(r"```powershell\n(.*?)\n```", self.readme, re.DOTALL)
             if "scripts/export_search_results.py" in block and "--domain AI" in block
         )
-        self.assertIn("$vault = $env:OBSIDIAN_VAULT_PATH", export_block)
+        self.assertIn(
+            '$vault = python -c "from scripts.runtime import load_vault_root; '
+            'print(load_vault_root())"',
+            export_block,
+        )
         self.assertIn('--target "$vault\\30_精选资料\\AI"', export_block)
 
     def test_documents_distinct_catalog_map_and_source_index_rules(self):
@@ -486,7 +595,11 @@ class SkillDocumentationTests(unittest.TestCase):
         for block in export_blocks:
             with self.subTest(block=block):
                 self.assertIn("--domain AI", block)
-                self.assertIn("$vault = $env:OBSIDIAN_VAULT_PATH", block)
+                self.assertIn(
+                    '$vault = python -c "from scripts.runtime import load_vault_root; '
+                    'print(load_vault_root())"',
+                    block,
+                )
                 self.assertIn(
                     r'--target "$vault\30_精选资料\AI"',
                     block,

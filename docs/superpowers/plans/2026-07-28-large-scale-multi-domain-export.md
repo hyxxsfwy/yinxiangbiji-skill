@@ -1,5 +1,8 @@
 # 印象笔记大规模多领域导出实施计划
 
+> [!WARNING]
+> **已废弃。** 本文记录早期实施过程，其中仓库 `.state/` 和任务文件保存 Vault 路径等步骤不得作为现行操作指引；现行契约以 [Vault 范围运行状态设计](../specs/2026-07-28-vault-scoped-runtime-state-design.md)、`README.md` 和 `SKILL.md` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 新增一次任务完成多领域搜索、正文审核、唯一归属、全局去重、跨任务解析缓存、限流续跑和完整性验收的大规模导出命令。

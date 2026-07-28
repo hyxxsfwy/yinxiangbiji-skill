@@ -20,7 +20,7 @@ OBSIDIAN_VAULT_PATH=D:\OneDrive\文档\@_Obsidian
 YINXIANG_SYNC_VAULT_PATH=D:\OneDrive\文档\@_Obsidian_全量同步暂存
 ```
 
-`OBSIDIAN_VAULT_PATH` 是每台设备的正式 Vault 根目录；不同设备可以配置不同的本地绝对路径。`YINXIANG_SYNC_VAULT_PATH` 是独立的全量同步暂存目录，不能指向正式 Vault。系统环境变量优先于 `.env`，因此每台设备分别维护自己的 `.env`，不要把其他设备的路径写进任务文件。
+`OBSIDIAN_VAULT_PATH` 是每台设备的正式 Vault 根目录；不同设备可以配置不同的本地绝对路径。`YINXIANG_SYNC_VAULT_PATH` 是独立的全量同步暂存目录，不能指向正式 Vault。系统环境变量优先于 `.env`，因此每台设备分别维护自己的 `.env`，不要把其他设备的路径写进任务文件。PowerShell 不会自动把 `.env` 注入 `$env:`；Python 脚本会通过 `scripts.runtime` 读取 `.env`，需要在 PowerShell 中拼接正式 Vault 路径时，也应调用同一运行时加载器。
 
 `EVERNOTE_NOTESTORE_URL` 必须使用令牌页面显示的实际 shard。真实令牌会获得账户访问权限，`.env` 已被 Git 忽略。Token 和 `.env` 不随 Vault 同步；不要把令牌写入命令、文档、日志、Vault 或提交记录。
 
@@ -51,7 +51,7 @@ python scripts/get_note_enml.py --guid "NOTE_GUID" --output ".\note.xml"
 以下单领域命令适合少量结果。它分别搜索 AI、Agent、人工智能；搜索关键词只用于产生候选，脚本会逐篇拉取完整正文，确认正文主旨属于 AI 后才选择并导出前三篇：
 
 ```powershell
-$vault = $env:OBSIDIAN_VAULT_PATH
+$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
 python scripts/export_search_results.py `
   --since 2025-07-26 `
   --until 2025-08-26 `
@@ -85,7 +85,7 @@ python scripts/export_search_results.py `
 两个及以上领域、关键词重叠或全量导出时，使用任务文件驱动的编排命令：
 
 ```powershell
-$vault = $env:OBSIDIAN_VAULT_PATH
+$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
 New-Item -ItemType Directory -Force `
   "$vault\.state\yinxiang-notes\jobs" | Out-Null
 Copy-Item templates\multi-domain-export-job.json `
@@ -121,17 +121,13 @@ SQLite 历史解析目录默认位于 `<vault>/.state/yinxiang-notes/export-cata
 ### 增量同步整个 vault
 
 ```powershell
-$syncVault = $env:YINXIANG_SYNC_VAULT_PATH
 python scripts/sync_to_obsidian.py `
-  --vault "$syncVault" `
   --max-sync 50 `
   --api-delay 1
 
-# 仅同步一个笔记本，并自定义状态文件
+# 仅同步一个笔记本
 python scripts/sync_to_obsidian.py `
-  --vault "$syncVault" `
-  --notebook "笔记本名" `
-  --state-file "$syncVault\.yinxiang_sync_state.json"
+  --notebook "笔记本名"
 ```
 
 未传 `--vault` 时只读取 `YINXIANG_SYNC_VAULT_PATH`，不会读取 `OBSIDIAN_VAULT_PATH`。默认状态文件为 `<sync-vault>/.yinxiang_sync_state.json`。同步按 NoteStore 元数据分页拉取，不按标题丢弃笔记；每个笔记本下分别创建 `_attachments/` 和 `_clips/`。超过 200 KB 的网页裁剪可保存为 HTML，其余正文转为 Markdown。
@@ -171,7 +167,7 @@ type: "inline-images"
 重组脚本会把旧 `90_系统`自动迁入 `80_系统`，把旧 `99_归档`自动迁入 `90_归档`，并创建 `99_废纸篓`。预检发现同路径异内容或文件类型冲突时，会在创建快照和迁移写入前中止。
 
 ```powershell
-$vault = $env:OBSIDIAN_VAULT_PATH
+$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
 # 预览：只读本地 vault
 python scripts/restructure_obsidian_vault.py --vault "$vault"
 
@@ -185,7 +181,7 @@ python scripts/restructure_obsidian_vault.py --vault "$vault" --verify
 后续精选导出写入对应领域资料目录：
 
 ```powershell
-$vault = $env:OBSIDIAN_VAULT_PATH
+$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
 python scripts/export_search_results.py `
   --since 2025-07-27 `
   --until 2025-08-27 `
@@ -202,7 +198,7 @@ python scripts/export_search_results.py `
 `curate_selected_materials.py` 根据显式 JSON 清单逐篇核对领域归属，并维护受控双向链接。错域资料移入 `99_废纸篓/30_精选资料/` 的镜像路径，引用的本地附件同步复制；保留资料每篇最多写入 3 条人工确认的双向链接，没有明确关联时不写链接块。执行前会创建 ZIP 快照和 SHA-256 清单，完成后重建领域索引并生成逐篇审核日志。
 
 ```powershell
-$vault = $env:OBSIDIAN_VAULT_PATH
+$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
 # 预览
 python scripts/curate_selected_materials.py --vault "$vault" --review "reviews\2026-07-27-selected-materials-review.json"
 

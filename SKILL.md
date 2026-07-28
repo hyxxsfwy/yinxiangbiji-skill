@@ -16,7 +16,7 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-在 `.env` 中填写令牌页面显示的 `EVERNOTE_TOKEN` 和 `EVERNOTE_NOTESTORE_URL`。`OBSIDIAN_VAULT_PATH` 是每台设备的正式 Vault 根目录，`YINXIANG_SYNC_VAULT_PATH` 是独立的全量同步暂存目录；两者不能指向同一位置。环境变量优先于 `.env`，每台设备分别维护自己的路径。Token 和 `.env` 不随 Vault 同步，不得把凭据写入 Vault、命令、文档、日志或提交。
+在 `.env` 中填写令牌页面显示的 `EVERNOTE_TOKEN` 和 `EVERNOTE_NOTESTORE_URL`。`OBSIDIAN_VAULT_PATH` 是每台设备的正式 Vault 根目录，`YINXIANG_SYNC_VAULT_PATH` 是独立的全量同步暂存目录；两者不能指向同一位置。环境变量优先于 `.env`，每台设备分别维护自己的路径。PowerShell 不会自动把 `.env` 注入 `$env:`；Python 脚本通过 `scripts.runtime` 加载配置。Token 和 `.env` 不随 Vault 同步，不得把凭据写入 Vault、命令、文档、日志或提交。
 
 ## 快速参考
 
@@ -27,25 +27,25 @@ Copy-Item .env.example .env
 | 搜索 | `python scripts/search_notes.py "intitle:Agent" --max-results 10` | 只读 |
 | 查看废纸篓 | `python scripts/list_trash.py --max-count 20` | 只读 |
 | 下载 ENML | `python scripts/get_note_enml.py --guid "GUID" --output ".\note.xml"` | 只读账户 |
-| 全量同步到暂存区 | `python scripts/sync_to_obsidian.py --vault "$env:YINXIANG_SYNC_VAULT_PATH"` | 只读账户 |
-| 大规模多领域导出 | `python scripts/export_multi_domain.py --job "$env:OBSIDIAN_VAULT_PATH\.state\yinxiang-notes\jobs\任务.json"` | 只读账户；修改正式 Vault |
+| 全量同步到暂存区 | `python scripts/sync_to_obsidian.py` | 只读账户 |
+| 大规模多领域导出 | `$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"; python scripts/export_multi_domain.py --job "$vault\.state\yinxiang-notes\jobs\任务.json"` | 只读账户；修改正式 Vault |
 | 创建 | `python scripts/create_note.py --title "标题" --content "<en-note>内容</en-note>"` | 修改账户 |
 | 更新 | `python scripts/update_note.py --guid "GUID" --title "新标题"` | 修改账户 |
 | 移入废纸篓 | `python scripts/delete_note.py --guid "GUID" --confirm` | 修改账户 |
 | 永久清空 | `python scripts/empty_trash.py --confirm DELETE_ALL` | 不可恢复 |
-| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH"` | 只读本地 |
-| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH" --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |
-| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH" --verify` | 只读本地 |
-| 预览精选资料审阅 | `python scripts/curate_selected_materials.py --vault "$env:OBSIDIAN_VAULT_PATH" --review "reviews\审阅清单.json"` | 只读本地 |
-| 执行精选资料审阅 | `python scripts/curate_selected_materials.py --vault "$env:OBSIDIAN_VAULT_PATH" --review "reviews\审阅清单.json" --apply --confirm CURATE_SELECTED_MATERIALS` | 修改本地 vault |
-| 验证精选资料审阅 | `python scripts/curate_selected_materials.py --vault "$env:OBSIDIAN_VAULT_PATH" --review "reviews\审阅清单.json" --verify` | 只读本地 |
+| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py` | 只读本地 |
+| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |
+| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --verify` | 只读本地 |
+| 预览精选资料审阅 | `python scripts/curate_selected_materials.py --review "reviews\审阅清单.json"` | 只读本地 |
+| 执行精选资料审阅 | `python scripts/curate_selected_materials.py --review "reviews\审阅清单.json" --apply --confirm CURATE_SELECTED_MATERIALS` | 修改本地 vault |
+| 验证精选资料审阅 | `python scripts/curate_selected_materials.py --review "reviews\审阅清单.json" --verify` | 只读本地 |
 
 ## 搜索并导出
 
 只涉及一个领域且数量较小时，使用单领域组合命令：
 
 ```powershell
-$vault = $env:OBSIDIAN_VAULT_PATH
+$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
 python scripts/export_search_results.py `
   --since 2025-07-26 `
   --until 2025-08-26 `
@@ -89,7 +89,7 @@ python scripts/export_search_results.py `
 先把 `templates/multi-domain-export-job.json` 复制到正式 Vault 的状态目录，只修改日期、领域和关键词，然后运行：
 
 ```powershell
-$vault = $env:OBSIDIAN_VAULT_PATH
+$vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
 New-Item -ItemType Directory -Force `
   "$vault\.state\yinxiang-notes\jobs" | Out-Null
 Copy-Item templates\multi-domain-export-job.json `
