@@ -1240,6 +1240,62 @@ class CleanupGateTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_active_vault_lock_blocks_migration_and_restructure_writes(self):
+        from scripts import restructure_obsidian_vault
+        from scripts.vault_state import (
+            StateLockConflict,
+            VaultStatePaths,
+            runtime_write_lock,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            seed_old_vault(vault)
+            legacy_root = temp_dir / "repo" / ".state"
+            legacy_root.mkdir(parents=True)
+            legacy_source = legacy_root / "export-AI-legacy.json"
+            legacy_source.write_text('{"legacy": true}\n', encoding="utf-8")
+            paths = VaultStatePaths.for_vault(vault)
+
+            with (
+                runtime_write_lock(paths, "active-task"),
+                patch.object(
+                    restructure_obsidian_vault,
+                    "REPO_ROOT",
+                    legacy_root.parent,
+                ),
+            ):
+                business_before = {
+                    path.relative_to(vault): path.read_bytes()
+                    for path in vault.rglob("*")
+                    if path.is_file() and ".state" not in path.parts
+                }
+                manifests_before = tuple(paths.migrations.glob("migration-*.json"))
+                with self.assertRaises(StateLockConflict):
+                    restructure_obsidian_vault.main(
+                        [
+                            "--vault",
+                            str(vault),
+                            "--apply",
+                            "--confirm",
+                            "MIGRATE_OBSIDIAN_VAULT",
+                        ]
+                    )
+
+                business_after = {
+                    path.relative_to(vault): path.read_bytes()
+                    for path in vault.rglob("*")
+                    if path.is_file() and ".state" not in path.parts
+                }
+                self.assertFalse(
+                    (paths.single_domain / legacy_source.name).exists()
+                )
+                self.assertEqual(
+                    tuple(paths.migrations.glob("migration-*.json")),
+                    manifests_before,
+                )
+                self.assertEqual(business_after, business_before)
+
     def test_global_vault_is_used_when_vault_argument_is_omitted(self):
         with workspace_temp_dir() as vault:
             seed_old_vault(vault)

@@ -1924,8 +1924,8 @@ def main(argv=None):
     plan = build_migration_plan(args.vault)
     if args.apply:
         state_paths = VaultStatePaths.for_vault(args.vault)
-        migrate_legacy_state(state_paths, REPO_ROOT / ".state")
         with runtime_write_lock(state_paths, "restructure-vault"):
+            migrate_legacy_state(state_paths, REPO_ROOT / ".state")
             if not plan.old_directories:
                 report = verify_completed_vault(plan.vault)
                 if not report.passed:

@@ -1213,6 +1213,91 @@ class AttachmentLinkTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_active_vault_lock_blocks_migration_and_domain_export_writes(self):
+        from scripts import export_search_results
+        from scripts.vault_state import (
+            StateLockConflict,
+            VaultStatePaths,
+            runtime_write_lock,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            business_file = vault / "existing.md"
+            business_file.write_text("# existing\n", encoding="utf-8")
+            legacy_root = temp_dir / "repo" / ".state"
+            legacy_root.mkdir(parents=True)
+            legacy_source = legacy_root / "export-AI-legacy.json"
+            legacy_source.write_text('{"legacy": true}\n', encoding="utf-8")
+            candidate = SimpleNamespace(
+                guid="candidate-guid",
+                title="AI 绗旇",
+                created=1_700_000_000_000,
+                updated=1_700_000_000_000,
+            )
+            paths = VaultStatePaths.for_vault(vault)
+
+            class FakeNoteStore:
+                def listNotebooks(self, token):
+                    return []
+
+            with (
+                runtime_write_lock(paths, "active-task"),
+                patch.dict(
+                    os.environ,
+                    {"OBSIDIAN_VAULT_PATH": str(vault)},
+                    clear=False,
+                ),
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "export_search_results.py",
+                        "--since",
+                        "2026-07-01",
+                    ],
+                ),
+                patch.object(
+                    export_search_results,
+                    "REPO_ROOT",
+                    legacy_root.parent,
+                ),
+                patch.object(
+                    export_search_results,
+                    "load_config",
+                    return_value=("token", "https://example.invalid"),
+                ),
+                patch.object(
+                    export_search_results,
+                    "create_note_store",
+                    return_value=FakeNoteStore(),
+                ),
+                patch.object(
+                    export_search_results,
+                    "search_metadata_batches",
+                    return_value=([[candidate]], [1]),
+                ),
+                patch.object(
+                    export_search_results,
+                    "rank_note_candidates",
+                    return_value=[candidate],
+                ),
+            ):
+                business_before = business_file.read_bytes()
+                manifests_before = tuple(paths.migrations.glob("migration-*.json"))
+                with self.assertRaises(StateLockConflict):
+                    export_search_results.main()
+
+                self.assertFalse(
+                    (paths.single_domain / legacy_source.name).exists()
+                )
+                self.assertEqual(
+                    tuple(paths.migrations.glob("migration-*.json")),
+                    manifests_before,
+                )
+                self.assertEqual(business_file.read_bytes(), business_before)
+
     def test_global_vault_derives_domain_target_and_state(self):
         from scripts import export_search_results
 

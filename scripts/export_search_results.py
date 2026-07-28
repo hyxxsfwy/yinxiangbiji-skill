@@ -993,7 +993,6 @@ def main():
         )
         state_paths = VaultStatePaths.for_vault(vault)
         state_file = export_state_path(vault, args.domain)
-        migrate_legacy_state(state_paths, REPO_ROOT / ".state")
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -1023,6 +1022,7 @@ def main():
     notebook_map = {notebook.guid: notebook.name for notebook in notebooks}
 
     with runtime_write_lock(state_paths, f"single-domain-{args.domain}"):
+        migrate_legacy_state(state_paths, REPO_ROOT / ".state")
         result = export_domain_candidates(
             note_store=note_store,
             token=token,

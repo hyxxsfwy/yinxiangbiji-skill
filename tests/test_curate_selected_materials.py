@@ -5,6 +5,7 @@ import subprocess
 import sys
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from tests.support import workspace_temp_dir
 
@@ -529,6 +530,63 @@ def write_review_json(path):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_active_vault_lock_blocks_migration_and_curation_writes(self):
+        from scripts import curate_selected_materials
+        from scripts.vault_state import VaultStatePaths, runtime_write_lock
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            seed_curation_vault(vault)
+            review_path = vault / "review.json"
+            write_review_json(review_path)
+            legacy_root = temp_dir / "repo" / ".state"
+            legacy_root.mkdir(parents=True)
+            legacy_source = legacy_root / "export-AI-legacy.json"
+            legacy_source.write_text('{"legacy": true}\n', encoding="utf-8")
+            paths = VaultStatePaths.for_vault(vault)
+
+            with (
+                runtime_write_lock(paths, "active-task"),
+                patch.object(
+                    curate_selected_materials,
+                    "REPO_ROOT",
+                    legacy_root.parent,
+                ),
+            ):
+                business_before = {
+                    path.relative_to(vault): path.read_bytes()
+                    for path in vault.rglob("*")
+                    if path.is_file() and ".state" not in path.parts
+                }
+                manifests_before = tuple(paths.migrations.glob("migration-*.json"))
+                result = curate_selected_materials.main(
+                    [
+                        "--vault",
+                        str(vault),
+                        "--review",
+                        str(review_path),
+                        "--apply",
+                        "--confirm",
+                        "CURATE_SELECTED_MATERIALS",
+                    ]
+                )
+
+                business_after = {
+                    path.relative_to(vault): path.read_bytes()
+                    for path in vault.rglob("*")
+                    if path.is_file() and ".state" not in path.parts
+                }
+                self.assertEqual(result, 1)
+                self.assertFalse(
+                    (paths.single_domain / legacy_source.name).exists()
+                )
+                self.assertEqual(
+                    tuple(paths.migrations.glob("migration-*.json")),
+                    manifests_before,
+                )
+                self.assertEqual(business_after, business_before)
+
     def test_preview_and_verify_default_to_global_vault(self):
         with workspace_temp_dir() as vault:
             seed_curation_vault(vault)

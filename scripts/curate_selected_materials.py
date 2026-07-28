@@ -783,8 +783,8 @@ def main(argv=None) -> int:
             return 0
 
         state_paths = VaultStatePaths.for_vault(args.vault)
-        migrate_legacy_state(state_paths, REPO_ROOT / ".state")
         with runtime_write_lock(state_paths, "curate-selected-materials"):
+            migrate_legacy_state(state_paths, REPO_ROOT / ".state")
             create_snapshot(
                 plan,
                 plan.snapshot_zip,
