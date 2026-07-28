@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
 import hashlib
 import json
@@ -40,7 +40,11 @@ try:
         extract_note_metadata,
         finalize_knowledge_base,
     )
-    from .keyword_selection import assess_keyword_union
+    from .keyword_selection import (
+        assess_keyword_union,
+        expanded_query_terms,
+        keyword_selection_hash,
+    )
     from .runtime import (
         RateLimitBudgetExceeded,
         call_with_rate_limit_retry,
@@ -79,7 +83,11 @@ except ImportError:
         extract_note_metadata,
         finalize_knowledge_base,
     )
-    from keyword_selection import assess_keyword_union
+    from keyword_selection import (
+        assess_keyword_union,
+        expanded_query_terms,
+        keyword_selection_hash,
+    )
     from runtime import (
         RateLimitBudgetExceeded,
         call_with_rate_limit_retry,
@@ -661,7 +669,535 @@ def _candidate_sort_key(metadata):
     )
 
 
+def _keyword_catalog_path_is_current(job, entry, metadata):
+    if not entry.canonical_path or not entry.primary_domain:
+        return False
+    candidate = (
+        job.vault / Path(*Path(entry.canonical_path).parts)
+    ).resolve()
+    try:
+        candidate.relative_to(job.vault)
+    except ValueError:
+        return False
+    if not markdown_attachments_complete(candidate):
+        return False
+    try:
+        markdown = candidate.read_text(encoding="utf-8")
+        fields, _body_lines = _split_frontmatter(markdown)
+        exported = extract_note_metadata(candidate)
+        exported_updated_ms = int(fields["source_updated_ms"])
+    except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+        return False
+    return (
+        exported.guid == str(metadata.guid)
+        and exported_updated_ms == int(metadata.updated)
+        and fields.get("domain") == entry.primary_domain
+        and fields.get("selection_mode") == "keyword_union"
+        and fields.get("selection_hash") == entry.selection_hash
+    )
+
+
+def _keyword_summary_and_hash(content):
+    body = full_body_text(content or "")
+    summary = body[:360].strip()
+    if len(body) > 360:
+        summary = summary.rstrip("，。；; ") + "……"
+    return (
+        summary,
+        hashlib.sha256(body.encode("utf-8")).hexdigest(),
+    )
+
+
+def _keyword_entry_from_note(
+    *,
+    note,
+    metadata,
+    notebook_name,
+    selection_hash,
+    assessment,
+    outcome,
+    canonical_path,
+    first_fetched_at,
+    now,
+):
+    summary, body_sha256 = _keyword_summary_and_hash(note.content or "")
+    return KeywordCatalogEntry(
+        guid=str(metadata.guid),
+        updated_ms=int(metadata.updated),
+        selection_hash=selection_hash,
+        title=note.title,
+        created_ms=int(metadata.created),
+        notebook_name=notebook_name,
+        summary=summary,
+        body_sha256=body_sha256,
+        outcome=outcome,
+        primary_domain=assessment.primary_domain,
+        matched_keywords=assessment.matched_keywords,
+        matched_terms=assessment.matched_terms,
+        canonical_path=canonical_path,
+        first_fetched_at=first_fetched_at,
+        last_fetched_at=now,
+        last_seen_at=now,
+    )
+
+
+def _run_keyword_union_job(
+    job,
+    note_store,
+    token,
+    *,
+    catalog_path,
+    state_file,
+    report_file,
+    rate_limit_mode="wait",
+    max_rate_limit_wait=3600,
+    verbose=False,
+):
+    selection_hash = keyword_selection_hash(job.domains, job.aliases)
+    wait_stats = {"events": 0, "seconds": 0}
+    processed = {}
+    search_stats = []
+    candidates = {}
+    counts = {
+        "unique_guids": 0,
+        "accepted": 0,
+        "rejected": 0,
+        "duplicate_titles": 0,
+        "body_requests": 0,
+    }
+    cache_counts = {
+        "hits": 0,
+        "stale": 0,
+        "bootstrapped": 0,
+        "body_requests_saved": 0,
+        "rows_for_candidates": 0,
+    }
+    materialization = {
+        "written": 0,
+        "already_exported": 0,
+    }
+    state_payload = {
+        "version": 2,
+        "job_id": _job_id(job),
+        "selection_mode": "keyword_union",
+        "selection_hash": selection_hash,
+        "processed": processed,
+    }
+    _atomic_json(state_file, state_payload)
+
+    def on_wait(seconds):
+        wait_stats["events"] += 1
+        wait_stats["seconds"] += seconds
+        print(f"API 限流，等待 {seconds} 秒后继续")
+
+    def api_call(operation):
+        remaining = max(0, max_rate_limit_wait - wait_stats["seconds"])
+        return call_with_rate_limit_retry(
+            operation,
+            mode=rate_limit_mode,
+            max_wait_seconds=remaining,
+            on_wait=on_wait,
+        )
+
+    result_spec = NoteStore.NotesMetadataResultSpec(
+        includeTitle=True,
+        includeContentLength=True,
+        includeCreated=True,
+        includeUpdated=True,
+        includeNotebookGuid=True,
+    )
+    expanded_terms = expanded_query_terms(job.domains, job.aliases)
+    for domain, canonical_keyword, query_term in expanded_terms:
+        query = build_keyword_queries(
+            (query_term,),
+            job.since,
+            until=job.until,
+        )[0]
+        note_filter = NoteStore.NoteFilter(
+            words=query,
+            order=NoteSortOrder.UPDATED,
+            ascending=False,
+        )
+        batch, total = api_call(
+            lambda note_filter=note_filter: find_all_notes_metadata(
+                note_store,
+                token,
+                note_filter,
+                result_spec,
+            )
+        )
+        search_stats.append(
+            {
+                "domain": domain,
+                "canonical_keyword": canonical_keyword,
+                "query_term": query_term,
+                "total": total,
+                "pulled": len(batch),
+            }
+        )
+        if len(batch) != total:
+            raise RuntimeError(
+                f"关键词 {query_term} 分页不完整: {len(batch)}/{total}"
+            )
+        for metadata in batch:
+            guid = str(metadata.guid)
+            previous = candidates.get(guid)
+            if (
+                previous is None
+                or _candidate_sort_key(metadata)
+                > _candidate_sort_key(previous)
+            ):
+                candidates[guid] = metadata
+
+    counts["unique_guids"] = len(candidates)
+    notebooks = api_call(lambda: note_store.listNotebooks(token))
+    notebook_map = {item.guid: item.name for item in notebooks}
+    selected_titles = set()
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+
+    with ExportCatalog(catalog_path) as catalog:
+        cache_counts["bootstrapped"] = (
+            bootstrap_keyword_catalog_from_vault(
+                job,
+                catalog,
+                selection_hash,
+                now,
+            )
+        )
+        for metadata in sorted(
+            candidates.values(),
+            key=_candidate_sort_key,
+            reverse=True,
+        ):
+            guid = str(metadata.guid)
+            metadata_title = (metadata.title or "").strip()
+            cached_any = catalog.get_keyword(guid, selection_hash)
+            cached = catalog.get_keyword_current(
+                guid,
+                int(metadata.updated),
+                selection_hash,
+            )
+            if cached is None and cached_any is not None:
+                cache_counts["stale"] += 1
+
+            if cached is not None:
+                cache_counts["hits"] += 1
+                catalog.mark_keyword_seen(guid, selection_hash, now)
+                if cached.outcome == "rejected":
+                    counts["rejected"] += 1
+                    cache_counts["body_requests_saved"] += 1
+                    processed[guid] = {
+                        "outcome": "cached_rejected",
+                        "title": metadata_title,
+                    }
+                    _atomic_json(state_file, state_payload)
+                    continue
+                if cached.outcome == "duplicate_title":
+                    counts["duplicate_titles"] += 1
+                    cache_counts["body_requests_saved"] += 1
+                    processed[guid] = {
+                        "outcome": "cached_duplicate_title",
+                        "title": metadata_title,
+                    }
+                    _atomic_json(state_file, state_payload)
+                    continue
+                if _keyword_catalog_path_is_current(job, cached, metadata):
+                    if metadata_title in selected_titles:
+                        duplicate = replace(
+                            cached,
+                            outcome="duplicate_title",
+                            canonical_path=None,
+                            last_seen_at=now,
+                        )
+                        catalog.upsert_keyword(duplicate)
+                        counts["duplicate_titles"] += 1
+                        processed[guid] = {
+                            "outcome": "duplicate_title",
+                            "title": metadata_title,
+                        }
+                    else:
+                        selected_titles.add(metadata_title)
+                        counts["accepted"] += 1
+                        materialization["already_exported"] += 1
+                        processed[guid] = {
+                            "outcome": "already_exported",
+                            "title": metadata_title,
+                            "primary_domain": cached.primary_domain,
+                            "path": cached.canonical_path,
+                        }
+                    cache_counts["body_requests_saved"] += 1
+                    _atomic_json(state_file, state_payload)
+                    continue
+
+            counts["body_requests"] += 1
+            note = api_call(
+                lambda guid=guid: note_store.getNote(
+                    token,
+                    guid,
+                    True,
+                    True,
+                    True,
+                    True,
+                )
+            )
+            title = (note.title or "").strip()
+            notebook_name = notebook_map.get(
+                metadata.notebookGuid,
+                "未知笔记本",
+            )
+            if cached is not None and cached.outcome == "accepted":
+                summary, body_sha256 = _keyword_summary_and_hash(
+                    note.content or ""
+                )
+                entry = replace(
+                    cached,
+                    title=note.title,
+                    notebook_name=notebook_name,
+                    summary=summary,
+                    body_sha256=body_sha256,
+                    canonical_path=None,
+                    last_fetched_at=now,
+                    last_seen_at=now,
+                )
+                catalog.upsert_keyword(entry)
+            else:
+                assessment = assess_keyword_union(
+                    note.title,
+                    note.content or "",
+                    job.domains,
+                    job.aliases,
+                )
+                existing_first = (
+                    cached_any.first_fetched_at
+                    if cached_any is not None
+                    else now
+                )
+                outcome = (
+                    "accepted"
+                    if assessment.matched
+                    else "rejected"
+                )
+                entry = _keyword_entry_from_note(
+                    note=note,
+                    metadata=metadata,
+                    notebook_name=notebook_name,
+                    selection_hash=selection_hash,
+                    assessment=assessment,
+                    outcome=outcome,
+                    canonical_path=None,
+                    first_fetched_at=existing_first,
+                    now=now,
+                )
+                catalog.upsert_keyword(entry)
+
+            if entry.outcome == "rejected":
+                counts["rejected"] += 1
+                processed[guid] = {
+                    "outcome": "rejected",
+                    "title": title,
+                }
+                if verbose:
+                    print(f"[拒绝] {title}: 未命中关键词边界")
+                _atomic_json(state_file, state_payload)
+                continue
+
+            if title in selected_titles:
+                duplicate = replace(
+                    entry,
+                    outcome="duplicate_title",
+                    canonical_path=None,
+                    last_seen_at=now,
+                )
+                catalog.upsert_keyword(duplicate)
+                counts["duplicate_titles"] += 1
+                processed[guid] = {
+                    "outcome": "duplicate_title",
+                    "title": title,
+                }
+                _atomic_json(state_file, state_payload)
+                continue
+
+            selected_titles.add(title)
+            target = job.target_for(entry.primary_domain)
+            exported_path = export_note_to_obsidian(
+                note,
+                notebook_name=notebook_name,
+                target_dir=target,
+                domain=entry.primary_domain,
+                selection_mode="keyword_union",
+                matched_keywords=entry.matched_keywords,
+                selection_hash=selection_hash,
+            )
+            canonical_path = exported_path.relative_to(
+                job.vault
+            ).as_posix()
+            entry = replace(
+                entry,
+                canonical_path=canonical_path,
+                last_seen_at=now,
+            )
+            catalog.upsert_keyword(entry)
+            counts["accepted"] += 1
+            materialization["written"] += 1
+            processed[guid] = {
+                "outcome": "accepted",
+                "title": title,
+                "primary_domain": entry.primary_domain,
+                "path": canonical_path,
+            }
+            _atomic_json(state_file, state_payload)
+
+        expected_candidates = {
+            guid: int(metadata.updated)
+            for guid, metadata in candidates.items()
+        }
+        cache_counts["rows_for_candidates"] = (
+            catalog.count_keyword_current(
+                expected_candidates,
+                selection_hash,
+            )
+        )
+        catalog_stats = catalog.keyword_stats(selection_hash)
+        candidate_manifest = [
+            {
+                "guid": guid,
+                "updated_ms": int(metadata.updated),
+                "outcome": (
+                    catalog.get_keyword_current(
+                        guid,
+                        int(metadata.updated),
+                        selection_hash,
+                    ).outcome
+                ),
+            }
+            for guid, metadata in sorted(candidates.items())
+        ]
+
+    for domain in job.domains:
+        target = job.target_for(domain)
+        target.mkdir(parents=True, exist_ok=True)
+        finalization = finalize_knowledge_base(target, domain=domain)
+        if finalization.errors:
+            raise RuntimeError(
+                f"{domain} 索引重建失败: {'; '.join(finalization.errors)}"
+            )
+
+    integrity = scan_export_integrity(
+        job.vault,
+        domains=tuple(job.domains),
+        since=datetime.combine(job.since, time.min),
+        until=datetime.combine(job.until, time.min),
+    )
+    searches_complete = all(
+        item["pulled"] == item["total"]
+        for item in search_stats
+    )
+    candidate_cache_complete = (
+        cache_counts["rows_for_candidates"] == counts["unique_guids"]
+    )
+    keyword_stats = []
+    for domain, keywords in job.domains.items():
+        for canonical_keyword in keywords:
+            matching = [
+                item
+                for item in search_stats
+                if (
+                    item["domain"] == domain
+                    and item["canonical_keyword"] == canonical_keyword
+                )
+            ]
+            keyword_stats.append(
+                {
+                    "domain": domain,
+                    "canonical_keyword": canonical_keyword,
+                    "query_terms": [
+                        item["query_term"]
+                        for item in matching
+                    ],
+                    "total": sum(item["total"] for item in matching),
+                    "pulled": sum(item["pulled"] for item in matching),
+                }
+            )
+
+    report = {
+        "ok": (
+            searches_complete
+            and candidate_cache_complete
+            and integrity.ok
+        ),
+        "job": {
+            "id": _job_id(job),
+            "since": job.since.isoformat(),
+            "until": job.until.isoformat(),
+            "vault": str(job.vault),
+            "selection_mode": job.selection_mode,
+            "domains": {
+                domain: list(keywords)
+                for domain, keywords in job.domains.items()
+            },
+        },
+        "selection": {
+            "mode": "keyword_union",
+            "hash": selection_hash,
+            "canonical_keyword_count": sum(
+                len(keywords)
+                for keywords in job.domains.values()
+            ),
+            "query_term_count": len(expanded_terms),
+            "keywords": keyword_stats,
+        },
+        "searches": search_stats,
+        "searches_complete": searches_complete,
+        "candidates": counts,
+        "candidate_manifest": candidate_manifest,
+        "cache": cache_counts,
+        "materialization": materialization,
+        "rate_limit": wait_stats,
+        "catalog": catalog_stats,
+        "integrity": integrity.to_dict(),
+    }
+    _atomic_json(report_file, report)
+    return report
+
+
 def run_export_job(
+    job,
+    note_store,
+    token,
+    *,
+    catalog_path,
+    state_file,
+    report_file,
+    rate_limit_mode="wait",
+    max_rate_limit_wait=3600,
+    verbose=False,
+):
+    if job.selection_mode == "keyword_union":
+        return _run_keyword_union_job(
+            job,
+            note_store,
+            token,
+            catalog_path=catalog_path,
+            state_file=state_file,
+            report_file=report_file,
+            rate_limit_mode=rate_limit_mode,
+            max_rate_limit_wait=max_rate_limit_wait,
+            verbose=verbose,
+        )
+    return _run_domain_gate_job(
+        job,
+        note_store,
+        token,
+        catalog_path=catalog_path,
+        state_file=state_file,
+        report_file=report_file,
+        rate_limit_mode=rate_limit_mode,
+        max_rate_limit_wait=max_rate_limit_wait,
+        verbose=verbose,
+    )
+
+
+def _run_domain_gate_job(
     job,
     note_store,
     token,

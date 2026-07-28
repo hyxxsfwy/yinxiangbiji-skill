@@ -138,7 +138,7 @@ class FakeNoteStore:
         limit,
         _result_spec,
     ):
-        keyword = note_filter.words.rsplit(" ", 1)[-1]
+        keyword = note_filter.words.split(" ", 2)[-1]
         values = self.searches.get(keyword, [])
         self.search_calls.append((keyword, offset, limit))
         return SimpleNamespace(
@@ -943,6 +943,216 @@ class CommandLinePathTests(unittest.TestCase):
 
 
 class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
+    def test_keyword_union_searches_every_query_term_and_merges_guid(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+        from scripts.keyword_selection import expanded_query_terms
+
+        same = metadata("same", "软件工程 AI", 1780000000000)
+        hugging_face = metadata("hf", "HuggingFace", 1779000000000)
+        store = FakeNoteStore(
+            {
+                "软件工程": [same],
+                "AI": [same],
+                "HuggingFace": [hugging_face],
+                "Hugging Face": [hugging_face],
+            },
+            {
+                "same": full_note(
+                    same,
+                    "<en-note>软件工程 AI</en-note>",
+                ),
+                "hf": full_note(
+                    hugging_face,
+                    "<en-note>Hugging Face</en-note>",
+                ),
+            },
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            job = normalize_job(keyword_union_payload(), vault)
+            report = run_export_job(
+                job,
+                store,
+                "token",
+                catalog_path=temp_dir / "catalog.sqlite3",
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+        expected_terms = {
+            query_term
+            for _domain, _canonical, query_term in expanded_query_terms(
+                job.domains,
+                job.aliases,
+            )
+        }
+        self.assertEqual(
+            {item["query_term"] for item in report["searches"]},
+            expected_terms,
+        )
+        self.assertEqual(report["candidates"]["unique_guids"], 2)
+        self.assertEqual(store.body_calls.count("same"), 1)
+        self.assertEqual(store.body_calls.count("hf"), 1)
+        self.assertTrue(
+            all(
+                item["pulled"] == item["total"]
+                for item in report["searches"]
+            )
+        )
+
+    def test_keyword_analysis_is_committed_before_materialization(self):
+        from scripts.export_catalog import ExportCatalog
+        from scripts.export_multi_domain import normalize_job, run_export_job
+        from scripts.keyword_selection import keyword_selection_hash
+
+        item = metadata("guid-1", "AI Agent", 1780000000000)
+        store = FakeNoteStore(
+            {"AI": [item]},
+            {
+                "guid-1": full_note(
+                    item,
+                    "<en-note>AI Agent</en-note>",
+                )
+            },
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            job = normalize_job(keyword_union_payload(), vault)
+            catalog_path = temp_dir / "catalog.sqlite3"
+            with patch(
+                "scripts.export_multi_domain.export_note_to_obsidian",
+                side_effect=RuntimeError("模拟写入中断"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "模拟写入中断",
+                ):
+                    run_export_job(
+                        job,
+                        store,
+                        "token",
+                        catalog_path=catalog_path,
+                        state_file=temp_dir / "state.json",
+                        report_file=temp_dir / "report.json",
+                        rate_limit_mode="stop",
+                        max_rate_limit_wait=0,
+                    )
+
+            selection_hash = keyword_selection_hash(
+                job.domains,
+                job.aliases,
+            )
+            with ExportCatalog(catalog_path) as catalog:
+                entry = catalog.get_keyword_current(
+                    "guid-1",
+                    item.updated,
+                    selection_hash,
+                )
+
+        self.assertEqual(entry.outcome, "accepted")
+        self.assertIsNone(entry.canonical_path)
+
+    def test_no_literal_boundary_match_is_cached_as_rejected(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+
+        item = metadata("guid-1", "training", 1780000000000)
+        store = FakeNoteStore(
+            {"AI": [item]},
+            {
+                "guid-1": full_note(
+                    item,
+                    "<en-note>training</en-note>",
+                )
+            },
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            job = normalize_job(keyword_union_payload(), vault)
+            report = run_export_job(
+                job,
+                store,
+                "token",
+                catalog_path=temp_dir / "catalog.sqlite3",
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+        self.assertEqual(report["candidates"]["rejected"], 1)
+        self.assertEqual(report["materialization"]["written"], 0)
+
+    def test_keyword_job_resumes_from_sqlite_without_refetching_analysis(self):
+        from scripts import export_multi_domain
+        from scripts.export_multi_domain import normalize_job, run_export_job
+
+        first = metadata("guid-1", "AI Agent", 1780000000000)
+        second = metadata("guid-2", "LLM", 1779000000000)
+        searches = {"AI": [first], "LLM": [second]}
+        notes = {
+            "guid-1": full_note(
+                first,
+                "<en-note>AI Agent</en-note>",
+            ),
+            "guid-2": full_note(
+                second,
+                "<en-note>LLM</en-note>",
+            ),
+        }
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            job = normalize_job(keyword_union_payload(), vault)
+            catalog_path = temp_dir / "catalog.sqlite3"
+            real_export = export_multi_domain.export_note_to_obsidian
+
+            def fail_second(note, *args, **kwargs):
+                if note.guid == "guid-2":
+                    raise RuntimeError("模拟第二篇物化中断")
+                return real_export(note, *args, **kwargs)
+
+            first_store = FakeNoteStore(searches, notes)
+            with patch(
+                "scripts.export_multi_domain.export_note_to_obsidian",
+                side_effect=fail_second,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "物化中断"):
+                    run_export_job(
+                        job,
+                        first_store,
+                        "token",
+                        catalog_path=catalog_path,
+                        state_file=temp_dir / "state.json",
+                        report_file=temp_dir / "report.json",
+                        rate_limit_mode="stop",
+                        max_rate_limit_wait=0,
+                    )
+
+            second_store = FakeNoteStore(searches, notes)
+            report = run_export_job(
+                job,
+                second_store,
+                "token",
+                catalog_path=catalog_path,
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+        self.assertNotIn("guid-1", second_store.body_calls)
+        self.assertEqual(second_store.body_calls.count("guid-2"), 1)
+        self.assertGreaterEqual(report["cache"]["hits"], 2)
+
     def test_existing_keyword_markdown_bootstraps_keyword_cache(self):
         from scripts.export_catalog import ExportCatalog
         from scripts.export_multi_domain import (
