@@ -836,6 +836,10 @@ def _run_keyword_union_job(
             on_wait=on_wait,
         )
 
+    def finish_candidate():
+        state_payload.pop("current_candidate", None)
+        _atomic_json(state_file, state_payload)
+
     result_spec = NoteStore.NotesMetadataResultSpec(
         includeTitle=True,
         includeContentLength=True,
@@ -887,6 +891,8 @@ def _run_keyword_union_job(
                 candidates[guid] = metadata
 
     counts["unique_guids"] = len(candidates)
+    state_payload["candidate_count"] = len(candidates)
+    _atomic_json(state_file, state_payload)
     notebooks = api_call(lambda: note_store.listNotebooks(token))
     notebook_map = {item.guid: item.name for item in notebooks}
     selected_titles = set()
@@ -935,7 +941,7 @@ def _run_keyword_union_job(
                         "outcome": "cached_rejected",
                         "title": metadata_title,
                     }
-                    _atomic_json(state_file, state_payload)
+                    finish_candidate()
                     continue
                 if cached.outcome == "duplicate_title":
                     counts["duplicate_titles"] += 1
@@ -944,7 +950,7 @@ def _run_keyword_union_job(
                         "outcome": "cached_duplicate_title",
                         "title": metadata_title,
                     }
-                    _atomic_json(state_file, state_payload)
+                    finish_candidate()
                     continue
                 if _keyword_catalog_path_is_current(job, cached, metadata):
                     if metadata_title in selected_titles:
@@ -971,10 +977,16 @@ def _run_keyword_union_job(
                             "path": cached.canonical_path,
                         }
                     cache_counts["body_requests_saved"] += 1
-                    _atomic_json(state_file, state_payload)
+                    finish_candidate()
                     continue
 
             counts["body_requests"] += 1
+            state_payload["current_candidate"] = {
+                "guid": guid,
+                "phase": "fetch_note",
+                "updated_ms": int(metadata.updated),
+            }
+            _atomic_json(state_file, state_payload)
             note = api_call(
                 lambda guid=guid: note_store.getNote(
                     token,
@@ -985,6 +997,8 @@ def _run_keyword_union_job(
                     True,
                 )
             )
+            state_payload["current_candidate"]["phase"] = "analyze_note"
+            _atomic_json(state_file, state_payload)
             title = (note.title or "").strip()
             notebook_name = notebook_map.get(
                 metadata.notebookGuid,
@@ -1043,7 +1057,7 @@ def _run_keyword_union_job(
                 }
                 if verbose:
                     print(f"[拒绝] {title}: 未命中关键词边界")
-                _atomic_json(state_file, state_payload)
+                finish_candidate()
                 continue
 
             if title in selected_titles:
@@ -1059,11 +1073,13 @@ def _run_keyword_union_job(
                     "outcome": "duplicate_title",
                     "title": title,
                 }
-                _atomic_json(state_file, state_payload)
+                finish_candidate()
                 continue
 
             selected_titles.add(title)
             target = job.target_for(entry.primary_domain)
+            state_payload["current_candidate"]["phase"] = "materialize"
+            _atomic_json(state_file, state_payload)
             exported_path = export_note_to_obsidian(
                 note,
                 notebook_name=notebook_name,
@@ -1090,7 +1106,7 @@ def _run_keyword_union_job(
                 "primary_domain": entry.primary_domain,
                 "path": canonical_path,
             }
-            _atomic_json(state_file, state_payload)
+            finish_candidate()
 
         expected_candidates = {
             guid: int(metadata.updated)

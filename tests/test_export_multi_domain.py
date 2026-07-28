@@ -1163,6 +1163,47 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
             )
         )
 
+    def test_keyword_union_records_current_candidate_before_body_fetch(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+
+        item = metadata("stalled-guid", "AI Agent", 1780000000000)
+
+        class FailingBodyStore(FakeNoteStore):
+            def getNote(self, _token, guid, *_args):
+                raise RuntimeError(f"body fetch failed: {guid}")
+
+        store = FailingBodyStore({"AI": [item]}, {})
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            job = normalize_job(keyword_union_payload(), vault)
+            state_file = temp_dir / "state.json"
+
+            with self.assertRaisesRegex(RuntimeError, "body fetch failed"):
+                run_export_job(
+                    job,
+                    store,
+                    "token",
+                    catalog_path=temp_dir / "catalog.sqlite3",
+                    state_file=state_file,
+                    report_file=temp_dir / "report.json",
+                    rate_limit_mode="stop",
+                    max_rate_limit_wait=0,
+                )
+
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            state["current_candidate"],
+            {
+                "guid": "stalled-guid",
+                "phase": "fetch_note",
+                "updated_ms": 1780000000000,
+            },
+        )
+        self.assertEqual(state["candidate_count"], 1)
+
     def test_keyword_analysis_is_committed_before_materialization(self):
         from scripts.export_catalog import ExportCatalog
         from scripts.export_multi_domain import normalize_job, run_export_job
@@ -1203,6 +1244,9 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                         max_rate_limit_wait=0,
                     )
 
+            state = json.loads(
+                (temp_dir / "state.json").read_text(encoding="utf-8")
+            )
             selection_hash = keyword_selection_hash(
                 job.domains,
                 job.aliases,
@@ -1216,6 +1260,10 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
 
         self.assertEqual(entry.outcome, "accepted")
         self.assertIsNone(entry.canonical_path)
+        self.assertEqual(
+            state["current_candidate"]["phase"],
+            "materialize",
+        )
 
     def test_no_literal_boundary_match_is_cached_as_rejected(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
