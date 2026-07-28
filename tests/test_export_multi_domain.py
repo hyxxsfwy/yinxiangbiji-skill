@@ -1,4 +1,5 @@
 from contextlib import redirect_stderr, redirect_stdout
+import hashlib
 import io
 import json
 import os
@@ -30,6 +31,33 @@ def full_note(item, content):
         content=content,
         resources=[],
     )
+
+
+def legacy_v1_job_id(payload):
+    legacy_vault = Path(payload["vault"]).expanduser().resolve()
+    job_id_payload = {
+        "since": payload["since"],
+        "until": payload["until"],
+        "vault": str(legacy_vault).casefold(),
+        "domains": {
+            domain: list(
+                dict.fromkeys(
+                    str(keyword).strip()
+                    for keyword in settings["keywords"]
+                    if str(keyword).strip()
+                )
+            )
+            for domain, settings in sorted(payload["domains"].items())
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(
+            job_id_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 class FakeNoteStore:
@@ -313,26 +341,57 @@ class CommandLinePathTests(unittest.TestCase):
         with workspace_temp_dir() as temp_dir:
             repo_root = temp_dir / "repo"
             legacy_state = repo_root / ".state"
+            legacy_vault = temp_dir / "legacy-device-vault"
             vault = temp_dir / "vault"
+            legacy_vault.mkdir()
             (vault / ".obsidian").mkdir(parents=True)
             job_file = temp_dir / "job.json"
+            legacy_payload = {
+                **self._payload(),
+                "vault": str(legacy_vault),
+            }
             job_file.write_text(
-                json.dumps(self._payload(), ensure_ascii=False),
+                json.dumps(legacy_payload, ensure_ascii=False),
                 encoding="utf-8",
             )
-            task_id = _job_id(normalize_job(self._payload(), vault))
+            v1_task_id = legacy_v1_job_id(legacy_payload)
+            v2_task_id = _job_id(normalize_job(self._payload(), vault))
             legacy_state.mkdir(parents=True)
             (legacy_state / "reports").mkdir()
             catalog_bytes = b"legacy-catalog"
-            run_bytes = b'{"legacy":"run"}\n'
-            report_bytes = b'{"legacy":"report"}\n'
+            run_bytes = json.dumps(
+                {
+                    "version": 1,
+                    "job_id": v1_task_id,
+                    "processed": {"legacy-guid": {"outcome": "accepted"}},
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            report_bytes = json.dumps(
+                {
+                    "job": {
+                        "id": v1_task_id,
+                        "since": legacy_payload["since"],
+                        "until": legacy_payload["until"],
+                        "vault": str(legacy_vault.resolve()),
+                        "domains": {
+                            domain: settings["keywords"]
+                            for domain, settings in legacy_payload[
+                                "domains"
+                            ].items()
+                        },
+                    },
+                    "ok": True,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
             (legacy_state / "export-catalog.sqlite3").write_bytes(
                 catalog_bytes
             )
-            (legacy_state / f"multi-export-{task_id}.json").write_bytes(
+            (legacy_state / f"multi-export-{v1_task_id}.json").write_bytes(
                 run_bytes
             )
-            (legacy_state / "reports" / f"{task_id}.json").write_bytes(
+            (legacy_state / "reports" / f"{v1_task_id}.json").write_bytes(
                 report_bytes
             )
 
@@ -344,11 +403,11 @@ class CommandLinePathTests(unittest.TestCase):
             self.assertEqual(dispatched["catalog_path"], paths.catalog)
             self.assertEqual(
                 dispatched["state_file"],
-                paths.runs / f"multi-export-{task_id}.json",
+                paths.runs / f"multi-export-{v2_task_id}.json",
             )
             self.assertEqual(
                 dispatched["report_file"],
-                paths.reports / f"{task_id}.json",
+                paths.reports / f"{v2_task_id}.json",
             )
             self.assertEqual(paths.catalog.read_bytes(), catalog_bytes)
             self.assertEqual(
@@ -359,6 +418,115 @@ class CommandLinePathTests(unittest.TestCase):
                 dispatched["report_file"].read_bytes(),
                 report_bytes,
             )
+
+    def test_legacy_state_takeover_refuses_conflicting_v2_target(self):
+        from scripts.export_multi_domain import _job_id, normalize_job
+        from scripts.vault_state import VaultStatePaths
+
+        with workspace_temp_dir() as temp_dir:
+            legacy_vault = temp_dir / "legacy-device-vault"
+            vault = temp_dir / "vault"
+            legacy_vault.mkdir()
+            (vault / ".obsidian").mkdir(parents=True)
+            legacy_payload = {
+                **self._payload(),
+                "vault": str(legacy_vault),
+            }
+            job_file = temp_dir / "job.json"
+            job_file.write_text(
+                json.dumps(legacy_payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            v1_task_id = legacy_v1_job_id(legacy_payload)
+            v2_task_id = _job_id(normalize_job(self._payload(), vault))
+            paths = VaultStatePaths.for_vault(vault)
+            paths.runs.mkdir(parents=True)
+            v1_run = paths.runs / f"multi-export-{v1_task_id}.json"
+            v2_run = paths.runs / f"multi-export-{v2_task_id}.json"
+            v1_run.write_bytes(b'{"source":"v1"}\n')
+            v2_run.write_bytes(b'{"source":"v2"}\n')
+
+            with self.assertRaises(SystemExit) as raised:
+                self._run_main(vault, job_file)
+
+            self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(v1_run.read_bytes(), b'{"source":"v1"}\n')
+            self.assertEqual(v2_run.read_bytes(), b'{"source":"v2"}\n')
+
+    def test_legacy_state_takeover_preflights_all_targets_before_copying(self):
+        from scripts.export_multi_domain import _job_id, normalize_job
+        from scripts.vault_state import VaultStatePaths
+
+        with workspace_temp_dir() as temp_dir:
+            legacy_vault = temp_dir / "legacy-device-vault"
+            vault = temp_dir / "vault"
+            legacy_vault.mkdir()
+            (vault / ".obsidian").mkdir(parents=True)
+            legacy_payload = {
+                **self._payload(),
+                "vault": str(legacy_vault),
+            }
+            job_file = temp_dir / "job.json"
+            job_file.write_text(
+                json.dumps(legacy_payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            v1_task_id = legacy_v1_job_id(legacy_payload)
+            v2_task_id = _job_id(normalize_job(self._payload(), vault))
+            paths = VaultStatePaths.for_vault(vault)
+            paths.runs.mkdir(parents=True)
+            paths.reports.mkdir(parents=True)
+            (paths.runs / f"multi-export-{v1_task_id}.json").write_bytes(
+                b'{"source":"v1-run"}\n'
+            )
+            (paths.reports / f"{v1_task_id}.json").write_bytes(
+                b'{"source":"v1-report"}\n'
+            )
+            v2_run = paths.runs / f"multi-export-{v2_task_id}.json"
+            v2_report = paths.reports / f"{v2_task_id}.json"
+            v2_report.write_bytes(b'{"source":"v2-report"}\n')
+
+            with self.assertRaises(SystemExit):
+                self._run_main(vault, job_file)
+
+            self.assertFalse(v2_run.exists())
+            self.assertEqual(
+                v2_report.read_bytes(),
+                b'{"source":"v2-report"}\n',
+            )
+
+    def test_legacy_state_takeover_reuses_identical_v2_targets(self):
+        from scripts.export_multi_domain import _job_id, normalize_job
+        from scripts.vault_state import VaultStatePaths
+
+        with workspace_temp_dir() as temp_dir:
+            legacy_vault = temp_dir / "legacy-device-vault"
+            vault = temp_dir / "vault"
+            legacy_vault.mkdir()
+            (vault / ".obsidian").mkdir(parents=True)
+            legacy_payload = {
+                **self._payload(),
+                "vault": str(legacy_vault),
+            }
+            job_file = temp_dir / "job.json"
+            job_file.write_text(
+                json.dumps(legacy_payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            v1_task_id = legacy_v1_job_id(legacy_payload)
+            v2_task_id = _job_id(normalize_job(self._payload(), vault))
+            paths = VaultStatePaths.for_vault(vault)
+            paths.runs.mkdir(parents=True)
+            content = b'{"same":"state"}\n'
+            for task_id in (v1_task_id, v2_task_id):
+                (paths.runs / f"multi-export-{task_id}.json").write_bytes(
+                    content
+                )
+
+            result, dispatched = self._run_main(vault, job_file)
+
+            self.assertEqual(result, 0)
+            self.assertEqual(dispatched["state_file"].read_bytes(), content)
 
     def test_explicit_output_paths_cannot_escape_state_namespace(self):
         from scripts import export_multi_domain

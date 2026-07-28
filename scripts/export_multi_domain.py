@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import uuid
 
 import evernote.edam.notestore.NoteStore as NoteStore
 from evernote.edam.type.ttypes import NoteSortOrder
@@ -148,18 +151,25 @@ def normalize_job(payload, vault):
     )
 
 
-def load_job(path, vault):
+def _read_job_payload(path):
     path = Path(path)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"无法读取任务文件 {path}: {exc}") from exc
+
+
+def _job_from_payload(payload, vault):
     if isinstance(payload, dict) and "vault" in payload:
         print(
             "警告：任务文件中的 vault 字段已废弃，"
             "使用 OBSIDIAN_VAULT_PATH"
         )
     return normalize_job(payload, vault)
+
+
+def load_job(path, vault):
+    return _job_from_payload(_read_job_payload(path), vault)
 
 
 def _job_id(job):
@@ -180,6 +190,101 @@ def _job_id(job):
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()[:16]
+
+
+def _legacy_job_id(job, vault):
+    payload = {
+        "since": job.since.isoformat(),
+        "until": job.until.isoformat(),
+        "vault": str(Path(vault).expanduser().resolve()).casefold(),
+        "domains": {
+            domain: list(keywords)
+            for domain, keywords in sorted(job.domains.items())
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _files_have_same_content(first, second):
+    first = Path(first)
+    second = Path(second)
+    if first.stat().st_size != second.stat().st_size:
+        return False
+    with first.open("rb") as first_file, second.open("rb") as second_file:
+        while True:
+            first_chunk = first_file.read(1024 * 1024)
+            second_chunk = second_file.read(1024 * 1024)
+            if first_chunk != second_chunk:
+                return False
+            if not first_chunk:
+                return True
+
+
+def _require_compatible_target(source, target, concurrent=False):
+    target = Path(target)
+    if not target.exists():
+        return
+    if (
+        not target.is_file()
+        or not _files_have_same_content(source, target)
+    ):
+        qualifier = "并发创建的" if concurrent else "已有"
+        raise ValueError(
+            f"v1 状态与{qualifier} v2 状态冲突，未覆盖: {target}"
+        )
+
+
+def _copy_without_overwrite(source, target):
+    source = Path(source)
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        shutil.copyfile(source, staged)
+        if target.exists():
+            _require_compatible_target(staged, target)
+            return False
+        try:
+            os.link(staged, target)
+        except FileExistsError:
+            _require_compatible_target(staged, target, concurrent=True)
+            return False
+        return True
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _adopt_legacy_job_state(paths, job, payload):
+    legacy_vault = payload.get("vault") if isinstance(payload, dict) else None
+    if not isinstance(legacy_vault, str) or not legacy_vault.strip():
+        return
+    legacy_id = _legacy_job_id(job, legacy_vault)
+    current_id = _job_id(job)
+    candidates = tuple(
+        (source, target)
+        for source, target in (
+            (
+                paths.runs / f"multi-export-{legacy_id}.json",
+                paths.runs / f"multi-export-{current_id}.json",
+            ),
+            (
+                paths.reports / f"{legacy_id}.json",
+                paths.reports / f"{current_id}.json",
+            ),
+        )
+        if source.is_file()
+    )
+    for source, target in candidates:
+        _require_compatible_target(source, target)
+    for source, target in candidates:
+        _copy_without_overwrite(source, target)
 
 
 def _atomic_json(path, payload):
@@ -718,7 +823,9 @@ def main():
         vault = load_vault_root()
         paths = VaultStatePaths.for_vault(vault)
         migrate_legacy_state(paths, REPO_ROOT / ".state")
-        job = load_job(args.job, vault)
+        payload = _read_job_payload(args.job)
+        job = _job_from_payload(payload, vault)
+        _adopt_legacy_job_state(paths, job, payload)
         task_id = _job_id(job)
         catalog = _state_output_path(
             args.catalog,

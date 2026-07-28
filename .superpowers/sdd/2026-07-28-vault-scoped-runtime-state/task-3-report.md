@@ -65,3 +65,36 @@ python -m unittest tests.test_vault_state.LegacyMigrationTests.test_first_migrat
 结果：退出码 1。旧 multi-export 在 `runs/` 中不存在；`load_job(null/42)` 抛出 `TypeError`；端到端 CLI 用例在 Vault 新 catalog 路径读到 `FileNotFoundError`。
 
 GREEN：同一命令修复后 3/3 通过。扩大验证到 `tests.test_vault_state`、`tests.test_export_multi_domain`、`tests.test_export_catalog` 和 `tests.test_export_integrity`，共 41 项全部通过。
+
+## Round 2 评审修复
+
+状态：`DONE`
+
+已按旧 CLI 的真实任务 ID 算法补齐 v1 到 v2 的安全接管：
+
+- 回归测试直接复刻 v1 的 `since`、`until`、`vault.casefold()` 和 `domains` 载荷并执行 SHA-256，不使用新版 `_job_id()` 伪造旧文件名；
+- 旧任务 JSON 含 `vault` 时，用该旧设备路径与规范化后的日期、领域和关键词计算 v1 ID，新版 v2 ID 仍不包含任何 Vault 绝对路径；
+- 仓库旧 `.state` 迁移完成后，将 `runs/multi-export-<v1-id>.json` 和 `reports/<v1-id>.json` 无覆盖接管到对应 v2 默认路径，v1 文件与仓库旧源文件均保留；
+- 接管先预检 run/report 的全部目标，再以同目录临时副本和排他硬链接发布；已有 v2 内容相同则复用，内容不同则在复制前明确报错并保留双方，并发创建目标时再次校验。
+
+### Round 2 TDD 记录
+
+真实 v1 RED 命令：
+
+```powershell
+$env:PYTHONUTF8='1'
+python -m unittest tests.test_export_multi_domain.CommandLinePathTests.test_main_migrates_legacy_default_state_into_paths_it_uses -v
+```
+
+结果：退出码 1。旧 v1 run/report 已迁入 Vault，但新 CLI 派发 v2 路径，读取 `runs/multi-export-<v2-id>.json` 时出现预期 `FileNotFoundError`。
+
+冲突预检 RED 命令：
+
+```powershell
+$env:PYTHONUTF8='1'
+python -m unittest tests.test_export_multi_domain.CommandLinePathTests.test_legacy_state_takeover_preflights_all_targets_before_copying -v
+```
+
+结果：退出码 1。报告目标冲突时，旧实现已提前发布 v2 run；修复后先完成全部目标预检，不再产生部分接管。
+
+GREEN：Task 3 三模块定向测试共 21 项全部通过；扩大到 `tests.test_vault_state` 后共 44 项全部通过。冲突用例确认既有 v2 不被覆盖，相同 v2 可直接复用；`py_compile` 与 `git diff --check` 均通过。
