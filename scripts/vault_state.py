@@ -110,22 +110,31 @@ def _target_for(paths, relative_source):
     return paths.root / relative_source
 
 
-def _atomic_copy(source, target):
-    target.parent.mkdir(parents=True, exist_ok=True)
-    file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-        dir=target.parent,
-    )
-    os.close(file_descriptor)
-    temporary = Path(temporary_name)
+def _rollback_published(published):
+    for staged, target in reversed(published):
+        try:
+            if target.exists() and os.path.samefile(staged, target):
+                target.unlink()
+        except OSError:
+            continue
+
+
+def _publish_staged(staged_items):
+    published = []
     try:
-        shutil.copyfile(source, temporary)
-        if target.exists():
-            raise StateMigrationConflict(f"迁移目标已被占用: {target}")
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
+        for staged, target, entry in staged_items:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(staged, target)
+            except FileExistsError as exc:
+                raise StateMigrationConflict(
+                    f"迁移发布时目标被并发占用: {target}"
+                ) from exc
+            published.append((staged, target))
+    except BaseException:
+        _rollback_published(published)
+        raise
+    return tuple(entry for _staged, _target, entry in staged_items)
 
 
 def _write_manifest(paths, copied):
@@ -159,43 +168,59 @@ def _write_manifest(paths, copied):
 def migrate_legacy_state(paths, legacy_root):
     """将允许的旧状态文件复制到 Vault 状态目录，绝不覆盖冲突目标。"""
     legacy_root = Path(legacy_root).resolve()
+    paths.root.mkdir(parents=True, exist_ok=True)
     state_root = paths.root.resolve()
-    pending = []
+    staging = paths.root / f".migration-staging-{uuid.uuid4().hex}"
+    staging.mkdir()
+    staged_items = []
     skipped = []
+    published = []
+    try:
+        for index, source in enumerate(_legacy_sources(legacy_root)):
+            resolved_source = _require_within(
+                source,
+                legacy_root,
+                "迁移源",
+            )
+            if not resolved_source.is_file():
+                continue
+            relative_source = source.relative_to(legacy_root)
+            target = _target_for(paths, relative_source)
+            _require_within(target, state_root, "迁移目标")
+            staged = staging / f"{index:06d}-{uuid.uuid4().hex}"
+            shutil.copyfile(resolved_source, staged)
+            entry = MigrationEntry(
+                source=relative_source.as_posix(),
+                target=target.relative_to(paths.root).as_posix(),
+                size=staged.stat().st_size,
+                sha256=_sha256(staged),
+            )
+            if target.exists():
+                if not target.is_file() or _sha256(target) != entry.sha256:
+                    raise StateMigrationConflict(
+                        f"迁移目标与旧状态内容冲突: {target}"
+                    )
+                skipped.append(entry)
+            else:
+                staged_items.append((staged, target, entry))
 
-    for source in _legacy_sources(legacy_root):
-        resolved_source = _require_within(source, legacy_root, "迁移源")
-        if not resolved_source.is_file():
-            continue
-        relative_source = source.relative_to(legacy_root)
-        target = _target_for(paths, relative_source)
-        _require_within(target, state_root, "迁移目标")
-        entry = MigrationEntry(
-            source=relative_source.as_posix(),
-            target=target.relative_to(paths.root).as_posix(),
-            size=resolved_source.stat().st_size,
-            sha256=_sha256(resolved_source),
+        try:
+            copied = _publish_staged(staged_items)
+            published = [
+                (staged, target)
+                for staged, target, _entry in staged_items
+            ]
+            manifest = _write_manifest(paths, copied) if copied else None
+        except BaseException:
+            _rollback_published(published)
+            raise
+        return MigrationReport(
+            copied=tuple(copied),
+            skipped=tuple(skipped),
+            manifest=manifest,
         )
-        if target.exists():
-            if not target.is_file() or _sha256(target) != entry.sha256:
-                raise StateMigrationConflict(
-                    f"迁移目标与旧状态内容冲突: {target}"
-                )
-            skipped.append(entry)
-        else:
-            pending.append((resolved_source, target, entry))
-
-    copied = []
-    for source, target, entry in pending:
-        _atomic_copy(source, target)
-        copied.append(entry)
-
-    manifest = _write_manifest(paths, copied) if copied else None
-    return MigrationReport(
-        copied=tuple(copied),
-        skipped=tuple(skipped),
-        manifest=manifest,
-    )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def _read_lock_payload(lock):
@@ -232,6 +257,7 @@ def _create_lock(lock, payload):
     lock.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     file_descriptor = os.open(lock, flags, 0o600)
+    created_stat = os.fstat(file_descriptor)
     try:
         with os.fdopen(
             file_descriptor,
@@ -244,7 +270,15 @@ def _create_lock(lock, payload):
             lock_file.flush()
             os.fsync(lock_file.fileno())
     except BaseException:
-        lock.unlink(missing_ok=True)
+        try:
+            current_stat = lock.stat()
+            if (
+                current_stat.st_dev == created_stat.st_dev
+                and current_stat.st_ino == created_stat.st_ino
+            ):
+                lock.unlink()
+        except FileNotFoundError:
+            pass
         raise
 
 
@@ -267,19 +301,42 @@ def _remove_owned_lock(lock, lock_id):
         lock.unlink(missing_ok=True)
 
 
+def _operation_guard_path(paths):
+    return paths.lock.with_name(f"{paths.lock.name}.guard")
+
+
 @contextmanager
-def runtime_write_lock(paths, task_id, recover_stale=False):
-    """独占持有 Vault 写锁，并仅清理当前上下文拥有的锁。"""
-    lock_id = uuid.uuid4().hex
+def _lock_operation_guard(paths, operation):
+    guard = _operation_guard_path(paths)
+    guard_id = uuid.uuid4().hex
     payload = {
+        "guard_id": guard_id,
         "device": socket.gethostname(),
         "pid": os.getpid(),
-        "task_id": task_id,
+        "operation": operation,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "lock_id": lock_id,
     }
     try:
+        _create_lock(guard, payload)
+    except FileExistsError as exc:
+        raise StateLockConflict(
+            f"Vault 锁操作 guard 已存在，拒绝自动清理: {guard}"
+        ) from exc
+    try:
+        yield
+    finally:
+        current = _read_lock_payload(guard)
+        if (
+            isinstance(current, dict)
+            and current.get("guard_id") == guard_id
+        ):
+            guard.unlink(missing_ok=True)
+
+
+def _acquire_runtime_lock(paths, payload, recover_stale):
+    try:
         _create_lock(paths.lock, payload)
+        return
     except FileExistsError as exc:
         existing = _read_lock_payload(paths.lock)
         if _local_lock_is_live(existing) is True:
@@ -298,7 +355,23 @@ def runtime_write_lock(paths, task_id, recover_stale=False):
                 f"恢复旧锁时 Vault 写锁被其他进程取得: {paths.lock}"
             ) from rebuild_exc
 
+
+@contextmanager
+def runtime_write_lock(paths, task_id, recover_stale=False):
+    """独占持有 Vault 写锁，并仅清理当前上下文拥有的锁。"""
+    lock_id = uuid.uuid4().hex
+    payload = {
+        "device": socket.gethostname(),
+        "pid": os.getpid(),
+        "task_id": task_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "lock_id": lock_id,
+    }
+    with _lock_operation_guard(paths, "acquire"):
+        _acquire_runtime_lock(paths, payload, recover_stale)
+
     try:
         yield payload
     finally:
-        _remove_owned_lock(paths.lock, lock_id)
+        with _lock_operation_guard(paths, "release"):
+            _remove_owned_lock(paths.lock, lock_id)

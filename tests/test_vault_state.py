@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import socket
 import unittest
+from unittest.mock import patch
 
 from tests.support import workspace_temp_dir
 
@@ -143,6 +144,139 @@ class LegacyMigrationTests(unittest.TestCase):
             self.assertFalse((paths.jobs / "task.json").exists())
             self.assertFalse((paths.root / "multi-export-task.json").exists())
 
+    def test_publish_race_never_overwrites_concurrent_target(self):
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            legacy_root = temp_dir / "legacy"
+            vault.mkdir()
+            legacy_root.mkdir()
+            source = legacy_root / "export-AI-race.json"
+            source.write_bytes(b"legacy")
+            paths = VaultStatePaths.for_vault(vault)
+            target = paths.single_domain / source.name
+            concurrent = b"concurrent"
+            real_replace = os.replace
+            real_link = os.link
+
+            def race(real_publish, source_path, target_path):
+                if Path(target_path) == target:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(concurrent)
+                return real_publish(source_path, target_path)
+
+            with (
+                patch(
+                    "scripts.vault_state.os.replace",
+                    side_effect=lambda source_path, target_path: race(
+                        real_replace,
+                        source_path,
+                        target_path,
+                    ),
+                ),
+                patch(
+                    "scripts.vault_state.os.link",
+                    side_effect=lambda source_path, target_path: race(
+                        real_link,
+                        source_path,
+                        target_path,
+                    ),
+                ),
+                self.assertRaises(StateMigrationConflict),
+            ):
+                migrate_legacy_state(paths, legacy_root)
+
+            self.assertEqual(target.read_bytes(), concurrent)
+
+    def test_publish_conflict_rolls_back_only_batch_owned_targets(self):
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            legacy_root = temp_dir / "legacy"
+            vault.mkdir()
+            legacy_root.mkdir()
+            export_source = legacy_root / "export-AI-first.json"
+            job_source = legacy_root / "jobs" / "task.json"
+            job_source.parent.mkdir()
+            export_source.write_bytes(b"first-source")
+            job_source.write_bytes(b"second-source")
+            paths = VaultStatePaths.for_vault(vault)
+            first_target = paths.single_domain / export_source.name
+            second_target = paths.jobs / job_source.name
+            replacement = b"replacement-after-first-publish"
+            concurrent = b"concurrent-second-target"
+            real_replace = os.replace
+            real_link = os.link
+
+            def publish_with_race(real_publish, source_path, target_path):
+                destination = Path(target_path)
+                if destination == second_target:
+                    first_target.unlink()
+                    first_target.write_bytes(replacement)
+                    second_target.parent.mkdir(parents=True, exist_ok=True)
+                    second_target.write_bytes(concurrent)
+                return real_publish(source_path, target_path)
+
+            with (
+                patch(
+                    "scripts.vault_state.os.replace",
+                    side_effect=lambda source_path, target_path:
+                    publish_with_race(
+                        real_replace,
+                        source_path,
+                        target_path,
+                    ),
+                ),
+                patch(
+                    "scripts.vault_state.os.link",
+                    side_effect=lambda source_path, target_path:
+                    publish_with_race(
+                        real_link,
+                        source_path,
+                        target_path,
+                    ),
+                ),
+                self.assertRaises(StateMigrationConflict),
+            ):
+                migrate_legacy_state(paths, legacy_root)
+
+            self.assertEqual(first_target.read_bytes(), replacement)
+            self.assertEqual(second_target.read_bytes(), concurrent)
+
+    def test_manifest_hash_and_size_describe_staged_bytes(self):
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            legacy_root = temp_dir / "legacy"
+            vault.mkdir()
+            legacy_root.mkdir()
+            source = legacy_root / "export-AI-changing.json"
+            source.write_bytes(b"before-copy")
+            changed = b"changed-while-copying"
+            paths = VaultStatePaths.for_vault(vault)
+            import shutil
+            real_copyfile = shutil.copyfile
+
+            def mutate_then_copy(source_path, target_path):
+                Path(source_path).write_bytes(changed)
+                return real_copyfile(source_path, target_path)
+
+            with patch(
+                "scripts.vault_state.shutil.copyfile",
+                side_effect=mutate_then_copy,
+            ):
+                report = migrate_legacy_state(paths, legacy_root)
+
+            target = paths.single_domain / source.name
+            manifest = json.loads(
+                report.manifest.read_text(encoding="utf-8")
+            )
+            entry = manifest["copied"][0]
+            self.assertEqual(target.read_bytes(), changed)
+            self.assertEqual(entry["size"], len(changed))
+            self.assertEqual(
+                entry["sha256"],
+                hashlib.sha256(changed).hexdigest(),
+            )
+
+
 class RuntimeLockTests(unittest.TestCase):
     def test_lock_is_exclusive_contains_owner_metadata_and_exits_cleanly(self):
         from scripts.vault_state import (
@@ -272,6 +406,141 @@ class RuntimeLockTests(unittest.TestCase):
                 json.loads(paths.lock.read_text(encoding="utf-8")),
                 replacement,
             )
+
+    def test_recovery_guard_prevents_replacement_between_check_and_archive(
+        self,
+    ):
+        from scripts import vault_state
+        from scripts.vault_state import runtime_write_lock
+
+        with workspace_temp_dir() as temp_dir:
+            paths = VaultStatePaths.for_vault(temp_dir / "vault")
+            paths.root.mkdir(parents=True)
+            paths.lock.write_text(
+                json.dumps(
+                    {
+                        "device": "另一台设备",
+                        "pid": 1234,
+                        "task_id": "old-task",
+                        "created_at": "2026-07-27T00:00:00+00:00",
+                        "lock_id": "old-lock",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            guard = paths.lock.with_name(f"{paths.lock.name}.guard")
+            raced = []
+            real_archive = vault_state._archive_stale_lock
+
+            def race_before_archive(received_paths):
+                if not guard.exists():
+                    raced.append(True)
+                    received_paths.lock.write_text(
+                        json.dumps(
+                            {
+                                "device": socket.gethostname(),
+                                "pid": os.getpid(),
+                                "task_id": "concurrent-task",
+                                "created_at":
+                                "2026-07-28T00:00:00+00:00",
+                                "lock_id": "concurrent-lock",
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                return real_archive(received_paths)
+
+            with patch(
+                "scripts.vault_state._archive_stale_lock",
+                side_effect=race_before_archive,
+            ):
+                with runtime_write_lock(
+                    paths,
+                    "new-task",
+                    recover_stale=True,
+                ):
+                    self.assertEqual(
+                        json.loads(
+                            paths.lock.read_text(encoding="utf-8")
+                        )["task_id"],
+                        "new-task",
+                    )
+
+            self.assertEqual(raced, [])
+
+    def test_release_guard_prevents_replacement_between_check_and_delete(self):
+        from scripts import vault_state
+        from scripts.vault_state import runtime_write_lock
+
+        with workspace_temp_dir() as temp_dir:
+            paths = VaultStatePaths.for_vault(temp_dir / "vault")
+            guard = paths.lock.with_name(f"{paths.lock.name}.guard")
+            raced = []
+            real_read = vault_state._read_lock_payload
+
+            def race_after_read(lock):
+                payload = real_read(lock)
+                if (
+                    Path(lock) == paths.lock
+                    and isinstance(payload, dict)
+                    and payload.get("task_id") == "original"
+                    and not guard.exists()
+                ):
+                    raced.append(True)
+                    paths.lock.write_text(
+                        json.dumps(
+                            {
+                                "device": "另一台设备",
+                                "pid": 5678,
+                                "task_id": "replacement",
+                                "created_at":
+                                "2026-07-28T00:00:00+00:00",
+                                "lock_id": "replacement-lock",
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                return payload
+
+            with patch(
+                "scripts.vault_state._read_lock_payload",
+                side_effect=race_after_read,
+            ):
+                with runtime_write_lock(paths, "original"):
+                    pass
+
+            self.assertEqual(raced, [])
+            self.assertFalse(paths.lock.exists())
+
+    def test_existing_operation_guard_is_never_silently_recovered(self):
+        from scripts.vault_state import (
+            StateLockConflict,
+            runtime_write_lock,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            paths = VaultStatePaths.for_vault(temp_dir / "vault")
+            paths.root.mkdir(parents=True)
+            guard = paths.lock.with_name(f"{paths.lock.name}.guard")
+            guard_bytes = b'{"guard_id":"unknown-owner"}\n'
+            guard.write_bytes(guard_bytes)
+
+            with self.assertRaises(StateLockConflict):
+                with runtime_write_lock(
+                    paths,
+                    "task",
+                    recover_stale=True,
+                ):
+                    self.fail("残留操作 guard 不得被静默覆盖")
+
+            self.assertEqual(guard.read_bytes(), guard_bytes)
+            self.assertFalse(paths.lock.exists())
 
 
 if __name__ == "__main__":
