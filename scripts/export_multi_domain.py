@@ -154,7 +154,7 @@ def load_job(path, vault):
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"无法读取任务文件 {path}: {exc}") from exc
-    if "vault" in payload:
+    if isinstance(payload, dict) and "vault" in payload:
         print(
             "警告：任务文件中的 vault 字段已废弃，"
             "使用 OBSIDIAN_VAULT_PATH"
@@ -717,7 +717,7 @@ def main():
     try:
         vault = load_vault_root()
         paths = VaultStatePaths.for_vault(vault)
-        migrate_legacy_state(paths, REPO_ROOT)
+        migrate_legacy_state(paths, REPO_ROOT / ".state")
         job = load_job(args.job, vault)
         task_id = _job_id(job)
         catalog = _state_output_path(

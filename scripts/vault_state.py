@@ -108,6 +108,12 @@ def _legacy_sources(legacy_root):
 def _target_for(paths, relative_source):
     if (
         relative_source.parent == Path(".")
+        and relative_source.name.startswith("multi-export-")
+        and relative_source.suffix == ".json"
+    ):
+        return paths.runs / relative_source.name
+    if (
+        relative_source.parent == Path(".")
         and relative_source.name.startswith("export-")
         and relative_source.suffix == ".json"
     ):

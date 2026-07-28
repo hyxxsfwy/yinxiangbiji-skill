@@ -67,7 +67,7 @@ class LegacyMigrationTests(unittest.TestCase):
             expected_targets = {
                 Path("single-domain/export-AI-abc.json"):
                 contents[Path("export-AI-abc.json")],
-                Path("multi-export-task.json"):
+                Path("runs/multi-export-task.json"):
                 contents[Path("multi-export-task.json")],
                 Path("jobs/task.json"): contents[Path("jobs/task.json")],
                 Path("reports/task.json"):
@@ -146,7 +146,7 @@ class LegacyMigrationTests(unittest.TestCase):
                 (paths.single_domain / "export-AI-abc.json").exists()
             )
             self.assertFalse((paths.jobs / "task.json").exists())
-            self.assertFalse((paths.root / "multi-export-task.json").exists())
+            self.assertFalse((paths.runs / "multi-export-task.json").exists())
 
     def test_publish_race_never_overwrites_concurrent_target(self):
         with workspace_temp_dir() as temp_dir:

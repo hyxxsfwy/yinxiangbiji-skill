@@ -139,6 +139,23 @@ class MultiDomainJobTestMixin:
         self.assertEqual(job.vault, current_vault.resolve())
         self.assertIn("vault 字段已废弃", output.getvalue())
 
+    def test_non_object_job_payload_is_rejected_as_validation_error(self):
+        from scripts.export_multi_domain import load_job
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            for index, payload in enumerate((None, 42)):
+                with self.subTest(payload=payload):
+                    job_file = temp_dir / f"job-{index}.json"
+                    job_file.write_text(
+                        json.dumps(payload),
+                        encoding="utf-8",
+                    )
+
+                    with self.assertRaises(ValueError):
+                        load_job(job_file, vault)
+
     def test_job_validation_and_target_derivation(self):
         from scripts.export_multi_domain import normalize_job
 
@@ -286,6 +303,61 @@ class CommandLinePathTests(unittest.TestCase):
             self.assertEqual(
                 dispatched["report_file"],
                 paths.reports / f"{task_ids[0]}.json",
+            )
+
+    def test_main_migrates_legacy_default_state_into_paths_it_uses(self):
+        from scripts import export_multi_domain
+        from scripts.export_multi_domain import _job_id, normalize_job
+        from scripts.vault_state import VaultStatePaths
+
+        with workspace_temp_dir() as temp_dir:
+            repo_root = temp_dir / "repo"
+            legacy_state = repo_root / ".state"
+            vault = temp_dir / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            job_file = temp_dir / "job.json"
+            job_file.write_text(
+                json.dumps(self._payload(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            task_id = _job_id(normalize_job(self._payload(), vault))
+            legacy_state.mkdir(parents=True)
+            (legacy_state / "reports").mkdir()
+            catalog_bytes = b"legacy-catalog"
+            run_bytes = b'{"legacy":"run"}\n'
+            report_bytes = b'{"legacy":"report"}\n'
+            (legacy_state / "export-catalog.sqlite3").write_bytes(
+                catalog_bytes
+            )
+            (legacy_state / f"multi-export-{task_id}.json").write_bytes(
+                run_bytes
+            )
+            (legacy_state / "reports" / f"{task_id}.json").write_bytes(
+                report_bytes
+            )
+
+            with patch.object(export_multi_domain, "REPO_ROOT", repo_root):
+                result, dispatched = self._run_main(vault, job_file)
+
+            paths = VaultStatePaths.for_vault(vault)
+            self.assertEqual(result, 0)
+            self.assertEqual(dispatched["catalog_path"], paths.catalog)
+            self.assertEqual(
+                dispatched["state_file"],
+                paths.runs / f"multi-export-{task_id}.json",
+            )
+            self.assertEqual(
+                dispatched["report_file"],
+                paths.reports / f"{task_id}.json",
+            )
+            self.assertEqual(paths.catalog.read_bytes(), catalog_bytes)
+            self.assertEqual(
+                dispatched["state_file"].read_bytes(),
+                run_bytes,
+            )
+            self.assertEqual(
+                dispatched["report_file"].read_bytes(),
+                report_bytes,
             )
 
     def test_explicit_output_paths_cannot_escape_state_namespace(self):
