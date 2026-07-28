@@ -81,6 +81,7 @@ python scripts/export_search_results.py `
 两个及以上领域、关键词重叠或全量导出时，使用任务文件驱动的编排命令：
 
 ```powershell
+New-Item -ItemType Directory -Force .state\jobs | Out-Null
 Copy-Item templates\multi-domain-export-job.json .state\jobs\2026-q2.json
 
 python scripts/export_multi_domain.py `
@@ -96,7 +97,7 @@ SQLite 历史解析目录默认位于 `.state/export-catalog.sqlite3`。首次�
 
 限流等待、断点和报告保存在 `.state/`，不会提交到 Git。默认日志只显示汇总；JSON 报告中的 `catalog_hits`、`catalog_stale` 和 `body_requests_saved` 分别表示历史目录命中、失效和实际节省的正文请求数。
 
-只有 `ok: true` 且索引、附件、日期范围和重复项全部通过时任务才算完成。完整性验收会检查关键词搜索是否拉全、图片和附件是否存在、索引位置是否有效、领域内及跨领域重复是否为零，并区分任务日期范围内数量和目录现存总数。
+只有 `ok: true` 且索引、附件、检索范围对账和重复项全部通过时任务才算完成。完整性验收会检查关键词搜索是否拉全、图片和附件是否存在、索引位置是否有效、领域内及跨领域重复是否为零，并区分任务日期范围内数量和目录现存总数。目标领域中已经存在的其他月份属于历史知识库，只参与总量统计，不会被误判为本次任务越界。
 
 ### 增量同步整个 vault
 

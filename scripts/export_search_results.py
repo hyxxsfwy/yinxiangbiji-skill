@@ -874,6 +874,7 @@ def export_note_to_obsidian(note, notebook_name, target_dir, domain="AI"):
         "tags": [],
         "review_status": "pending",
         "llm_policy": "strict",
+        "source_updated_ms": updated_ms,
     }
 
     markdown = frontmatter(

@@ -221,11 +221,25 @@ def _content_analysis(content):
     return body, scores, evidence, tuple(labels), summary
 
 
+def _known_vault_domains(job):
+    existing_root = job.vault / "30_精选资料"
+    existing = (
+        [
+            domain
+            for domain in DOMAIN_PROFILES
+            if (existing_root / domain).is_dir()
+        ]
+        if existing_root.is_dir()
+        else []
+    )
+    return tuple(dict.fromkeys((*job.domains, *existing)))
+
+
 def bootstrap_catalog_from_vault(job, catalog, policy_hash, seen_at):
     """用现有规范 Markdown 初始化跨任务目录，避免再次请求历史正文。"""
     bootstrapped = 0
-    for directory_domain in job.domains:
-        root = job.target_for(directory_domain)
+    for directory_domain in _known_vault_domains(job):
+        root = job.vault / "30_精选资料" / directory_domain
         if not root.is_dir():
             continue
         for path in sorted(root.rglob("*.md")):
@@ -242,7 +256,10 @@ def bootstrap_catalog_from_vault(job, catalog, policy_hash, seen_at):
                 or fields.get("domain") != directory_domain
             ):
                 continue
-            updated_ms = int(metadata.updated.timestamp() * 1000)
+            try:
+                updated_ms = int(fields["source_updated_ms"])
+            except (KeyError, TypeError, ValueError):
+                updated_ms = int(metadata.updated.timestamp() * 1000)
             if catalog.get_current(
                 metadata.guid,
                 updated_ms,
@@ -451,14 +468,19 @@ def run_export_job(
                 counts["catalog_hits"] += 1
                 catalog.mark_seen(guid, now)
                 if cached.outcome == "rejected":
-                    counts["rejected"] += 1
-                    counts["body_requests_saved"] += 1
-                    processed[guid] = {
-                        "outcome": "cached_rejected",
-                        "title": title,
-                    }
-                    _atomic_json(state_file, state_payload)
-                    continue
+                    if (
+                        not cached.primary_domain
+                        or cached.primary_domain not in job.domains
+                    ):
+                        counts["rejected"] += 1
+                        counts["body_requests_saved"] += 1
+                        processed[guid] = {
+                            "outcome": "cached_rejected",
+                            "title": title,
+                            "primary_domain": cached.primary_domain,
+                        }
+                        _atomic_json(state_file, state_payload)
+                        continue
                 if cached.primary_domain not in job.domains:
                     counts["rejected"] += 1
                     counts["body_requests_saved"] += 1
@@ -606,7 +628,7 @@ def run_export_job(
 
     integrity = scan_export_integrity(
         job.vault,
-        domains=tuple(job.domains),
+        domains=_known_vault_domains(job),
         since=datetime.combine(job.since, time.min),
         until=datetime.combine(job.until, time.min),
     )

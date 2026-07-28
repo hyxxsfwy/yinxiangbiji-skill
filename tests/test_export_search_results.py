@@ -996,6 +996,10 @@ class ExportNoteTests(unittest.TestCase):
             exported_content = exported_path.read_text(encoding="utf-8")
 
         self.assertNotRegex(exported_content, r"(?m)^title:")
+        self.assertIn(
+            "source_updated_ms: 1753574400000",
+            exported_content,
+        )
         self.assertEqual(
             exported_content.count(
                 "# 删掉80%的Skill，Agent反而更听话了"

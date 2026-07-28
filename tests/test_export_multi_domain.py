@@ -289,6 +289,136 @@ class MultiDomainJobTests(unittest.TestCase):
                 1,
             )
 
+    def test_cached_outside_domain_is_rechecked_when_domain_is_added(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+
+        item = metadata("investment-guid", "跨任务领域变化", 1780000000123)
+        note = full_note(
+            item,
+            "<en-note>基金配置、股票估值、投资组合、资产配置和风险控制。</en-note>",
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            catalog_path = temp_dir / "catalog.sqlite3"
+            common = {
+                "since": "2026-04-01",
+                "until": "2026-07-01",
+                "vault": str(vault),
+            }
+            first_job = normalize_job(
+                {
+                    **common,
+                    "domains": {"AI": {"keywords": ["AI"]}},
+                }
+            )
+            first_store = FakeNoteStore(
+                {"AI": [item]},
+                {"investment-guid": note},
+            )
+            run_export_job(
+                first_job,
+                first_store,
+                "token",
+                catalog_path=catalog_path,
+                state_file=temp_dir / "first-state.json",
+                report_file=temp_dir / "first-report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+            second_job = normalize_job(
+                {
+                    **common,
+                    "domains": {
+                        "投资理财": {"keywords": ["基金"]},
+                    },
+                }
+            )
+            second_store = FakeNoteStore(
+                {"基金": [item]},
+                {"investment-guid": note},
+            )
+            second_report = run_export_job(
+                second_job,
+                second_store,
+                "token",
+                catalog_path=catalog_path,
+                state_file=temp_dir / "second-state.json",
+                report_file=temp_dir / "second-report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+            self.assertEqual(first_store.body_calls, ["investment-guid"])
+            self.assertEqual(second_store.body_calls, ["investment-guid"])
+            self.assertEqual(second_report["candidates"]["accepted"], 1)
+            self.assertTrue(
+                (
+                    vault
+                    / "30_精选资料"
+                    / "投资理财"
+                    / "2026年04月"
+                    / "跨任务领域变化.md"
+                ).is_file()
+            )
+
+    def test_integrity_scans_existing_domains_outside_current_job(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+        from scripts.export_search_results import export_note_to_obsidian
+        from scripts.knowledge_base import finalize_knowledge_base
+
+        existing = metadata("existing-investment", "跨领域同标题", 1779000000000)
+        candidate = metadata("new-ai", "跨领域同标题", 1780000000000)
+        existing_note = full_note(
+            existing,
+            "<en-note>基金配置、股票估值、投资组合、资产配置和风险控制。</en-note>",
+        )
+        candidate_note = full_note(
+            candidate,
+            "<en-note>大语言模型、RAG、智能体、机器学习和模型推理。</en-note>",
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            investment_target = vault / "30_精选资料" / "投资理财"
+            export_note_to_obsidian(
+                existing_note,
+                notebook_name="微信",
+                target_dir=investment_target,
+                domain="投资理财",
+            )
+            finalize_knowledge_base(investment_target, domain="投资理财")
+            job = normalize_job(
+                {
+                    "since": "2026-04-01",
+                    "until": "2026-07-01",
+                    "vault": str(vault),
+                    "domains": {"AI": {"keywords": ["AI"]}},
+                }
+            )
+            report = run_export_job(
+                job,
+                FakeNoteStore(
+                    {"AI": [candidate]},
+                    {"new-ai": candidate_note},
+                ),
+                "token",
+                catalog_path=temp_dir / "catalog.sqlite3",
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(
+                set(report["integrity"]["cross_domain_title_duplicates"]),
+                {"跨领域同标题"},
+            )
+
     def test_existing_export_bootstraps_catalog_before_new_keyword_task(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
         from scripts.export_search_results import export_note_to_obsidian

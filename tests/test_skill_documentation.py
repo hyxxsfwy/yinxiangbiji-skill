@@ -102,7 +102,7 @@ class SkillDocumentationTests(unittest.TestCase):
             self.skill,
         )
         self.assertIn(
-            "索引、附件、日期范围和重复项全部通过",
+            "索引、附件、检索范围对账和重复项全部通过",
             self.skill,
         )
 

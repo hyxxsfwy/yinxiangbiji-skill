@@ -168,7 +168,7 @@ class ExportCatalog:
         if entry is None:
             return None
         if (
-            entry.updated_ms // 1000 != int(updated_ms) // 1000
+            entry.updated_ms != int(updated_ms)
             or entry.policy_hash != policy_hash
         ):
             return None

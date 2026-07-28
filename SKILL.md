@@ -88,6 +88,9 @@ python scripts/export_search_results.py `
 先复制 `templates/multi-domain-export-job.json` 到 Git 忽略的 `.state/jobs/` 并修改日期、vault 和关键词，然后运行：
 
 ```powershell
+New-Item -ItemType Directory -Force .state\jobs | Out-Null
+Copy-Item templates\multi-domain-export-job.json .state\jobs\任务.json
+
 python scripts/export_multi_domain.py `
   --job ".state\jobs\任务.json" `
   --catalog ".state\export-catalog.sqlite3" `
@@ -105,7 +108,7 @@ python scripts/export_multi_domain.py `
 6. 限流在等待预算内按服务端时长继续；超预算时状态和 SQLite 目录已经逐篇提交，可直接续跑。
 7. 默认终端只显示汇总，完整搜索、审核、限流和验收结果写入 JSON。报告中的 `catalog_hits` 和 `body_requests_saved` 用于确认历史目录实际节省的正文请求。
 
-只有报告为 `ok: true`，且索引、附件、日期范围和重复项全部通过，才可以声称完成。至少检查：每个关键词 `pulled == total`、缺失附件为零、领域内和跨领域重复标题/GUID 为零、索引位置全部存在、任务范围内数量与按月统计一致。进程退出码为零但完整性验收未通过时，只能报告部分完成。
+只有报告为 `ok: true`，且索引、附件、检索范围对账和重复项全部通过，才可以声称完成。至少检查：每个关键词 `pulled == total`、缺失附件为零、领域内和跨领域重复标题/GUID 为零、索引位置全部存在、任务范围内数量与按月统计一致。目标领域既有的其他月份是历史知识库，只计入目录总量，不作为本次任务越界错误。进程退出码为零但完整性验收未通过时，只能报告部分完成。
 
 ## Obsidian 精选知识管理
 
