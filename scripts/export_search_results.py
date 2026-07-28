@@ -867,7 +867,16 @@ def search_metadata_batches(
     return batches, totals
 
 
-def export_note_to_obsidian(note, notebook_name, target_dir, domain="AI"):
+def export_note_to_obsidian(
+    note,
+    notebook_name,
+    target_dir,
+    domain="AI",
+    *,
+    selection_mode="domain_gate",
+    matched_keywords=(),
+    selection_hash=None,
+):
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -911,6 +920,18 @@ def export_note_to_obsidian(note, notebook_name, target_dir, domain="AI"):
         "llm_policy": "strict",
         "source_updated_ms": updated_ms,
     }
+    if selection_mode == "keyword_union":
+        if not matched_keywords or not selection_hash:
+            raise ValueError(
+                "keyword_union 导出必须提供 matched_keywords 和 selection_hash"
+            )
+        extra.update(
+            {
+                "selection_mode": selection_mode,
+                "matched_keywords": list(matched_keywords),
+                "selection_hash": selection_hash,
+            }
+        )
 
     markdown = frontmatter(
         note.title,

@@ -871,6 +871,37 @@ class DomainGatedExportTests(unittest.TestCase):
 
 
 class ExportNoteTests(unittest.TestCase):
+    def test_keyword_export_writes_audit_frontmatter(self):
+        from scripts.export_search_results import export_note_to_obsidian
+
+        note = SimpleNamespace(
+            guid="guid-1",
+            title="AI Agent",
+            created=1775000000000,
+            updated=1775000001000,
+            content="<en-note>AI Agent 与 MCP</en-note>",
+            resources=[],
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            path = export_note_to_obsidian(
+                note,
+                notebook_name="收件箱",
+                target_dir=temp_dir,
+                domain="AI",
+                selection_mode="keyword_union",
+                matched_keywords=("AI", "Agent", "MCP"),
+                selection_hash="selection-1",
+            )
+            markdown = path.read_text(encoding="utf-8")
+
+        self.assertIn('selection_mode: "keyword_union"', markdown)
+        self.assertIn(
+            'matched_keywords: ["AI", "Agent", "MCP"]',
+            markdown,
+        )
+        self.assertIn('selection_hash: "selection-1"', markdown)
+
     def test_exports_plain_text_note_with_source_metadata(self):
         try:
             from scripts.export_search_results import export_note_to_obsidian
