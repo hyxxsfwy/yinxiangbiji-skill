@@ -318,8 +318,14 @@ def _adopt_legacy_job_state(paths, job, payload):
             created_stat = _copy_without_overwrite(source, target)
             if created_stat is not None:
                 published.append((target, created_stat))
-    except BaseException:
-        _rollback_adopted_targets(published)
+    except BaseException as original:
+        try:
+            _rollback_adopted_targets(published)
+        except BaseException as rollback_error:
+            original.add_note(
+                f"旧任务接管回滚失败，原始异常仍为首要错误: "
+                f"{rollback_error!r}"
+            )
         raise
 
 

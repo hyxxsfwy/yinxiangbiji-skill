@@ -121,3 +121,25 @@ python -m unittest tests.test_export_multi_domain.CommandLinePathTests.test_lega
 结果：退出码 1。run 发布成功后注入不同内容的并发 report，旧实现按预期抛错，但断言发现本轮 v2 run 仍然残留。
 
 GREEN：定向竞态与并发替换所有权测试 2/2 通过；v1 run/report、并发 report 和并发替换的目标均未丢失。按 Round 3 限定范围未运行全套测试；`py_compile` 与 `git diff --check` 均通过。
+
+## Round 4 评审修复
+
+状态：`DONE`
+
+已修复回滚异常掩盖原始接管异常的问题：
+
+- `_adopt_legacy_job_state()` 单独捕获回滚阶段的 `BaseException`，通过原始异常的 `add_note()` 附加回滚异常及隔离路径，再以 bare `raise` 保持原始异常对象和回溯；
+- 业务发布冲突、`KeyboardInterrupt` 与 `SystemExit` 均保持原始传播语义，回滚失败只作为补充诊断信息，不会替代首要错误。
+
+### Round 4 TDD 记录
+
+RED 命令：
+
+```powershell
+$env:PYTHONUTF8='1'
+python -m unittest tests.test_export_multi_domain.CommandLinePathTests.test_legacy_state_takeover_preserves_publish_error_when_rollback_fails tests.test_export_multi_domain.CommandLinePathTests.test_legacy_state_takeover_preserves_control_flow_base_exceptions -v
+```
+
+结果：退出码 1。注入 report 发布冲突后，再令回滚恢复目标时遭到第三次占用，旧实现最终抛出回滚 `ValueError`，掩盖原始发布冲突；注入 `KeyboardInterrupt` 时也被回滚 `RuntimeError` 替代。
+
+GREEN：同一命令 2/2 通过。最终传播的仍为原始发布异常或控制流异常对象，回滚错误和 `.rollback` 隔离路径保留在异常注记中。

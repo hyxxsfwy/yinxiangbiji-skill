@@ -574,6 +574,132 @@ class CommandLinePathTests(unittest.TestCase):
             self.assertEqual(restored_stat.st_dev, replacement_stat.st_dev)
             self.assertEqual(restored_stat.st_ino, replacement_stat.st_ino)
 
+    def test_legacy_state_takeover_preserves_publish_error_when_rollback_fails(
+        self,
+    ):
+        from scripts import export_multi_domain
+        from scripts.export_multi_domain import _job_id, normalize_job
+        from scripts.vault_state import VaultStatePaths
+
+        with workspace_temp_dir() as temp_dir:
+            legacy_vault = temp_dir / "legacy-device-vault"
+            vault = temp_dir / "vault"
+            legacy_vault.mkdir()
+            (vault / ".obsidian").mkdir(parents=True)
+            legacy_payload = {
+                **self._payload(),
+                "vault": str(legacy_vault),
+            }
+            job = normalize_job(self._payload(), vault)
+            v1_task_id = legacy_v1_job_id(legacy_payload)
+            v2_task_id = _job_id(job)
+            paths = VaultStatePaths.for_vault(vault)
+            paths.runs.mkdir(parents=True)
+            paths.reports.mkdir(parents=True)
+            (paths.runs / f"multi-export-{v1_task_id}.json").write_bytes(
+                b'{"source":"v1-run"}\n'
+            )
+            (paths.reports / f"{v1_task_id}.json").write_bytes(
+                b'{"source":"v1-report"}\n'
+            )
+            v2_run = paths.runs / f"multi-export-{v2_task_id}.json"
+            v2_report = paths.reports / f"{v2_task_id}.json"
+            replacement = temp_dir / "replacement-run.json"
+            real_link = os.link
+            link_calls = 0
+
+            def publish_and_fail_rollback(staged, target):
+                nonlocal link_calls
+                link_calls += 1
+                if link_calls == 2:
+                    replacement.write_bytes(b'{"source":"replacement-run"}\n')
+                    os.replace(replacement, v2_run)
+                    v2_report.write_bytes(
+                        b'{"source":"concurrent-report"}\n'
+                    )
+                elif link_calls == 3:
+                    v2_run.write_bytes(b'{"source":"third-run"}\n')
+                return real_link(staged, target)
+
+            with (
+                patch.object(
+                    export_multi_domain.os,
+                    "link",
+                    side_effect=publish_and_fail_rollback,
+                ),
+                self.assertRaises(ValueError) as raised,
+            ):
+                export_multi_domain._adopt_legacy_job_state(
+                    paths,
+                    job,
+                    legacy_payload,
+                )
+
+            self.assertIn("v1 状态与并发创建的 v2 状态冲突", str(raised.exception))
+            notes = getattr(raised.exception, "__notes__", ())
+            self.assertTrue(
+                any(
+                    "接管回滚时目标被再次占用" in note
+                    and ".rollback" in note
+                    for note in notes
+                )
+            )
+            self.assertEqual(link_calls, 3)
+            self.assertEqual(v2_run.read_bytes(), b'{"source":"third-run"}\n')
+
+    def test_legacy_state_takeover_preserves_control_flow_base_exceptions(
+        self,
+    ):
+        from scripts import export_multi_domain
+        from scripts.export_multi_domain import normalize_job
+        from scripts.vault_state import VaultStatePaths
+
+        with workspace_temp_dir() as temp_dir:
+            legacy_vault = temp_dir / "legacy-device-vault"
+            vault = temp_dir / "vault"
+            legacy_vault.mkdir()
+            (vault / ".obsidian").mkdir(parents=True)
+            legacy_payload = {
+                **self._payload(),
+                "vault": str(legacy_vault),
+            }
+            job = normalize_job(self._payload(), vault)
+            v1_task_id = legacy_v1_job_id(legacy_payload)
+            paths = VaultStatePaths.for_vault(vault)
+            paths.runs.mkdir(parents=True)
+            (paths.runs / f"multi-export-{v1_task_id}.json").write_bytes(
+                b'{"source":"v1-run"}\n'
+            )
+
+            for original in (KeyboardInterrupt("中断"), SystemExit(73)):
+                with self.subTest(exception=type(original).__name__):
+                    with (
+                        patch.object(
+                            export_multi_domain,
+                            "_copy_without_overwrite",
+                            side_effect=original,
+                        ),
+                        patch.object(
+                            export_multi_domain,
+                            "_rollback_adopted_targets",
+                            side_effect=RuntimeError("回滚失败"),
+                        ),
+                        self.assertRaises(type(original)) as raised,
+                    ):
+                        export_multi_domain._adopt_legacy_job_state(
+                            paths,
+                            job,
+                            legacy_payload,
+                        )
+
+                    self.assertIs(raised.exception, original)
+                    self.assertTrue(
+                        any(
+                            "回滚失败" in note
+                            for note in getattr(original, "__notes__", ())
+                        )
+                    )
+
     def test_legacy_state_takeover_reuses_identical_v2_targets(self):
         from scripts.export_multi_domain import _job_id, normalize_job
         from scripts.vault_state import VaultStatePaths
