@@ -1,6 +1,7 @@
 import unittest
 from datetime import date
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -260,6 +261,51 @@ class SearchQueryTests(unittest.TestCase):
 
 
 class DomainRelevanceTests(unittest.TestCase):
+    def test_primary_domain_is_unique_across_allowed_domains(self):
+        from scripts.export_search_results import assess_primary_domain
+
+        cases = (
+            (
+                "AI",
+                (
+                    "<en-note>本文讨论大语言模型、RAG、智能体、"
+                    "向量检索和模型推理。</en-note>"
+                ),
+                True,
+                "AI",
+            ),
+            (
+                "资产",
+                (
+                    "<en-note>本文讨论股票、基金、ETF、资产配置、"
+                    "收益率和风险控制。</en-note>"
+                ),
+                True,
+                "投资理财",
+            ),
+            (
+                "并列",
+                (
+                    "<en-note>大语言模型、RAG、智能体、机器学习；"
+                    "股票、基金、ETF、资产配置、市场。</en-note>"
+                ),
+                False,
+                None,
+            ),
+        )
+        for title, content, matched, domain in cases:
+            with self.subTest(title=title):
+                result = assess_primary_domain(
+                    title,
+                    content,
+                    allowed_domains=("AI", "投资理财"),
+                )
+                self.assertEqual(result.matched, matched)
+                if matched:
+                    self.assertEqual(result.domain, domain)
+                else:
+                    self.assertIn("并列", result.reason)
+
     def test_rejects_title_hit_when_full_body_is_unrelated(self):
         from scripts.export_search_results import assess_domain_relevance
 
@@ -367,6 +413,119 @@ class DomainRelevanceTests(unittest.TestCase):
 
 
 class DomainGatedExportTests(unittest.TestCase):
+    def test_fast_skip_requires_current_policy_and_complete_attachments(self):
+        from scripts.export_search_results import (
+            domain_policy_hash,
+            export_domain_candidates,
+        )
+
+        image_hash = "0123456789abcdef0123456789abcdef"
+        metadata = SimpleNamespace(
+            guid="cached-guid",
+            title="缓存的 AI 笔记",
+            created=1753488000000,
+            updated=1753574400000,
+            notebookGuid="notebook-guid",
+        )
+        note = SimpleNamespace(
+            **metadata.__dict__,
+            content=(
+                "<en-note>本文讨论大语言模型、智能体、RAG 和向量检索。"
+                f'<en-media type="image/png" hash="{image_hash}"/>'
+                "</en-note>"
+            ),
+            resources=[
+                SimpleNamespace(
+                    data=SimpleNamespace(
+                        body=b"image-data",
+                        bodyHash=bytes.fromhex(image_hash),
+                    ),
+                    mime="image/png",
+                    attributes=SimpleNamespace(fileName="cached.png"),
+                )
+            ],
+        )
+
+        class NoteStore:
+            def __init__(self, fail=False):
+                self.fail = fail
+                self.calls = []
+
+            def getNote(self, _token, guid, *_args):
+                self.calls.append(guid)
+                if self.fail:
+                    raise AssertionError("有效缓存不得重复请求正文")
+                return note
+
+        with workspace_temp_dir() as temp_dir:
+            target = temp_dir / "AI"
+            state_file = temp_dir / "state.json"
+            first_store = NoteStore()
+            first = export_domain_candidates(
+                note_store=first_store,
+                token="token",
+                candidates=[metadata],
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=target,
+                domain="AI",
+                limit=None,
+                state_file=state_file,
+            )
+            self.assertEqual(len(first.selected), 1)
+
+            current_store = NoteStore(fail=True)
+            resumed = export_domain_candidates(
+                note_store=current_store,
+                token="token",
+                candidates=[metadata],
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=target,
+                domain="AI",
+                limit=None,
+                state_file=state_file,
+            )
+            self.assertEqual(len(resumed.already_exported), 1)
+
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            state["reviews"]["cached-guid"]["policy_hash"] = "old-policy"
+            state_file.write_text(
+                json.dumps(state, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            stale_store = NoteStore()
+            export_domain_candidates(
+                note_store=stale_store,
+                token="token",
+                candidates=[metadata],
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=target,
+                domain="AI",
+                limit=None,
+                state_file=state_file,
+            )
+            self.assertEqual(stale_store.calls, ["cached-guid"])
+
+            self.assertEqual(
+                json.loads(
+                    state_file.read_text(encoding="utf-8")
+                )["reviews"]["cached-guid"]["policy_hash"],
+                domain_policy_hash(),
+            )
+            attachment = next((target / "_attachments").iterdir())
+            attachment.unlink()
+            missing_store = NoteStore()
+            export_domain_candidates(
+                note_store=missing_store,
+                token="token",
+                candidates=[metadata],
+                notebook_map={"notebook-guid": "剪藏"},
+                target_dir=target,
+                domain="AI",
+                limit=None,
+                state_file=state_file,
+            )
+            self.assertEqual(missing_store.calls, ["cached-guid"])
+
     def test_resume_skips_unchanged_candidates_previously_rejected(self):
         from scripts.export_search_results import export_domain_candidates
 
@@ -422,10 +581,13 @@ class DomainGatedExportTests(unittest.TestCase):
             )
             self.assertEqual(resumed.rejected, ())
 
-    def test_resume_skips_unchanged_guids_already_exported_to_target(self):
+    def test_resume_skips_unchanged_guids_with_current_accepted_state(self):
         from datetime import datetime
 
-        from scripts.export_search_results import export_domain_candidates
+        from scripts.export_search_results import (
+            domain_policy_hash,
+            export_domain_candidates,
+        )
 
         updated_ms = 1753574400000
         existing = SimpleNamespace(
@@ -465,17 +627,42 @@ class DomainGatedExportTests(unittest.TestCase):
             target = temp_dir / "AI"
             month = target / "2025年07月"
             month.mkdir(parents=True)
+            state_file = temp_dir / "export-state.json"
             updated_text = datetime.fromtimestamp(
                 updated_ms / 1000
             ).strftime("%Y-%m-%d %H:%M:%S")
-            (month / "已导出的 AI 笔记.md").write_text(
+            existing_path = month / "已导出的 AI 笔记.md"
+            existing_path.write_text(
                 "---\n"
                 'created: "2025-07-26 08:00:00"\n'
                 f'updated: "{updated_text}"\n'
                 'source_guid: "already-exported"\n'
+                'type: "资料"\n'
+                'domain: "AI"\n'
                 "---\n\n"
                 "# 已导出的 AI 笔记\n\n"
                 "已有正文。\n",
+                encoding="utf-8",
+            )
+            state_file.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "reviews": {
+                            "already-exported": {
+                                "updated": int(updated_ms / 1000),
+                                "domain": "AI",
+                                "outcome": "accepted",
+                                "policy_hash": domain_policy_hash(),
+                                "path": (
+                                    "2025年07月/"
+                                    "已导出的 AI 笔记.md"
+                                ),
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
                 encoding="utf-8",
             )
 
@@ -488,6 +675,7 @@ class DomainGatedExportTests(unittest.TestCase):
                 target_dir=target,
                 domain="AI",
                 limit=None,
+                state_file=state_file,
             )
 
             self.assertEqual(note_store.calls, ["pending-note"])
