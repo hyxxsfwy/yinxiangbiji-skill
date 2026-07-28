@@ -1471,6 +1471,17 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                 body="AI Agent",
                 updated_ms=item.updated - 1000,
             )
+            legacy.write_text(
+                "\n".join(
+                    line
+                    for line in legacy.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if not line.startswith("source_updated_ms:")
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             job = normalize_job(
                 {
                     "since": "2026-04-01",

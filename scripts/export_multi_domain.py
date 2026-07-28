@@ -811,8 +811,7 @@ def reconcile_keyword_outputs(job, catalog, selection_hash, task_id):
                     path.read_text(encoding="utf-8")
                 )
                 metadata = extract_note_metadata(path)
-                updated_ms = int(fields["source_updated_ms"])
-            except (KeyError, OSError, TypeError, UnicodeError, ValueError):
+            except (OSError, TypeError, UnicodeError, ValueError):
                 continue
             if not (
                 job.since <= metadata.created.date() < job.until
