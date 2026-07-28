@@ -33,6 +33,38 @@ class SkillDocumentationTests(unittest.TestCase):
         self.skill = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
+    def test_keyword_union_template_contains_every_requested_keyword(self):
+        payload = json.loads(
+            (
+                REPO_ROOT
+                / "templates"
+                / "keyword-union-export-job.json"
+            ).read_text(encoding="utf-8")
+        )
+        expected = {
+            "软件工程", "项目管理", "AI", "人工智能", "机器学习",
+            "深度学习", "强化学习", "大模型", "本体", "ontology",
+            "LLM", "GPT", "RAG", "Agent", "MCP", "Skills", "Harness",
+            "Anthropic", "OpenAI", "Claude", "Codex", "WorkBuddy",
+            "DeepSeek", "Qwen", "千问", "GLM", "Kimi", "MiniMax",
+            "HugginFace", "Transformer", "Attention", "RWKV", "RLHF",
+            "Engineering", "图文生成", "扩散模型", "量化", "量化交易",
+            "Quant", "金融", "理财", "定投", "基金", "贷款", "ETF",
+            "区块链", "比特币", "BTC", "以太坊", "ETH", "SOL", "GTD",
+            "PKM", "中医", "健康", "医学", "医生", "疾控", "婚姻",
+            "幸福", "两性", "情感", "心理",
+        }
+        actual = {
+            keyword
+            for settings in payload["domains"].values()
+            for keyword in settings["keywords"]
+        }
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(len(actual), 63)
+        self.assertEqual(payload["since"], "2026-04-01")
+        self.assertEqual(payload["until"], "2026-08-01")
+
     def test_skill_frontmatter_is_discoverable(self):
         frontmatter = self.skill.split("---", 2)[1]
         self.assertRegex(frontmatter, r"(?m)^name: yinxiang-notes$")

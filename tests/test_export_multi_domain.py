@@ -33,6 +33,25 @@ def full_note(item, content):
     )
 
 
+def keyword_union_payload():
+    return {
+        "since": "2026-04-01",
+        "until": "2026-08-01",
+        "selection_mode": "keyword_union",
+        "domains": {
+            "软件工程": {
+                "keywords": ["软件工程", "项目管理"],
+            },
+            "AI": {
+                "keywords": ["AI", "LLM", "HugginFace"],
+            },
+        },
+        "aliases": {
+            "HugginFace": ["HuggingFace", "Hugging Face"],
+        },
+    }
+
+
 def legacy_v1_job_id(payload):
     legacy_vault = Path(payload["vault"]).expanduser().resolve()
     job_id_payload = {
@@ -100,6 +119,38 @@ class FakeNoteStore:
 
 
 class MultiDomainJobTestMixin:
+    def test_keyword_union_accepts_controlled_new_domains_and_aliases(self):
+        from scripts.export_multi_domain import normalize_job
+
+        with workspace_temp_dir() as vault:
+            job = normalize_job(keyword_union_payload(), vault)
+
+        self.assertEqual(job.selection_mode, "keyword_union")
+        self.assertEqual(job.since.isoformat(), "2026-04-01")
+        self.assertEqual(job.until.isoformat(), "2026-08-01")
+        self.assertEqual(
+            job.aliases["HugginFace"],
+            ("HuggingFace", "Hugging Face"),
+        )
+        self.assertEqual(
+            job.target_for("软件工程"),
+            vault.resolve() / "30_精选资料" / "软件工程",
+        )
+
+    def test_keyword_union_rejects_path_escape_and_unknown_alias_key(self):
+        from scripts.export_multi_domain import normalize_job
+
+        with workspace_temp_dir() as vault:
+            payload = keyword_union_payload()
+            payload["domains"]["../逃逸"] = {"keywords": ["逃逸"]}
+            with self.assertRaisesRegex(ValueError, "领域名称"):
+                normalize_job(payload, vault)
+
+            payload = keyword_union_payload()
+            payload["aliases"]["不存在"] = ["missing"]
+            with self.assertRaisesRegex(ValueError, "别名键"):
+                normalize_job(payload, vault)
+
     def test_template_is_device_path_independent(self):
         template = (
             Path(__file__).resolve().parent.parent

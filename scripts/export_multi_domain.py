@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import uuid
 
@@ -87,6 +88,15 @@ except ImportError:
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+_INVALID_DOMAIN_CHARACTER_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 
 @dataclass(frozen=True)
@@ -95,11 +105,19 @@ class ExportJob:
     until: date
     vault: Path
     domains: dict[str, tuple[str, ...]]
+    selection_mode: str = "domain_gate"
+    aliases: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def target_for(self, domain):
         if domain not in self.domains:
             raise ValueError(f"任务未声明领域: {domain}")
-        return self.vault / "30_精选资料" / domain
+        root = (self.vault / "30_精选资料").resolve()
+        target = (root / domain).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"领域目标逃逸出 30_精选资料: {domain}") from exc
+        return target
 
 
 def _parse_job_date(value, field):
@@ -107,6 +125,19 @@ def _parse_job_date(value, field):
         return date.fromisoformat(str(value))
     except ValueError as exc:
         raise ValueError(f"{field} 必须是 YYYY-MM-DD") from exc
+
+
+def _valid_domain_name(domain):
+    if (
+        not domain
+        or domain in {".", ".."}
+        or domain[0] in {".", " "}
+        or domain[-1] in {".", " "}
+        or _INVALID_DOMAIN_CHARACTER_RE.search(domain)
+    ):
+        return False
+    stem = domain.split(".", 1)[0].upper()
+    return stem not in _WINDOWS_RESERVED_NAMES
 
 
 def normalize_job(payload, vault):
@@ -123,12 +154,22 @@ def normalize_job(payload, vault):
     if not vault.is_dir():
         raise ValueError(f"Obsidian vault 不存在: {vault}")
 
+    selection_mode = str(
+        payload.get("selection_mode", "domain_gate")
+    ).strip()
+    if selection_mode not in {"domain_gate", "keyword_union"}:
+        raise ValueError(
+            "selection_mode 只能是 domain_gate 或 keyword_union"
+        )
+
     raw_domains = payload.get("domains")
     if not isinstance(raw_domains, dict) or not raw_domains:
         raise ValueError("domains 必须是非空对象")
     domains = {}
     for domain, settings in raw_domains.items():
-        if domain not in DOMAIN_PROFILES:
+        if not isinstance(domain, str) or not _valid_domain_name(domain):
+            raise ValueError(f"领域名称无效: {domain!r}")
+        if selection_mode == "domain_gate" and domain not in DOMAIN_PROFILES:
             raise ValueError(f"不支持的领域: {domain}")
         if not isinstance(settings, dict):
             raise ValueError(f"{domain}.keywords 配置无效")
@@ -145,11 +186,37 @@ def normalize_job(payload, vault):
         if not keywords:
             raise ValueError(f"{domain}.keywords 不能为空")
         domains[domain] = keywords
+
+    canonical_keywords = {
+        keyword
+        for keywords in domains.values()
+        for keyword in keywords
+    }
+    raw_aliases = payload.get("aliases", {})
+    if not isinstance(raw_aliases, dict):
+        raise ValueError("aliases 必须是对象")
+    aliases = {}
+    for canonical_keyword, raw_terms in raw_aliases.items():
+        if canonical_keyword not in canonical_keywords:
+            raise ValueError(f"别名键不是规范关键词: {canonical_keyword}")
+        if not isinstance(raw_terms, list) or not raw_terms:
+            raise ValueError(f"{canonical_keyword} 的别名必须是非空字符串数组")
+        terms = []
+        for raw_term in raw_terms:
+            if not isinstance(raw_term, str) or not raw_term.strip():
+                raise ValueError(
+                    f"{canonical_keyword} 的别名必须是非空字符串数组"
+                )
+            terms.append(raw_term.strip())
+        aliases[canonical_keyword] = tuple(dict.fromkeys(terms))
+
     return ExportJob(
         since=since,
         until=until,
         vault=vault,
         domains=domains,
+        selection_mode=selection_mode,
+        aliases=aliases,
     )
 
 
@@ -184,6 +251,12 @@ def _job_id(job):
             for domain, keywords in sorted(job.domains.items())
         },
     }
+    if job.selection_mode != "domain_gate" or job.aliases:
+        payload["selection_mode"] = job.selection_mode
+        payload["aliases"] = {
+            canonical_keyword: list(terms)
+            for canonical_keyword, terms in sorted(job.aliases.items())
+        }
     return hashlib.sha256(
         json.dumps(
             payload,
