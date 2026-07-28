@@ -419,6 +419,67 @@ class CommandLinePathTests(unittest.TestCase):
                 report_bytes,
             )
 
+    def test_active_lock_blocks_migration_and_v1_state_takeover(self):
+        from scripts import export_multi_domain
+        from scripts.export_multi_domain import _job_id, normalize_job
+        from scripts.vault_state import (
+            StateLockConflict,
+            VaultStatePaths,
+            runtime_write_lock,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            repo_root = temp_dir / "repo"
+            legacy_state = repo_root / ".state"
+            legacy_vault = temp_dir / "legacy-device-vault"
+            vault = temp_dir / "vault"
+            legacy_vault.mkdir()
+            (vault / ".obsidian").mkdir(parents=True)
+            legacy_state.mkdir(parents=True)
+            (legacy_state / "export-catalog.sqlite3").write_bytes(
+                b"migratable-catalog"
+            )
+            legacy_payload = {
+                **self._payload(),
+                "vault": str(legacy_vault),
+            }
+            job_file = temp_dir / "job.json"
+            job_file.write_text(
+                json.dumps(legacy_payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            v1_task_id = legacy_v1_job_id(legacy_payload)
+            v2_task_id = _job_id(normalize_job(self._payload(), vault))
+            paths = VaultStatePaths.for_vault(vault)
+            paths.runs.mkdir(parents=True)
+            paths.reports.mkdir(parents=True)
+            v1_run = paths.runs / f"multi-export-{v1_task_id}.json"
+            v1_report = paths.reports / f"{v1_task_id}.json"
+            v1_run.write_bytes(b'{"source":"v1-run"}\n')
+            v1_report.write_bytes(b'{"source":"v1-report"}\n')
+            v2_run = paths.runs / f"multi-export-{v2_task_id}.json"
+            v2_report = paths.reports / f"{v2_task_id}.json"
+
+            with (
+                runtime_write_lock(paths, "active-task"),
+                patch.object(export_multi_domain, "REPO_ROOT", repo_root),
+                self.assertRaises(StateLockConflict),
+            ):
+                self._run_main(vault, job_file)
+
+            self.assertFalse(paths.catalog.exists())
+            self.assertEqual(
+                tuple(paths.migrations.glob("migration-*.json")),
+                (),
+            )
+            self.assertEqual(v1_run.read_bytes(), b'{"source":"v1-run"}\n')
+            self.assertEqual(
+                v1_report.read_bytes(),
+                b'{"source":"v1-report"}\n',
+            )
+            self.assertFalse(v2_run.exists())
+            self.assertFalse(v2_report.exists())
+
     def test_legacy_state_takeover_refuses_conflicting_v2_target(self):
         from scripts.export_multi_domain import _job_id, normalize_job
         from scripts.vault_state import VaultStatePaths

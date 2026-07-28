@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from tests.support import workspace_temp_dir
+from tests.support import create_directory_symlink_or_skip, workspace_temp_dir
 
 from scripts.vault_state import (
     StateMigrationConflict,
@@ -37,6 +37,47 @@ class VaultStatePathTests(unittest.TestCase):
         self.assertEqual(paths.single_domain.name, "single-domain")
         self.assertEqual(paths.migrations.name, "migrations")
         self.assertEqual(paths.lock.name, "active-run.lock")
+
+    def test_for_vault_rejects_state_symlink_that_resolves_outside_vault(self):
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            outside = temp_dir / "outside-state"
+            vault.mkdir()
+            outside.mkdir()
+            create_directory_symlink_or_skip(
+                self,
+                vault / ".state",
+                outside,
+            )
+
+            with self.assertRaises(ValueError):
+                VaultStatePaths.for_vault(vault)
+
+    def test_for_vault_rejects_state_path_resolved_outside_vault(self):
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            outside = temp_dir / "outside-state"
+            vault.mkdir()
+            outside.mkdir()
+            escaped_root = vault / ".state" / "yinxiang-notes"
+            real_resolve = Path.resolve
+
+            def resolve_with_escaped_state(path, *args, **kwargs):
+                candidate = Path(path)
+                if candidate == escaped_root:
+                    return outside / "yinxiang-notes"
+                return real_resolve(candidate, *args, **kwargs)
+
+            with (
+                patch.object(
+                    Path,
+                    "resolve",
+                    autospec=True,
+                    side_effect=resolve_with_escaped_state,
+                ),
+                self.assertRaises(ValueError),
+            ):
+                VaultStatePaths.for_vault(vault)
 
 
 class LegacyMigrationTests(unittest.TestCase):

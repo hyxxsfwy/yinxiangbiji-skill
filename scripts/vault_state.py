@@ -37,8 +37,56 @@ class StateLockConflict(RuntimeError):
     """Vault 写锁已被占用或无法安全恢复。"""
 
 
+def require_path_within_vault(
+    path,
+    vault,
+    description,
+    *,
+    allowed_root=None,
+):
+    """解析路径并拒绝任何通过既存链接逃逸 Vault 的目标。"""
+    resolved_vault = Path(vault).expanduser().resolve()
+    candidate = Path(path).expanduser()
+    resolved_candidate = candidate.resolve()
+    try:
+        resolved_candidate.relative_to(resolved_vault)
+    except ValueError as exc:
+        raise ValueError(
+            f"{description}解析后必须位于 Vault 内: {resolved_vault}"
+        ) from exc
+
+    if allowed_root is not None:
+        resolved_allowed_root = Path(allowed_root).expanduser().resolve()
+        try:
+            resolved_allowed_root.relative_to(resolved_vault)
+            resolved_candidate.relative_to(resolved_allowed_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"{description}必须位于允许目录: {resolved_allowed_root}"
+            ) from exc
+
+    absolute_candidate = (
+        candidate
+        if candidate.is_absolute()
+        else (Path.cwd() / candidate)
+    )
+    for ancestor in (absolute_candidate, *absolute_candidate.parents):
+        if ancestor == resolved_vault:
+            break
+        if ancestor.exists() or ancestor.is_symlink():
+            resolved_ancestor = ancestor.resolve()
+            try:
+                resolved_ancestor.relative_to(resolved_vault)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{description}的既存祖先解析后逃逸 Vault: {ancestor}"
+                ) from exc
+    return resolved_candidate
+
+
 @dataclass(frozen=True)
 class VaultStatePaths:
+    vault: Path
     root: Path
     catalog: Path
     jobs: Path
@@ -50,8 +98,14 @@ class VaultStatePaths:
 
     @classmethod
     def for_vault(cls, vault):
-        root = Path(vault).resolve() / ".state" / "yinxiang-notes"
+        resolved_vault = Path(vault).expanduser().resolve()
+        root = require_path_within_vault(
+            resolved_vault / ".state" / "yinxiang-notes",
+            resolved_vault,
+            "Vault 状态目录",
+        )
         return cls(
+            vault=resolved_vault,
             root=root,
             catalog=root / "export-catalog.sqlite3",
             jobs=root / "jobs",

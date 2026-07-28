@@ -12,7 +12,7 @@ from unittest.mock import patch
 from evernote.edam.type.ttypes import NoteSortOrder
 
 from scripts.sync_to_obsidian import save_attachments
-from tests.support import workspace_temp_dir
+from tests.support import create_directory_symlink_or_skip, workspace_temp_dir
 
 
 class SearchQueryTests(unittest.TestCase):
@@ -1213,6 +1213,52 @@ class AttachmentLinkTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_domain_target_symlink_cannot_escape_vault(self):
+        from scripts.export_search_results import derive_domain_target
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            outside = temp_dir / "outside-domain"
+            selected = vault / "30_精选资料"
+            selected.mkdir(parents=True)
+            outside.mkdir()
+            create_directory_symlink_or_skip(
+                self,
+                selected / "AI",
+                outside,
+            )
+
+            with self.assertRaises(ValueError):
+                derive_domain_target(vault, "AI")
+
+    def test_default_domain_target_resolved_outside_vault_is_rejected(self):
+        from scripts.export_search_results import derive_domain_target
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            outside = temp_dir / "outside-domain"
+            vault.mkdir()
+            outside.mkdir()
+            expected = vault / "30_精选资料" / "AI"
+            real_resolve = Path.resolve
+
+            def resolve_with_escaped_domain(path, *args, **kwargs):
+                candidate = Path(path)
+                if candidate == expected:
+                    return outside
+                return real_resolve(candidate, *args, **kwargs)
+
+            with (
+                patch.object(
+                    Path,
+                    "resolve",
+                    autospec=True,
+                    side_effect=resolve_with_escaped_domain,
+                ),
+                self.assertRaises(ValueError),
+            ):
+                derive_domain_target(vault, "AI")
+
     def test_active_vault_lock_blocks_migration_and_domain_export_writes(self):
         from scripts import export_search_results
         from scripts.vault_state import (

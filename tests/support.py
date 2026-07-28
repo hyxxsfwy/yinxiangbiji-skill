@@ -15,3 +15,11 @@ def workspace_temp_dir():
         yield path
     finally:
         shutil.rmtree(path, ignore_errors=True)
+
+
+def create_directory_symlink_or_skip(test_case, link, target):
+    """创建目录符号链接；当前环境不支持时跳过依赖链接的用例。"""
+    try:
+        Path(link).symlink_to(Path(target), target_is_directory=True)
+    except OSError as exc:
+        test_case.skipTest(f"当前环境无法创建目录符号链接: {exc}")

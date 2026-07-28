@@ -47,6 +47,7 @@ try:
     from .vault_state import (
         VaultStatePaths,
         migrate_legacy_state,
+        require_path_within_vault,
         runtime_write_lock,
     )
 except ImportError:
@@ -80,6 +81,7 @@ except ImportError:
     from vault_state import (
         VaultStatePaths,
         migrate_legacy_state,
+        require_path_within_vault,
         runtime_write_lock,
     )
 
@@ -826,14 +828,12 @@ def positive_int_or_zero(value):
 
 
 def _state_output_path(value, default, paths, description):
-    candidate = Path(value or default).expanduser().resolve()
-    try:
-        candidate.relative_to(paths.root.resolve())
-    except ValueError as exc:
-        raise ValueError(
-            f"{description}必须位于 Vault 状态目录: {paths.root}"
-        ) from exc
-    return candidate
+    return require_path_within_vault(
+        value or default,
+        paths.vault,
+        description,
+        allowed_root=paths.root,
+    )
 
 
 def main():
@@ -864,10 +864,8 @@ def main():
     try:
         vault = load_vault_root()
         paths = VaultStatePaths.for_vault(vault)
-        migrate_legacy_state(paths, REPO_ROOT / ".state")
         payload = _read_job_payload(args.job)
         job = _job_from_payload(payload, vault)
-        _adopt_legacy_job_state(paths, job, payload)
         task_id = _job_id(job)
         catalog = _state_output_path(
             args.catalog,
@@ -887,14 +885,13 @@ def main():
             paths,
             "验收报告文件",
         )
-    except ValueError as exc:
-        parser.error(str(exc))
-    token, note_store_url = load_config()
-    if not token or not note_store_url:
-        parser.error("未找到 EVERNOTE_TOKEN 或 EVERNOTE_NOTESTORE_URL")
-    note_store = create_note_store(note_store_url, token)
-    try:
         with runtime_write_lock(paths, task_id):
+            migrate_legacy_state(paths, REPO_ROOT / ".state")
+            _adopt_legacy_job_state(paths, job, payload)
+            token, note_store_url = load_config()
+            if not token or not note_store_url:
+                parser.error("未找到 EVERNOTE_TOKEN 或 EVERNOTE_NOTESTORE_URL")
+            note_store = create_note_store(note_store_url, token)
             report = run_export_job(
                 job,
                 note_store,
@@ -906,6 +903,8 @@ def main():
                 max_rate_limit_wait=args.max_rate_limit_wait,
                 verbose=args.verbose,
             )
+    except ValueError as exc:
+        parser.error(str(exc))
     except RateLimitBudgetExceeded as exc:
         print(f"限流等待预算不足，已保留断点：{exc}")
         return 75

@@ -48,12 +48,14 @@ try:
     from .vault_state import (
         VaultStatePaths,
         migrate_legacy_state,
+        require_path_within_vault,
         runtime_write_lock,
     )
 except ImportError:
     from vault_state import (
         VaultStatePaths,
         migrate_legacy_state,
+        require_path_within_vault,
         runtime_write_lock,
     )
 
@@ -606,8 +608,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def derive_domain_target(vault, domain, explicit=None):
     """将单领域导出严格限制在全局 Vault 的对应领域目录。"""
-    expected = Path(vault).resolve() / "30_精选资料" / domain
-    candidate = Path(explicit).resolve() if explicit else expected
+    resolved_vault = Path(vault).expanduser().resolve()
+    expected = require_path_within_vault(
+        resolved_vault / "30_精选资料" / domain,
+        resolved_vault,
+        "领域目标目录",
+    )
+    candidate = require_path_within_vault(
+        explicit if explicit is not None else expected,
+        resolved_vault,
+        "领域目标目录",
+    )
     if candidate != expected:
         raise ValueError(f"目标目录必须是 {expected}")
     return candidate
