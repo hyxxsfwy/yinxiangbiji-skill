@@ -495,6 +495,85 @@ class CommandLinePathTests(unittest.TestCase):
                 b'{"source":"v2-report"}\n',
             )
 
+    def test_legacy_state_takeover_rolls_back_run_after_report_race(self):
+        from scripts import export_multi_domain
+        from scripts.export_multi_domain import _job_id, normalize_job
+        from scripts.vault_state import VaultStatePaths
+
+        with workspace_temp_dir() as temp_dir:
+            legacy_vault = temp_dir / "legacy-device-vault"
+            vault = temp_dir / "vault"
+            legacy_vault.mkdir()
+            (vault / ".obsidian").mkdir(parents=True)
+            legacy_payload = {
+                **self._payload(),
+                "vault": str(legacy_vault),
+            }
+            job = normalize_job(self._payload(), vault)
+            v1_task_id = legacy_v1_job_id(legacy_payload)
+            v2_task_id = _job_id(job)
+            paths = VaultStatePaths.for_vault(vault)
+            paths.runs.mkdir(parents=True)
+            paths.reports.mkdir(parents=True)
+            v1_run = paths.runs / f"multi-export-{v1_task_id}.json"
+            v1_report = paths.reports / f"{v1_task_id}.json"
+            v2_run = paths.runs / f"multi-export-{v2_task_id}.json"
+            v2_report = paths.reports / f"{v2_task_id}.json"
+            v1_run_bytes = b'{"source":"v1-run"}\n'
+            v1_report_bytes = b'{"source":"v1-report"}\n'
+            concurrent_report_bytes = b'{"source":"concurrent-report"}\n'
+            v1_run.write_bytes(v1_run_bytes)
+            v1_report.write_bytes(v1_report_bytes)
+            real_link = os.link
+            link_calls = 0
+
+            def publish_with_report_race(staged, target):
+                nonlocal link_calls
+                link_calls += 1
+                if link_calls == 2:
+                    Path(target).write_bytes(concurrent_report_bytes)
+                return real_link(staged, target)
+
+            with (
+                patch.object(
+                    export_multi_domain.os,
+                    "link",
+                    side_effect=publish_with_report_race,
+                ),
+                self.assertRaises(ValueError),
+            ):
+                export_multi_domain._adopt_legacy_job_state(
+                    paths,
+                    job,
+                    legacy_payload,
+                )
+
+            self.assertEqual(link_calls, 2)
+            self.assertFalse(v2_run.exists())
+            self.assertEqual(v2_report.read_bytes(), concurrent_report_bytes)
+            self.assertEqual(v1_run.read_bytes(), v1_run_bytes)
+            self.assertEqual(v1_report.read_bytes(), v1_report_bytes)
+
+    def test_legacy_state_takeover_rollback_preserves_replaced_target(self):
+        from scripts.export_multi_domain import _rollback_adopted_targets
+
+        with workspace_temp_dir() as temp_dir:
+            target = temp_dir / "run.json"
+            replacement = temp_dir / "replacement.json"
+            content = b'{"same":"content"}\n'
+            target.write_bytes(content)
+            created_stat = target.stat()
+            replacement.write_bytes(content)
+            os.replace(replacement, target)
+            replacement_stat = target.stat()
+
+            _rollback_adopted_targets([(target, created_stat)])
+
+            restored_stat = target.stat()
+            self.assertEqual(target.read_bytes(), content)
+            self.assertEqual(restored_stat.st_dev, replacement_stat.st_dev)
+            self.assertEqual(restored_stat.st_ino, replacement_stat.st_ino)
+
     def test_legacy_state_takeover_reuses_identical_v2_targets(self):
         from scripts.export_multi_domain import _job_id, normalize_job
         from scripts.vault_state import VaultStatePaths

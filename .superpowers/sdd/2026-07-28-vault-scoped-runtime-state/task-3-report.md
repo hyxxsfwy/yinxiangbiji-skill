@@ -98,3 +98,26 @@ python -m unittest tests.test_export_multi_domain.CommandLinePathTests.test_lega
 结果：退出码 1。报告目标冲突时，旧实现已提前发布 v2 run；修复后先完成全部目标预检，不再产生部分接管。
 
 GREEN：Task 3 三模块定向测试共 21 项全部通过；扩大到 `tests.test_vault_state` 后共 44 项全部通过。冲突用例确认既有 v2 不被覆盖，相同 v2 可直接复用；`py_compile` 与 `git diff --check` 均通过。
+
+## Round 3 评审修复
+
+状态：`DONE`
+
+已将 v1 run/report 接管改为事务式发布：
+
+- `_copy_without_overwrite()` 在新建 v2 目标时返回硬链接对应的文件身份，已有相同目标不计入本轮新建；
+- `_adopt_legacy_job_state()` 记录本轮已发布目标，任一后续目标失败时逆序回滚；
+- 回滚先将当前目标原子移入隔离路径，再比较设备号和文件号。仅当文件仍属于本轮发布时才删除；若已被并发替换，则以无覆盖硬链接恢复并发文件，即使替换内容与本轮内容相同也不会误删。
+
+### Round 3 TDD 记录
+
+RED 命令：
+
+```powershell
+$env:PYTHONUTF8='1'
+python -m unittest tests.test_export_multi_domain.CommandLinePathTests.test_legacy_state_takeover_rolls_back_run_after_report_race -v
+```
+
+结果：退出码 1。run 发布成功后注入不同内容的并发 report，旧实现按预期抛错，但断言发现本轮 v2 run 仍然残留。
+
+GREEN：定向竞态与并发替换所有权测试 2/2 通过；v1 run/report、并发 report 和并发替换的目标均未丢失。按 Round 3 限定范围未运行全套测试；`py_compile` 与 `git diff --check` 均通过。

@@ -250,15 +250,44 @@ def _copy_without_overwrite(source, target):
         shutil.copyfile(source, staged)
         if target.exists():
             _require_compatible_target(staged, target)
-            return False
+            return None
         try:
             os.link(staged, target)
         except FileExistsError:
             _require_compatible_target(staged, target, concurrent=True)
-            return False
-        return True
+            return None
+        return staged.stat()
     finally:
         staged.unlink(missing_ok=True)
+
+
+def _rollback_adopted_targets(published):
+    for target, created_stat in reversed(published):
+        quarantine = (
+            target.parent / f".{target.name}.{uuid.uuid4().hex}.rollback"
+        )
+        try:
+            os.replace(target, quarantine)
+        except FileNotFoundError:
+            continue
+
+        current_stat = quarantine.stat()
+        owned_by_batch = (
+            current_stat.st_dev == created_stat.st_dev
+            and current_stat.st_ino == created_stat.st_ino
+        )
+        if owned_by_batch:
+            quarantine.unlink()
+            continue
+
+        try:
+            os.link(quarantine, target)
+        except FileExistsError as exc:
+            raise ValueError(
+                f"接管回滚时目标被再次占用，并发文件保留在 {quarantine}"
+            ) from exc
+        else:
+            quarantine.unlink()
 
 
 def _adopt_legacy_job_state(paths, job, payload):
@@ -283,8 +312,15 @@ def _adopt_legacy_job_state(paths, job, payload):
     )
     for source, target in candidates:
         _require_compatible_target(source, target)
-    for source, target in candidates:
-        _copy_without_overwrite(source, target)
+    published = []
+    try:
+        for source, target in candidates:
+            created_stat = _copy_without_overwrite(source, target)
+            if created_stat is not None:
+                published.append((target, created_stat))
+    except BaseException:
+        _rollback_adopted_targets(published)
+        raise
 
 
 def _atomic_json(path, payload):
