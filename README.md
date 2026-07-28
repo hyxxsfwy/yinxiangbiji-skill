@@ -16,10 +16,13 @@ Copy-Item .env.example .env
 ```dotenv
 EVERNOTE_TOKEN=your-developer-token
 EVERNOTE_NOTESTORE_URL=https://app.yinxiang.com/shard/sXX/notestore
-OBSIDIAN_VAULT_PATH=D:\OneDrive\文档\@_Obsidian_全量同步暂存
+OBSIDIAN_VAULT_PATH=D:\OneDrive\文档\@_Obsidian
+YINXIANG_SYNC_VAULT_PATH=D:\OneDrive\文档\@_Obsidian_全量同步暂存
 ```
 
-`EVERNOTE_NOTESTORE_URL` 必须使用令牌页面显示的实际 shard。环境变量优先于 `.env`。真实令牌会获得账户访问权限，`.env` 已被 Git 忽略，不要把令牌写入命令、文档、日志或提交记录。
+`OBSIDIAN_VAULT_PATH` 是每台设备的正式 Vault 根目录；不同设备可以配置不同的本地绝对路径。`YINXIANG_SYNC_VAULT_PATH` 是独立的全量同步暂存目录，不能指向正式 Vault。系统环境变量优先于 `.env`，因此每台设备分别维护自己的 `.env`，不要把其他设备的路径写进任务文件。
+
+`EVERNOTE_NOTESTORE_URL` 必须使用令牌页面显示的实际 shard。真实令牌会获得账户访问权限，`.env` 已被 Git 忽略。Token 和 `.env` 不随 Vault 同步；不要把令牌写入命令、文档、日志、Vault 或提交记录。
 
 ## 常用命令
 
@@ -48,13 +51,14 @@ python scripts/get_note_enml.py --guid "NOTE_GUID" --output ".\note.xml"
 以下单领域命令适合少量结果。它分别搜索 AI、Agent、人工智能；搜索关键词只用于产生候选，脚本会逐篇拉取完整正文，确认正文主旨属于 AI 后才选择并导出前三篇：
 
 ```powershell
+$vault = $env:OBSIDIAN_VAULT_PATH
 python scripts/export_search_results.py `
   --since 2025-07-26 `
   --until 2025-08-26 `
   --keywords AI Agent 人工智能 `
   --domain AI `
   --limit 3 `
-  --target "D:\OneDrive\文档\@_Obsidian\30_精选资料\AI"
+  --target "$vault\30_精选资料\AI"
 ```
 
 `--since` 包含当日，`--until` 不包含当日，因此两者可表达稳定的左闭右开创建时间区间。使用 `--limit all` 可导出全部候选；此时应把 `--max-per-keyword` 设为足够大的值，并确认命令输出中每个关键词的“共 N 条”与“拉取 N 条候选”一致，避免候选上限造成遗漏。
@@ -81,40 +85,56 @@ python scripts/export_search_results.py `
 两个及以上领域、关键词重叠或全量导出时，使用任务文件驱动的编排命令：
 
 ```powershell
-New-Item -ItemType Directory -Force .state\jobs | Out-Null
-Copy-Item templates\multi-domain-export-job.json .state\jobs\2026-q2.json
-
+$vault = $env:OBSIDIAN_VAULT_PATH
+New-Item -ItemType Directory -Force `
+  "$vault\.state\yinxiang-notes\jobs" | Out-Null
+Copy-Item templates\multi-domain-export-job.json `
+  "$vault\.state\yinxiang-notes\jobs\2026-q2.json"
 python scripts/export_multi_domain.py `
-  --job ".state\jobs\2026-q2.json" `
-  --catalog ".state\export-catalog.sqlite3" `
+  --job "$vault\.state\yinxiang-notes\jobs\2026-q2.json" `
   --rate-limit-mode wait `
   --max-rate-limit-wait 3600
 ```
 
-任务中的 `since` 包含当日，`until` 不包含当日。脚本为每个关键词自动分页到服务端总数，合并 GUID 后流式获取完整正文，并在所有已知领域之间选择唯一主领域。不得用多领域标签代替唯一主领域；领域并列或任务外领域占优的文章不落盘。通过门禁后再执行全部目标领域范围内的全局标题去重。
+任务中的 `since` 包含当日，`until` 不包含当日。任务 JSON 不保存 `vault`，只保存日期、领域和关键词；旧任务中的 `vault` 等旧字段会被忽略，并以警告提示。Vault 始终取自当前设备的 `OBSIDIAN_VAULT_PATH`，因此同一任务文件可以跨设备使用。脚本为每个关键词自动分页到服务端总数，合并 GUID 后流式获取完整正文，并在所有已知领域之间选择唯一主领域。不得用多领域标签代替唯一主领域；领域并列或任务外领域占优的文章不落盘。通过门禁后再执行全部目标领域范围内的全局标题去重。
 
-SQLite 历史解析目录默认位于 `.state/export-catalog.sqlite3`。首次运行会扫描现有 `30_精选资料` Markdown，用已有正文自动补建历史记录；此后每次完整正文分析都会写入标题、GUID、内容摘要、正文哈希、自动领域标签、各领域得分和证据、唯一主领域、规范文件路径及审计时间。缓存以 `GUID + updated + 规则指纹` 验证，与搜索关键词无关；因此更改检索关键词后，只要正文和规则未变化，就可以复用领域判断和摘要。缓存命中的拒绝项、被新版本淘汰的同标题文章，以及已有完整规范文件的文章都不重复请求正文；确实需要重新落盘但本地正文或附件缺失时才重新读取。
+状态固定保存在 `<vault>/.state/yinxiang-notes/`，并随正式 Vault 同步：
 
-限流等待、断点和报告保存在 `.state/`，不会提交到 Git。默认日志只显示汇总；JSON 报告中的 `catalog_hits`、`catalog_stale` 和 `body_requests_saved` 分别表示历史目录命中、失效和实际节省的正文请求数。
+```text
+<vault>/.state/yinxiang-notes/export-catalog.sqlite3
+<vault>/.state/yinxiang-notes/jobs/
+<vault>/.state/yinxiang-notes/runs/
+<vault>/.state/yinxiang-notes/reports/
+<vault>/.state/yinxiang-notes/single-domain/
+<vault>/.state/yinxiang-notes/migrations/
+<vault>/.state/yinxiang-notes/active-run.lock
+```
+
+SQLite 历史解析目录默认位于 `<vault>/.state/yinxiang-notes/export-catalog.sqlite3`。`jobs/` 保存任务，`runs/` 保存多领域断点，`reports/` 保存验收报告，`single-domain/` 保存单领域续跑状态，`migrations/` 保存迁移清单，`active-run.lock` 标记当前写入者。首次运行会扫描现有 `30_精选资料` Markdown，用已有正文自动补建历史记录；此后每次完整正文分析都会写入标题、GUID、内容摘要、正文哈希、自动领域标签、各领域得分和证据、唯一主领域、规范文件路径及审计时间。缓存以 `GUID + updated + 规则指纹` 验证，与搜索关键词无关；因此更改检索关键词后，只要正文和规则未变化，就可以复用领域判断和摘要。缓存命中的拒绝项、被新版本淘汰的同标题文章，以及已有完整规范文件的文章都不重复请求正文；确实需要重新落盘但本地正文或附件缺失时才重新读取。
+
+第一次使用新状态目录时，脚本从仓库旧 `.state/` 复制已知状态到 Vault，校验哈希并记录迁移清单。迁移只会复制旧状态，不删除旧状态；目标存在且内容不同时会停止，绝不覆盖任一份文件。迁移完成后只读取 Vault 中的新位置，不会退回仓库 `.state/`。
+
+禁止两台设备同时写入同一个 Vault。`active-run.lock` 只能降低并发冲突概率，不能替代同步服务的分布式锁；切换设备前必须先让当前任务正常结束、关闭 SQLite，并等待上一台设备完成 Vault 同步，再在下一台设备启动导出。默认日志只显示汇总；JSON 报告中的 `catalog_hits`、`catalog_stale` 和 `body_requests_saved` 分别表示历史目录命中、失效和实际节省的正文请求数。
 
 只有 `ok: true` 且索引、附件、检索范围对账和重复项全部通过时任务才算完成。完整性验收会检查关键词搜索是否拉全、图片和附件是否存在、索引位置是否有效、领域内及跨领域重复是否为零，并区分任务日期范围内数量和目录现存总数。目标领域中已经存在的其他月份属于历史知识库，只参与总量统计，不会被误判为本次任务越界。
 
 ### 增量同步整个 vault
 
 ```powershell
+$syncVault = $env:YINXIANG_SYNC_VAULT_PATH
 python scripts/sync_to_obsidian.py `
-  --vault "D:\path\to\vault" `
+  --vault "$syncVault" `
   --max-sync 50 `
   --api-delay 1
 
 # 仅同步一个笔记本，并自定义状态文件
 python scripts/sync_to_obsidian.py `
-  --vault "D:\path\to\vault" `
+  --vault "$syncVault" `
   --notebook "笔记本名" `
-  --state-file "D:\path\to\sync-state.json"
+  --state-file "$syncVault\.yinxiang_sync_state.json"
 ```
 
-未传 `--vault` 时读取 `OBSIDIAN_VAULT_PATH`。默认状态文件为 `<vault>/.yinxiang_sync_state.json`。同步按 NoteStore 元数据分页拉取，不按标题丢弃笔记；每个笔记本下分别创建 `_attachments/` 和 `_clips/`。超过 200 KB 的网页裁剪可保存为 HTML，其余正文转为 Markdown。
+未传 `--vault` 时只读取 `YINXIANG_SYNC_VAULT_PATH`，不会读取 `OBSIDIAN_VAULT_PATH`。默认状态文件为 `<sync-vault>/.yinxiang_sync_state.json`。同步按 NoteStore 元数据分页拉取，不按标题丢弃笔记；每个笔记本下分别创建 `_attachments/` 和 `_clips/`。超过 200 KB 的网页裁剪可保存为 HTML，其余正文转为 Markdown。
 
 全量同步会按印象笔记本名称创建目录，因此只能写入独立暂存目录；检测到统一 LLM Wiki 根目录时脚本会在读取凭据前拒绝执行。进入正式 Wiki 的内容使用上面的精选导出命令，并显式指定 `--domain` 和领域目标目录。
 
@@ -151,26 +171,28 @@ type: "inline-images"
 重组脚本会把旧 `90_系统`自动迁入 `80_系统`，把旧 `99_归档`自动迁入 `90_归档`，并创建 `99_废纸篓`。预检发现同路径异内容或文件类型冲突时，会在创建快照和迁移写入前中止。
 
 ```powershell
+$vault = $env:OBSIDIAN_VAULT_PATH
 # 预览：只读本地 vault
-python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian"
+python scripts/restructure_obsidian_vault.py --vault "$vault"
 
 # 执行：创建 ZIP 快照并重组目录
-python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT
+python scripts/restructure_obsidian_vault.py --vault "$vault" --apply --confirm MIGRATE_OBSIDIAN_VAULT
 
 # 验证：只检查最终结构、清单和链接
-python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --verify
+python scripts/restructure_obsidian_vault.py --vault "$vault" --verify
 ```
 
 后续精选导出写入对应领域资料目录：
 
 ```powershell
+$vault = $env:OBSIDIAN_VAULT_PATH
 python scripts/export_search_results.py `
   --since 2025-07-27 `
   --until 2025-08-27 `
   --keywords AI Agent 人工智能 `
   --domain AI `
   --limit 3 `
-  --target "D:\OneDrive\文档\@_Obsidian\30_精选资料\AI"
+  --target "$vault\30_精选资料\AI"
 ```
 
 最终结构、索引职责、审核规则和旧标签映射见 `references/obsidian-knowledge-management.md`。其中 `20_知识笔记` 只保留目录索引和知识地图两份根索引，`30_精选资料` 的每个领域各自维护一份目录索引。
@@ -180,14 +202,15 @@ python scripts/export_search_results.py `
 `curate_selected_materials.py` 根据显式 JSON 清单逐篇核对领域归属，并维护受控双向链接。错域资料移入 `99_废纸篓/30_精选资料/` 的镜像路径，引用的本地附件同步复制；保留资料每篇最多写入 3 条人工确认的双向链接，没有明确关联时不写链接块。执行前会创建 ZIP 快照和 SHA-256 清单，完成后重建领域索引并生成逐篇审核日志。
 
 ```powershell
+$vault = $env:OBSIDIAN_VAULT_PATH
 # 预览
-python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\2026-07-27-selected-materials-review.json"
+python scripts/curate_selected_materials.py --vault "$vault" --review "reviews\2026-07-27-selected-materials-review.json"
 
 # 执行
-python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\2026-07-27-selected-materials-review.json" --apply --confirm CURATE_SELECTED_MATERIALS
+python scripts/curate_selected_materials.py --vault "$vault" --review "reviews\2026-07-27-selected-materials-review.json" --apply --confirm CURATE_SELECTED_MATERIALS
 
 # 验证
-python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\2026-07-27-selected-materials-review.json" --verify
+python scripts/curate_selected_materials.py --vault "$vault" --review "reviews\2026-07-27-selected-materials-review.json" --verify
 ```
 
 ## 写操作与安全边界
@@ -228,7 +251,7 @@ python scripts/empty_trash.py --confirm DELETE_ALL
 | `search_notes.py` | 搜索笔记元数据 | 只读 |
 | `get_note_enml.py` | 下载原始 ENML 到本地 | 只读账户；写本地文件 |
 | `export_search_results.py` | 搜索并导出 Markdown、图片、附件 | 只读账户；写本地文件 |
-| `export_multi_domain.py` | 多领域全量搜索、历史解析复用、唯一归属和验收 | 只读账户；写本地 vault 和 `.state/` |
+| `export_multi_domain.py` | 多领域全量搜索、历史解析复用、唯一归属和验收 | 只读账户；写正式 Vault 和其中的 `.state/yinxiang-notes/` |
 | `export_catalog.py` | 维护本地 SQLite 历史解析目录 | 只读本地 |
 | `export_integrity.py` | 验证索引、附件、范围和跨领域重复 | 只读本地 |
 | `sync_to_obsidian.py` | 增量同步全部或指定笔记本 | 只读账户；写本地 vault |

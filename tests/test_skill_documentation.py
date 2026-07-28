@@ -85,7 +85,7 @@ class SkillDocumentationTests(unittest.TestCase):
             "两个及以上领域",
             "export_multi_domain.py",
             "SQLite",
-            ".state/export-catalog.sqlite3",
+            "<vault>/.state/yinxiang-notes/export-catalog.sqlite3",
             "GUID + updated + 规则指纹",
             "更改检索关键词",
             "唯一主领域",
@@ -116,6 +116,88 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertEqual(template["since"], "2026-04-01")
         self.assertEqual(template["until"], "2026-07-01")
         self.assertGreaterEqual(len(template["domains"]), 2)
+
+    def test_device_local_vault_and_synced_state_contract(self):
+        design = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "specs"
+            / "2026-07-28-vault-scoped-runtime-state-design.md"
+        ).read_text(encoding="utf-8")
+        environment = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+        template = json.loads(
+            (
+                REPO_ROOT
+                / "templates"
+                / "multi-domain-export-job.json"
+            ).read_text(encoding="utf-8")
+        )
+        combined = self.skill + self.readme + design
+
+        self.assertRegex(
+            environment,
+            r"(?m)^OBSIDIAN_VAULT_PATH=D:\\OneDrive\\文档\\@_Obsidian$",
+        )
+        self.assertRegex(
+            environment,
+            r"(?m)^YINXIANG_SYNC_VAULT_PATH="
+            r"D:\\OneDrive\\文档\\@_Obsidian_全量同步暂存$",
+        )
+        self.assertNotEqual(
+            re.search(
+                r"(?m)^OBSIDIAN_VAULT_PATH=(.+)$",
+                environment,
+            ).group(1),
+            re.search(
+                r"(?m)^YINXIANG_SYNC_VAULT_PATH=(.+)$",
+                environment,
+            ).group(1),
+        )
+        self.assertNotIn("vault", template)
+
+        for phrase in (
+            "`OBSIDIAN_VAULT_PATH` 是每台设备的正式 Vault 根目录",
+            "`YINXIANG_SYNC_VAULT_PATH` 是独立的全量同步暂存目录",
+            "<vault>/.state/yinxiang-notes/export-catalog.sqlite3",
+            "<vault>/.state/yinxiang-notes/jobs/",
+            "<vault>/.state/yinxiang-notes/runs/",
+            "<vault>/.state/yinxiang-notes/reports/",
+            "<vault>/.state/yinxiang-notes/single-domain/",
+            "<vault>/.state/yinxiang-notes/migrations/",
+            "<vault>/.state/yinxiang-notes/active-run.lock",
+            "任务 JSON 不保存 `vault`",
+            "旧字段会被忽略",
+            "复制旧状态，不删除旧状态",
+            "禁止两台设备同时写入同一个 Vault",
+            "等待上一台设备完成 Vault 同步",
+            "Token 和 `.env` 不随 Vault 同步",
+            "$vault = $env:OBSIDIAN_VAULT_PATH",
+            '"$vault\\.state\\yinxiang-notes\\jobs\\2026-q2.json"',
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, combined)
+
+        for stale_phrase in (
+            "--catalog \".state\\export-catalog.sqlite3\"",
+            "New-Item -ItemType Directory -Force .state\\jobs",
+            "SQLite 历史解析目录默认位于 `.state/export-catalog.sqlite3`",
+            "限流等待、断点和报告保存在 `.state/`",
+        ):
+            with self.subTest(stale_phrase=stale_phrase):
+                self.assertNotIn(stale_phrase, self.skill + self.readme)
+
+        powershell_examples = "\n".join(
+            re.findall(
+                r"```powershell\n(.*?)\n```",
+                self.skill + self.readme,
+                re.DOTALL,
+            )
+        )
+        self.assertNotIn(
+            r"D:\OneDrive\文档\@_Obsidian",
+            powershell_examples,
+        )
 
     def test_examples_do_not_contain_a_real_developer_token(self):
         combined = (
@@ -334,9 +416,9 @@ class SkillDocumentationTests(unittest.TestCase):
                 if "scripts/restructure_obsidian_vault.py" in line
             ],
             [
-                '| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian"` | 只读本地 |',
-                '| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |',
-                '| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian" --verify` | 只读本地 |',
+                '| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH"` | 只读本地 |',
+                '| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH" --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |',
+                '| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH" --verify` | 只读本地 |',
             ],
         )
 
@@ -353,9 +435,9 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertEqual(
             migration_commands,
             [
-                'python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian"',
-                'python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT',
-                'python scripts/restructure_obsidian_vault.py --vault "D:\\OneDrive\\文档\\@_Obsidian" --verify',
+                'python scripts/restructure_obsidian_vault.py --vault "$vault"',
+                'python scripts/restructure_obsidian_vault.py --vault "$vault" --apply --confirm MIGRATE_OBSIDIAN_VAULT',
+                'python scripts/restructure_obsidian_vault.py --vault "$vault" --verify',
             ],
         )
         preview, apply, verify = migration_commands
@@ -375,7 +457,8 @@ class SkillDocumentationTests(unittest.TestCase):
             for block in re.findall(r"```powershell\n(.*?)\n```", self.readme, re.DOTALL)
             if "scripts/export_search_results.py" in block and "--domain AI" in block
         )
-        self.assertIn('--target "D:\\OneDrive\\文档\\@_Obsidian\\30_精选资料\\AI"', export_block)
+        self.assertIn("$vault = $env:OBSIDIAN_VAULT_PATH", export_block)
+        self.assertIn('--target "$vault\\30_精选资料\\AI"', export_block)
 
     def test_documents_distinct_catalog_map_and_source_index_rules(self):
         reference = (
@@ -403,8 +486,9 @@ class SkillDocumentationTests(unittest.TestCase):
         for block in export_blocks:
             with self.subTest(block=block):
                 self.assertIn("--domain AI", block)
+                self.assertIn("$vault = $env:OBSIDIAN_VAULT_PATH", block)
                 self.assertIn(
-                    r'--target "D:\OneDrive\文档\@_Obsidian\30_精选资料\AI"',
+                    r'--target "$vault\30_精选资料\AI"',
                     block,
                 )
                 self.assertNotIn(r"\AI相关知识库", block)
@@ -418,9 +502,16 @@ class SkillDocumentationTests(unittest.TestCase):
         vault_path = re.search(
             r"(?m)^OBSIDIAN_VAULT_PATH=(.+)$", environment
         ).group(1)
-        self.assertEqual(vault_path, r"D:\OneDrive\文档\@_Obsidian_全量同步暂存")
+        self.assertEqual(vault_path, r"D:\OneDrive\文档\@_Obsidian")
         self.assertNotRegex(vault_path, r"30_精选资料|20_知识笔记|_attachments")
-        self.assertNotEqual(vault_path, r"D:\OneDrive\文档\@_Obsidian")
+        sync_path = re.search(
+            r"(?m)^YINXIANG_SYNC_VAULT_PATH=(.+)$", environment
+        ).group(1)
+        self.assertEqual(
+            sync_path,
+            r"D:\OneDrive\文档\@_Obsidian_全量同步暂存",
+        )
+        self.assertNotEqual(sync_path, vault_path)
         self.assertIn("全量同步不得写入统一 LLM Wiki 根目录", reference)
 
         migration_section = reference.split("## 迁移与验证", 1)[1].split(

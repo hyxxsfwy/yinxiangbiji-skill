@@ -2,9 +2,9 @@
 
 ## 背景
 
-当前仓库没有统一的正式 Obsidian Vault 配置入口。多领域任务文件保存设备相关的绝对 `vault` 路径，单领域导出依赖 `--target`，知识库管理脚本依赖 `--vault`，而 `OBSIDIAN_VAULT_PATH` 只被全量同步脚本当作暂存目录使用。大规模导出的 SQLite 历史解析目录、断点和报告则保存在代码仓库的 `.state/`，无法随 Obsidian 知识库跨设备同步。
+调整前，仓库没有统一的正式 Obsidian Vault 配置入口：多领域任务文件保存设备相关的绝对 `vault` 路径，单领域导出依赖 `--target`，知识库管理脚本依赖 `--vault`，而 `OBSIDIAN_VAULT_PATH` 被全量同步脚本当作暂存目录使用。大规模导出的 SQLite 历史解析目录、断点和报告也曾保存在代码仓库的 `.state/`，无法随 Obsidian 知识库跨设备同步。
 
-本次调整将 `OBSIDIAN_VAULT_PATH` 定义为每台设备本地配置的正式 Obsidian Vault 根目录。任务文件不再保存设备路径，运行状态统一进入 Vault 内的隐藏命名空间，并继续把账号凭据留在各设备本地。
+当前契约将 `OBSIDIAN_VAULT_PATH` 定义为每台设备本地配置的正式 Obsidian Vault 根目录。任务文件不再保存设备路径，运行状态统一进入 Vault 内的隐藏命名空间，并继续把账号凭据留在各设备本地。
 
 ## 目标
 
@@ -17,7 +17,7 @@
 
 ## 非目标
 
-- 不把 Developer Token、NoteStore URL 或 `.env` 写入 Vault。
+- Token 和 `.env` 不随 Vault 同步；Developer Token、NoteStore URL 和 `.env` 都只留在当前设备。
 - 不允许全量同步直接写入统一知识库。
 - 不承诺 OneDrive 锁文件具备实时分布式锁语义。
 - 不自动删除仓库旧 `.state/`。
@@ -32,6 +32,8 @@
 ```dotenv
 OBSIDIAN_VAULT_PATH=D:\OneDrive\文档\@_Obsidian
 ```
+
+`OBSIDIAN_VAULT_PATH` 是每台设备的正式 Vault 根目录。不同设备的本地绝对路径可以不同，不得把该路径固化到任务 JSON。
 
 共享运行时新增 `load_vault_root()`。它使用现有 `load_setting()` 的优先级读取配置，并执行以下校验：
 
@@ -49,6 +51,8 @@ OBSIDIAN_VAULT_PATH=D:\OneDrive\文档\@_Obsidian
 ```dotenv
 YINXIANG_SYNC_VAULT_PATH=D:\OneDrive\文档\@_Obsidian_全量同步暂存
 ```
+
+`YINXIANG_SYNC_VAULT_PATH` 是独立的全量同步暂存目录，不能与 `OBSIDIAN_VAULT_PATH` 指向同一位置。
 
 `sync_to_obsidian.py` 未传 `--vault` 时只读取 `YINXIANG_SYNC_VAULT_PATH`。它不再读取 `OBSIDIAN_VAULT_PATH`，并继续拒绝写入具有统一 LLM Wiki 标记的正式 Vault。
 
@@ -69,9 +73,9 @@ YINXIANG_SYNC_VAULT_PATH=D:\OneDrive\文档\@_Obsidian_全量同步暂存
 
 ## 任务模型
 
-多领域任务 JSON 删除 `vault` 字段，只保存日期、领域和关键词。`load_job()` 从本机全局配置取得 Vault，再构造 `ExportJob`。
+任务 JSON 不保存 `vault`，只保存日期、领域和关键词。`load_job()` 从本机全局配置取得 Vault，再构造 `ExportJob`。
 
-旧任务文件中的 `vault` 字段继续允许读取，但视为已废弃：脚本输出一次警告并忽略该值，不比较路径，也不让旧设备路径阻断新设备执行。为了让任务 ID 跨设备稳定，任务 ID 只包含日期、领域、关键词和任务格式版本，不包含 Vault 绝对路径；运行状态文件位于本机配置的 Vault，因此不同设备能用同一任务 ID 定位同步后的断点。
+旧任务文件中的 `vault` 字段继续允许读取，但视为已废弃：旧字段会被忽略，脚本输出一次警告，不比较路径，也不让旧设备路径阻断新设备执行。为了让任务 ID 跨设备稳定，任务 ID 只包含日期、领域、关键词和任务格式版本，不包含 Vault 绝对路径；运行状态文件位于本机配置的 Vault，因此不同设备能用同一任务 ID 定位同步后的断点。
 
 任务模板存放于：
 
@@ -153,7 +157,7 @@ state  = <vault>/.state/yinxiang-notes/single-domain/export-<domain>.json
 6. 写入 `migrations/<timestamp>.json`，记录源、目标、大小和 SHA-256；
 7. 验证所有目标文件后，后续运行只读取 Vault 新位置。
 
-迁移采用复制而非移动。旧 `.state/` 继续保留，用户确认跨设备同步正常后再自行清理。
+迁移采用复制而非移动，即复制旧状态，不删除旧状态。仓库旧 `.state/` 继续保留，用户确认跨设备同步正常后再自行清理。
 
 ## 多设备并发
 
@@ -163,9 +167,11 @@ state  = <vault>/.state/yinxiang-notes/single-domain/export-<domain>.json
 
 - 当前设备的进程仍存活：拒绝启动第二个写任务；
 - 锁来自其他设备，或无法验证进程：拒绝自动覆盖，并显示设备与时间；
-- 用户确认上一任务已经结束后，可使用显式恢复参数清理陈旧锁。
+- 当前导出命令不自动覆盖陈旧锁；必须先确认上一任务已经结束且同步完成，再单独处理陈旧锁。
 
 OneDrive 可能延迟同步锁文件，因此该机制只能降低冲突概率，不能提供严格分布式互斥。操作规则固定为：上一台设备运行结束并完成同步后，才能在另一台设备启动导出。
+
+禁止两台设备同时写入同一个 Vault。切换设备前必须等待上一台设备完成 Vault 同步，并确认 SQLite 已关闭；`active-run.lock` 不能替代这条操作纪律。
 
 SQLite 保持默认回滚日志模式，不启用 WAL，避免跨设备同步时遗漏 `-wal` 或 `-shm` 文件。目录数据库关闭后才视为该设备本轮写入完成。
 

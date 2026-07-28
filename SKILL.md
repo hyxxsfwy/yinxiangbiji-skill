@@ -16,7 +16,7 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-在 `.env` 中填写令牌页面显示的 `EVERNOTE_TOKEN` 和 `EVERNOTE_NOTESTORE_URL`。`OBSIDIAN_VAULT_PATH` 只用于全量同步的独立暂存目录，不能指向统一 LLM Wiki 根目录。环境变量优先。
+在 `.env` 中填写令牌页面显示的 `EVERNOTE_TOKEN` 和 `EVERNOTE_NOTESTORE_URL`。`OBSIDIAN_VAULT_PATH` 是每台设备的正式 Vault 根目录，`YINXIANG_SYNC_VAULT_PATH` 是独立的全量同步暂存目录；两者不能指向同一位置。环境变量优先于 `.env`，每台设备分别维护自己的路径。Token 和 `.env` 不随 Vault 同步，不得把凭据写入 Vault、命令、文档、日志或提交。
 
 ## 快速参考
 
@@ -27,31 +27,32 @@ Copy-Item .env.example .env
 | 搜索 | `python scripts/search_notes.py "intitle:Agent" --max-results 10` | 只读 |
 | 查看废纸篓 | `python scripts/list_trash.py --max-count 20` | 只读 |
 | 下载 ENML | `python scripts/get_note_enml.py --guid "GUID" --output ".\note.xml"` | 只读账户 |
-| 全量同步到暂存区 | `python scripts/sync_to_obsidian.py --vault "D:\OneDrive\文档\@_Obsidian_全量同步暂存"` | 只读账户 |
-| 大规模多领域导出 | `python scripts/export_multi_domain.py --job ".state\jobs\任务.json"` | 只读账户；修改本地 vault |
+| 全量同步到暂存区 | `python scripts/sync_to_obsidian.py --vault "$env:YINXIANG_SYNC_VAULT_PATH"` | 只读账户 |
+| 大规模多领域导出 | `python scripts/export_multi_domain.py --job "$env:OBSIDIAN_VAULT_PATH\.state\yinxiang-notes\jobs\任务.json"` | 只读账户；修改正式 Vault |
 | 创建 | `python scripts/create_note.py --title "标题" --content "<en-note>内容</en-note>"` | 修改账户 |
 | 更新 | `python scripts/update_note.py --guid "GUID" --title "新标题"` | 修改账户 |
 | 移入废纸篓 | `python scripts/delete_note.py --guid "GUID" --confirm` | 修改账户 |
 | 永久清空 | `python scripts/empty_trash.py --confirm DELETE_ALL` | 不可恢复 |
-| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian"` | 只读本地 |
-| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |
-| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --vault "D:\OneDrive\文档\@_Obsidian" --verify` | 只读本地 |
-| 预览精选资料审阅 | `python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\审阅清单.json"` | 只读本地 |
-| 执行精选资料审阅 | `python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\审阅清单.json" --apply --confirm CURATE_SELECTED_MATERIALS` | 修改本地 vault |
-| 验证精选资料审阅 | `python scripts/curate_selected_materials.py --vault "D:\OneDrive\文档\@_Obsidian" --review "reviews\审阅清单.json" --verify` | 只读本地 |
+| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH"` | 只读本地 |
+| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH" --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |
+| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --vault "$env:OBSIDIAN_VAULT_PATH" --verify` | 只读本地 |
+| 预览精选资料审阅 | `python scripts/curate_selected_materials.py --vault "$env:OBSIDIAN_VAULT_PATH" --review "reviews\审阅清单.json"` | 只读本地 |
+| 执行精选资料审阅 | `python scripts/curate_selected_materials.py --vault "$env:OBSIDIAN_VAULT_PATH" --review "reviews\审阅清单.json" --apply --confirm CURATE_SELECTED_MATERIALS` | 修改本地 vault |
+| 验证精选资料审阅 | `python scripts/curate_selected_materials.py --vault "$env:OBSIDIAN_VAULT_PATH" --review "reviews\审阅清单.json" --verify` | 只读本地 |
 
 ## 搜索并导出
 
 只涉及一个领域且数量较小时，使用单领域组合命令：
 
 ```powershell
+$vault = $env:OBSIDIAN_VAULT_PATH
 python scripts/export_search_results.py `
   --since 2025-07-26 `
   --until 2025-08-26 `
   --keywords AI Agent 人工智能 `
   --domain AI `
   --limit 3 `
-  --target "D:\OneDrive\文档\@_Obsidian\30_精选资料\AI"
+  --target "$vault\30_精选资料\AI"
 ```
 
 `--since` 包含当日，`--until` 不包含当日。导出完整时间区间时使用 `--limit all`，同时提高 `--max-per-keyword`，并确认每个关键词的总命中数与实际拉取数一致。
@@ -85,18 +86,37 @@ python scripts/export_search_results.py `
 
 任务涉及两个及以上领域、关键词大量重叠、要求 `all` 或预计会触发 API 限流时，必须使用 `export_multi_domain.py`，不能分别运行多个单领域命令后再人工去重。
 
-先复制 `templates/multi-domain-export-job.json` 到 Git 忽略的 `.state/jobs/` 并修改日期、vault 和关键词，然后运行：
+先把 `templates/multi-domain-export-job.json` 复制到正式 Vault 的状态目录，只修改日期、领域和关键词，然后运行：
 
 ```powershell
-New-Item -ItemType Directory -Force .state\jobs | Out-Null
-Copy-Item templates\multi-domain-export-job.json .state\jobs\任务.json
-
+$vault = $env:OBSIDIAN_VAULT_PATH
+New-Item -ItemType Directory -Force `
+  "$vault\.state\yinxiang-notes\jobs" | Out-Null
+Copy-Item templates\multi-domain-export-job.json `
+  "$vault\.state\yinxiang-notes\jobs\2026-q2.json"
 python scripts/export_multi_domain.py `
-  --job ".state\jobs\任务.json" `
-  --catalog ".state\export-catalog.sqlite3" `
+  --job "$vault\.state\yinxiang-notes\jobs\2026-q2.json" `
   --rate-limit-mode wait `
   --max-rate-limit-wait 3600
 ```
+
+任务 JSON 不保存 `vault`，Vault 始终来自当前设备的 `OBSIDIAN_VAULT_PATH`。旧任务中的 `vault` 等旧字段会被忽略并产生警告，不得把某台设备的绝对路径重新写回任务。
+
+运行状态固定在 `<vault>/.state/yinxiang-notes/`：
+
+```text
+<vault>/.state/yinxiang-notes/export-catalog.sqlite3
+<vault>/.state/yinxiang-notes/jobs/
+<vault>/.state/yinxiang-notes/runs/
+<vault>/.state/yinxiang-notes/reports/
+<vault>/.state/yinxiang-notes/single-domain/
+<vault>/.state/yinxiang-notes/migrations/
+<vault>/.state/yinxiang-notes/active-run.lock
+```
+
+首次使用时会从仓库旧 `.state/` 复制已知文件并校验哈希。必须复制旧状态，不删除旧状态；遇到目标同名异内容时停止，不覆盖任何一份文件。迁移成功后只使用 Vault 新位置，状态会随正式 Vault 同步。
+
+禁止两台设备同时写入同一个 Vault。锁文件不是分布式锁；切换设备前，必须先等待当前任务结束、SQLite 关闭，并等待上一台设备完成 Vault 同步，再在另一台设备启动导出。
 
 多领域流程的固定契约：
 
@@ -154,10 +174,12 @@ python scripts/export_multi_domain.py `
 | Markdown 没图片 | `getNote` 是否请求资源数据；月度文章是否使用 `../_attachments/` |
 | 重复剪藏仍出现 | 是否在 `--limit` 前按完全一致标题比较 `updated`、`created`、GUID |
 | 标题相关但正文错域 | 是否先拉取完整正文并通过正文主旨门禁；拒绝项不得写入 Markdown 或附件 |
-| 新关键词又重复拉正文 | 是否使用 `.state/export-catalog.sqlite3`；GUID、updated 或规则指纹是否变化 |
+| 新关键词又重复拉正文 | 是否使用 `<vault>/.state/yinxiang-notes/export-catalog.sqlite3`；GUID、updated 或规则指纹是否变化 |
 | 同一文章进入多个领域 | 是否使用多领域编排器选择唯一主领域并执行全局标题去重 |
 | 目录索引缺文章 | 文章是否有可解析的 `created`、`updated` 和 `source_guid` |
 | 同名附件只剩一个 | 文件名冲突时是否追加内容哈希 |
 | 整库同步漏笔记 | 是否分页读取元数据；整库同步不按标题去重，组合导出才按标题去重 |
+| 换设备后状态缺失 | 是否等待上一台设备完成 Vault 同步；本机 `OBSIDIAN_VAULT_PATH` 是否指向已同步的正式 Vault |
+| Vault 写锁冲突 | 禁止覆盖 `active-run.lock`；确认另一设备任务已结束并完成同步后再处理陈旧锁 |
 
 完整参数和实现说明见 `python scripts/<脚本>.py --help` 与 `README.md`。
