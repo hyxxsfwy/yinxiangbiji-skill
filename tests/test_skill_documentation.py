@@ -34,6 +34,10 @@ class SkillDocumentationTests(unittest.TestCase):
         self.readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
     def test_keyword_union_workflow_is_documented(self):
+        migration_contract = (
+            "旧目录 `婚姻情感` 迁移前必须先快照；若同路径目标存在且内容不同，"
+            "立即中止迁移，不覆盖、删除或替换任一方内容；仅 SHA-256 完全一致时才可去除旧副本。"
+        )
         for text in (self.skill, self.readme):
             for phrase in (
                 "selection_mode",
@@ -59,6 +63,8 @@ class SkillDocumentationTests(unittest.TestCase):
             ):
                 with self.subTest(document=text[:20], phrase=phrase):
                     self.assertIn(phrase, text)
+            with self.subTest(document=text[:20], contract="旧目录无覆盖迁移"):
+                self.assertIn(migration_contract, text)
 
     def test_keyword_union_template_contains_every_requested_keyword(self):
         payload = json.loads(
