@@ -32,39 +32,69 @@ class SkillDocumentationTests(unittest.TestCase):
     def setUp(self):
         self.skill = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.export_reference = (
+            REPO_ROOT / "references" / "export-workflows.md"
+        ).read_text(encoding="utf-8")
+        self.governance_reference = (
+            REPO_ROOT / "references" / "selected-materials-governance.md"
+        ).read_text(encoding="utf-8")
+        self.knowledge_reference = (
+            REPO_ROOT / "references" / "obsidian-knowledge-management.md"
+        ).read_text(encoding="utf-8")
+        self.documentation = "\n".join(
+            (
+                self.skill,
+                self.readme,
+                self.export_reference,
+                self.governance_reference,
+                self.knowledge_reference,
+            )
+        )
+
+    def test_skill_entry_is_compact_router(self):
+        self.assertLessEqual(len(self.skill.splitlines()), 150)
+        self.assertNotIn("2026-01-01-to-2026-04-01", self.skill)
+        self.assertNotIn("HugginFace", self.skill)
+
+    def test_skill_description_discovers_local_obsidian_governance(self):
+        frontmatter = parse_frontmatter(self.skill)
+        for phrase in ("Obsidian", "reclassify", "index", "bidirectional links"):
+            self.assertIn(phrase, frontmatter["description"])
+
+    def test_skill_routes_detailed_workflows_to_references(self):
+        self.assertIn("references/export-workflows.md", self.skill)
+        self.assertIn("references/selected-materials-governance.md", self.skill)
 
     def test_keyword_union_workflow_is_documented(self):
-        migration_contract = (
-            "旧目录 `婚姻情感` 迁移前必须先快照；若同路径目标存在且内容不同，"
-            "立即中止迁移，不覆盖、删除或替换任一方内容；仅 SHA-256 完全一致时才可去除旧副本。"
+        for phrase in (
+            "keyword_union",
+            "keyword_analyses",
+            "ASCII 字母数字短词",
+            "Unicode NFKC",
+            "规范关键词、别名、领域顺序和时间范围",
+            "完整正文",
+            "同一任务命令续跑",
+            "退出码 `75`",
+            "退出码 `1`",
+            "UTF-8 文件",
+            "同路径异内容",
+            "重建索引",
+            "删除空目录",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.export_reference)
+
+        template = json.loads(
+            (
+                REPO_ROOT / "templates" / "keyword-union-export-job.json"
+            ).read_text(encoding="utf-8")
         )
-        for text in (self.skill, self.readme):
-            for phrase in (
-                "selection_mode",
-                "keyword_union",
-                "keyword_analyses",
-                "HuggingFace",
-                "pulled == total",
-                "2026-04-01",
-                "2026-01-01-to-2026-04-01-keyword-union.json",
-                "两性情感",
-                "不得继续创建 `婚姻情感`",
-                "旧目录 `婚姻情感`",
-                "不保存完整正文",
-                "退出码 75",
-                "退出码 1",
-                "同一命令续跑",
-                "禁止把中文 JSON",
-                "keyword-union-export-job.json",
-                "先快照",
-                "无覆盖迁移",
-                "重建索引",
-                "删除空目录",
-            ):
-                with self.subTest(document=text[:20], phrase=phrase):
-                    self.assertIn(phrase, text)
-            with self.subTest(document=text[:20], contract="旧目录无覆盖迁移"):
-                self.assertIn(migration_contract, text)
+        self.assertEqual(template["selection_mode"], "keyword_union")
+        self.assertIn("HugginFace", self.readme)
+        self.assertIn("2026-01-01", self.readme)
+        self.assertIn("2026-04-01", self.readme)
+        self.assertNotIn("HugginFace", self.export_reference)
+        self.assertNotRegex(self.export_reference, r"20\d{2}-\d{2}-\d{2}")
 
     def test_keyword_union_template_contains_every_requested_keyword(self):
         payload = json.loads(
@@ -126,11 +156,6 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("export_search_results.py", combined)
 
     def test_documents_full_body_domain_gate_before_any_file_write(self):
-        reference = (
-            REPO_ROOT / "references" / "obsidian-knowledge-management.md"
-        ).read_text(encoding="utf-8")
-        combined = self.skill + self.readme + reference
-
         for phrase in (
             "搜索关键词只用于产生候选",
             "完整正文",
@@ -138,45 +163,43 @@ class SkillDocumentationTests(unittest.TestCase):
             "不写入 Markdown 或附件",
             "无法确定",
         ):
-            self.assertIn(phrase, combined)
+            self.assertIn(phrase, self.documentation)
 
-        skill_gate = self.skill.split("## 搜索并导出", 1)[1].split(
-            "## Obsidian 精选知识管理",
+        gate = self.export_reference.split("## 单领域正文主旨门禁", 1)[1].split(
+            "## 多领域唯一归属与全局去重",
             1,
         )[0]
-        fetch_position = skill_gate.index("拉取完整正文")
-        assess_position = skill_gate.index("判断正文主旨")
-        write_position = skill_gate.index("写入 Markdown 和附件")
+        fetch_position = gate.index("拉取完整正文")
+        assess_position = gate.index("根据正文主旨判断")
+        write_position = gate.index("写入 Markdown、附件和索引")
         self.assertLess(fetch_position, assess_position)
         self.assertLess(assess_position, write_position)
-        self.assertIn("通过正文门禁后再按完全一致标题去重", skill_gate)
-        self.assertIn("最后应用 `--limit`", skill_gate)
+        self.assertIn("通过正文门禁后", gate)
+        self.assertIn("按完全一致标题全局去重", gate)
+        self.assertIn("最后应用数量限制", gate)
 
     def test_large_multi_domain_exports_use_orchestrated_verified_workflow(self):
-        combined = self.skill + self.readme
         for phrase in (
             "两个及以上领域",
             "export_multi_domain.py",
-            "SQLite",
-            "<vault>/.state/yinxiang-notes/export-catalog.sqlite3",
+            "export-catalog.sqlite3",
             "GUID + updated + 规则指纹",
-            "更改检索关键词",
             "唯一主领域",
             "全局标题去重",
             "body_requests_saved",
-            "跨领域重复",
-            "完整性验收",
+            "跨领域重复标题/GUID",
+            "完整性门禁",
         ):
             with self.subTest(phrase=phrase):
-                self.assertIn(phrase, combined)
+                self.assertIn(phrase, self.export_reference)
 
         self.assertIn(
-            "不得用多领域标签代替唯一主领域",
-            self.skill,
+            "不得代替唯一主领域",
+            self.export_reference,
         )
         self.assertIn(
-            "索引、附件、检索范围对账和重复项全部通过",
-            self.skill,
+            "索引条目都能打开",
+            self.export_reference,
         )
 
         template = json.loads(
@@ -206,7 +229,7 @@ class SkillDocumentationTests(unittest.TestCase):
                 / "multi-domain-export-job.json"
             ).read_text(encoding="utf-8")
         )
-        combined = self.skill + self.readme + design
+        combined = self.documentation + design
 
         self.assertRegex(
             environment,
@@ -291,24 +314,20 @@ class SkillDocumentationTests(unittest.TestCase):
             / "plans"
             / "2026-07-28-large-scale-multi-domain-export.md"
         ).read_text(encoding="utf-8")
-        active_documents = self.skill + self.readme + reference
+        active_documents = self.documentation
         runtime_loader = (
             '$vault = python -c "from scripts.runtime import load_vault_root; '
             'print(load_vault_root())"'
         )
 
-        for document_name, document in (
-            ("README", self.readme),
-            ("SKILL", self.skill),
-        ):
-            with self.subTest(document=document_name):
-                self.assertIn(runtime_loader, document)
-                self.assertNotIn("$env:OBSIDIAN_VAULT_PATH", document)
-                self.assertNotIn("$env:YINXIANG_SYNC_VAULT_PATH", document)
-                self.assertIn(
-                    "PowerShell 不会自动把 `.env` 注入 `$env:`",
-                    document,
-                )
+        self.assertIn(runtime_loader, self.readme)
+        self.assertIn("scripts.runtime", self.skill)
+        self.assertNotIn("$env:OBSIDIAN_VAULT_PATH", active_documents)
+        self.assertNotIn("$env:YINXIANG_SYNC_VAULT_PATH", active_documents)
+        self.assertIn(
+            "PowerShell 不会自动把 `.env` 注入 `$env:`",
+            self.skill,
+        )
 
         with workspace_temp_dir() as root:
             (root / "scripts").mkdir()
@@ -381,6 +400,8 @@ class SkillDocumentationTests(unittest.TestCase):
             + (REPO_ROOT / "references" / "obsidian-knowledge-management.md").read_text(
                 encoding="utf-8"
             )
+            + self.export_reference
+            + self.governance_reference
             + (REPO_ROOT / "templates" / "obsidian-source-note.md").read_text(
                 encoding="utf-8"
             )
@@ -402,6 +423,8 @@ class SkillDocumentationTests(unittest.TestCase):
     def test_obsidian_knowledge_management_assets_exist(self):
         asset_paths = [
             "references/obsidian-knowledge-management.md",
+            "references/export-workflows.md",
+            "references/selected-materials-governance.md",
             "templates/obsidian-source-note.md",
             "templates/obsidian-knowledge-note.md",
             "templates/obsidian-knowledge-map.md",
@@ -516,25 +539,28 @@ class SkillDocumentationTests(unittest.TestCase):
 
     def test_skill_documents_curated_obsidian_and_llm_wiki_rules(self):
         required_phrases = [
-            "历史剪藏继续保留在印象笔记",
-            "按需迁移",
-            "至少两项",
+            "历史剪藏和大规模自动采集内容继续留在印象笔记",
+            "Obsidian 只保存持续有用",
+            "不做全量搬运",
             "`type`、`domain`、`status`、`tags`",
-            "每篇笔记最多 3 个标签",
-            "受控主题词表",
+            "最多 3 个受控主题标签",
+            "主题词表",
             "LLM Wiki",
             "`llm_policy: off`",
             "自动审批",
             "同名或多候选链接存在歧义时不得自动审批，进入人工队列",
             "人工审批",
             "references/obsidian-knowledge-management.md",
-            "templates/obsidian-source-note.md",
-            "templates/obsidian-knowledge-note.md",
-            "templates/obsidian-knowledge-map.md",
         ]
         for phrase in required_phrases:
             with self.subTest(phrase=phrase):
-                self.assertIn(phrase, self.skill)
+                self.assertIn(phrase, self.documentation)
+
+        for reference_path in (
+            "references/obsidian-knowledge-management.md",
+            "references/selected-materials-governance.md",
+        ):
+            self.assertIn(reference_path, self.skill)
 
     def test_documents_final_vault_structure_and_migration_command(self):
         reference = (
@@ -583,18 +609,21 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertNotIn("20_项目", reference)
         self.assertNotIn("90_系统/LLM Wiki/", reference)
 
-        self.assertEqual(
-            [
-                line
-                for line in self.skill.splitlines()
-                if "scripts/restructure_obsidian_vault.py" in line
-            ],
-            [
-                "| 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py` | 只读本地 |",
-                "| 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 vault |",
-                "| 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --verify` | 只读本地 |",
-            ],
+        vault_routes = [
+            line
+            for line in self.skill.splitlines()
+            if "scripts/restructure_obsidian_vault.py" in line
+        ]
+        self.assertEqual(len(vault_routes), 3)
+        self.assertIn(
+            "python scripts/restructure_obsidian_vault.py`",
+            "\n".join(vault_routes),
         )
+        self.assertIn(
+            "--apply --confirm MIGRATE_OBSIDIAN_VAULT",
+            "\n".join(vault_routes),
+        )
+        self.assertIn("--verify", "\n".join(vault_routes))
 
         migration_commands = [
             line.strip()
@@ -655,12 +684,12 @@ class SkillDocumentationTests(unittest.TestCase):
     def test_every_curated_export_example_targets_the_ai_domain_directory(self):
         export_blocks = [
             block
-            for document in (self.readme, self.skill)
+            for document in (self.readme, self.export_reference)
             for block in re.findall(r"```powershell\n(.*?)\n```", document, re.DOTALL)
             if "scripts/export_search_results.py" in block
         ]
 
-        self.assertGreaterEqual(len(export_blocks), 3)
+        self.assertGreaterEqual(len(export_blocks), 1)
         for block in export_blocks:
             with self.subTest(block=block):
                 self.assertIn("--domain AI", block)
@@ -726,6 +755,8 @@ class SkillDocumentationTests(unittest.TestCase):
             "search_notes.py",
             "sync_to_obsidian.py",
             "update_note.py",
+            "curate_selected_materials.py",
+            "restructure_obsidian_vault.py",
         ]
         for script_name in command_scripts:
             with self.subTest(script=script_name):

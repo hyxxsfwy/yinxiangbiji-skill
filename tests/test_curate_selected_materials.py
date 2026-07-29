@@ -43,32 +43,47 @@ def review_item(path, decision="keep", *, links=(), reason="领域匹配", topic
 
 
 class ReviewManifestTests(unittest.TestCase):
-    def test_repository_review_manifest_is_explicit_and_symmetric(self):
-        from scripts.curate_selected_materials import load_review_manifest
-
-        manifest_path = Path(
-            "reviews/2026-07-27-selected-materials-review.json"
+    def test_review_manifest_fixture_is_explicit_and_symmetric(self):
+        from scripts.curate_selected_materials import (
+            load_review_manifest,
+            validate_review_manifest,
         )
-        raw_items = json.loads(manifest_path.read_text(encoding="utf-8"))
-        reviews = load_review_manifest(manifest_path)
-        by_path = {review.path: review for review in reviews}
 
-        self.assertEqual(len(raw_items), 214)
-        self.assertEqual(len(reviews), 214)
-        self.assertEqual(
-            sum(review.decision == "trash" for review in reviews),
-            48,
-        )
+        with workspace_temp_dir() as vault:
+            seed_review_vault(vault)
+            manifest_path = vault / "review.json"
+            raw_items = [
+                {
+                    "path": "AI/2026年07月/Agent 架构.md",
+                    "decision": "keep",
+                    "reason": "正文讨论 Agent 架构",
+                    "topic": "Agent 工程",
+                    "links": ["Quant/2026年07月/量化因子.md"],
+                },
+                {
+                    "path": "Quant/2026年07月/量化因子.md",
+                    "decision": "keep",
+                    "reason": "正文讨论量化因子与 Agent 协作",
+                    "topic": "量化研究",
+                    "links": ["AI/2026年07月/Agent 架构.md"],
+                },
+            ]
+            manifest_path.write_text(
+                json.dumps(raw_items, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            reviews = load_review_manifest(manifest_path)
+            issues = validate_review_manifest(vault, reviews)
+
+        self.assertEqual(issues, ())
         self.assertTrue(
             all(
                 set(item) == {"path", "decision", "reason", "topic", "links"}
                 for item in raw_items
             )
         )
-        self.assertTrue(
-            all(review.reason and review.topic for review in reviews)
-        )
-        self.assertTrue(all(len(review.links) <= 3 for review in reviews))
+        by_path = {review.path: review for review in reviews}
         for review in reviews:
             for target in review.links:
                 self.assertIn(target, by_path)
