@@ -41,13 +41,21 @@ class SkillDocumentationTests(unittest.TestCase):
                 "keyword_analyses",
                 "HuggingFace",
                 "pulled == total",
-                "2026-08-01",
+                "2026-04-01",
+                "2026-01-01-to-2026-04-01-keyword-union.json",
+                "两性情感",
+                "不得继续创建 `婚姻情感`",
+                "旧目录 `婚姻情感`",
                 "不保存完整正文",
                 "退出码 75",
                 "退出码 1",
                 "同一命令续跑",
                 "禁止把中文 JSON",
                 "keyword-union-export-job.json",
+                "先快照",
+                "无覆盖迁移",
+                "重建索引",
+                "删除空目录",
             ):
                 with self.subTest(document=text[:20], phrase=phrase):
                     self.assertIn(phrase, text)
