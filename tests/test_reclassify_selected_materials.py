@@ -210,6 +210,22 @@ class ReviewDecisionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_review_decisions(self._write_decisions(root, payload))
 
+    def test_decisions_reject_unknown_or_escaping_move_domain(self):
+        with workspace_temp_dir() as root:
+            for target_domain in ("未知领域", "../逃逸目录"):
+                with self.subTest(target_domain=target_domain):
+                    payload = {
+                        "moves": {
+                            "AI/2026年01月/文章.md": target_domain,
+                        },
+                        "trash": [],
+                        "links": {},
+                    }
+                    with self.assertRaises(ValueError):
+                        load_review_decisions(
+                            self._write_decisions(root, payload)
+                        )
+
 
 class ReviewExecutionTests(unittest.TestCase):
     def _write_note(self, path, domain, title, body):
@@ -604,6 +620,78 @@ class ReviewExecutionTests(unittest.TestCase):
             self.assertIn(f"../_attachments/{copied[0].name})", rendered)
 
 
+    def test_move_preflight_rejects_destination_outside_selected_root(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            source = vault / "30_精选资料/AI/2026年01月/待移动.md"
+            self._write_note(source, "AI", "待移动", "原始正文")
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={Path("AI/2026年01月/待移动.md"): "../逃逸目录"},
+                    trash=(),
+                    links={},
+                )
+
+            self.assertTrue(source.is_file())
+            self.assertFalse((vault / "逃逸目录").exists())
+
+    def test_move_remaps_both_ends_of_controlled_links(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            moved = Path("AI/2026年01月/迁移资料.md")
+            neighbor = Path("AI/2026年01月/关联资料.md")
+            self._write_note(selected / moved, "AI", "迁移资料", "迁移正文")
+            self._write_note(selected / neighbor, "AI", "关联资料", "关联正文")
+
+            execute_review(
+                vault,
+                moves={moved: "软件工程"},
+                trash=(),
+                links={moved: (neighbor,), neighbor: (moved,)},
+            )
+
+            moved_note = selected / "软件工程/2026年01月/迁移资料.md"
+            neighbor_note = selected / neighbor
+            self.assertEqual(validate_links(vault), ())
+            self.assertIn(
+                "[[30_精选资料/AI/2026年01月/关联资料|关联资料]]",
+                moved_note.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "[[30_精选资料/软件工程/2026年01月/迁移资料|迁移资料]]",
+                neighbor_note.read_text(encoding="utf-8"),
+            )
+
+    def test_invalid_link_endpoint_stops_before_move_or_trash(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            moved = Path("AI/2026年01月/待移动.md")
+            discarded = Path("AI/2026年01月/待废弃.md")
+            neighbor = Path("AI/2026年01月/关联资料.md")
+            missing = Path("AI/2026年01月/不存在.md")
+            self._write_note(selected / moved, "AI", "待移动", "移动前正文")
+            self._write_note(selected / discarded, "AI", "待废弃", "废弃前正文")
+            self._write_note(selected / neighbor, "AI", "关联资料", "关联正文")
+
+            with self.assertRaises(FileNotFoundError):
+                execute_review(
+                    vault,
+                    moves={moved: "软件工程"},
+                    trash=(discarded,),
+                    links={neighbor: (missing,), missing: (neighbor,)},
+                )
+
+            self.assertTrue((selected / moved).is_file())
+            self.assertTrue((selected / discarded).is_file())
+            self.assertFalse(
+                (vault / "99_废纸篓/30_精选资料/AI/2026年01月/待废弃.md").exists()
+            )
+
+
 class ReviewVerificationTests(unittest.TestCase):
     def _write_note(self, path, domain, title, body):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -700,6 +788,33 @@ class ReviewVerificationTests(unittest.TestCase):
                 manifest.as_posix(),
                 "\n".join(tampered_snapshot_report["issues"]),
             )
+
+
+    def test_verify_rejects_moved_note_with_wrong_frontmatter_domain(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            moved = Path("AI/2026年01月/领域不符.md")
+            self._write_note(selected / moved, "AI", "领域不符", "待迁移正文")
+            moves = {moved: "软件工程"}
+
+            execute_review(vault, moves, trash=(), links={})
+            destination = selected / "软件工程/2026年01月/领域不符.md"
+            destination.write_text(
+                destination.read_text(encoding="utf-8").replace(
+                    'domain: "软件工程"', 'domain: "AI"'
+                ),
+                encoding="utf-8",
+            )
+
+            report = verify_review_results(vault, moves, (), {})
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                "领域不符.md",
+                "\n".join(report["issues"]),
+            )
+            self.assertIn("domain", "\n".join(report["issues"]))
 
 
 class CommandLineTests(unittest.TestCase):

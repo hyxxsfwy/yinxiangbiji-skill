@@ -377,49 +377,98 @@ def _render_links(markdown, targets):
     return base + separator + section
 
 
-def execute_review(vault, moves, trash, links):
+def _is_within(path, root):
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_target_domain(target_domain):
+    if not isinstance(target_domain, str) or target_domain not in DOMAIN_PROFILES:
+        raise ValueError("move 目标领域必须是已知领域")
+    return target_domain
+
+
+def _preflight_review(vault, moves, trash, links):
     vault = Path(vault).resolve()
-    if not (vault / ".obsidian").is_dir():
-        raise ValueError(f"目标不是 Obsidian vault: {vault}")
-    selected = vault / SELECTED_ROOT
+    selected = (vault / SELECTED_ROOT).resolve()
+    trash_root = (vault / "99_废纸篓" / SELECTED_ROOT).resolve()
     move_destinations = {}
-    for relative, target_domain in moves.items():
-        relative = Path(relative)
+    final_relative_by_source = {}
+    for raw_relative, raw_target_domain in moves.items():
+        relative = Path(raw_relative)
+        target_domain = _validate_target_domain(raw_target_domain)
         source = selected / relative
-        destination = selected / target_domain / relative.parent.name / relative.name
+        if not _is_within(source, selected):
+            raise ValueError(f"移动来源超出精选资料目录: {relative}")
+        destination = _review_move_destination(
+            vault, relative, target_domain
+        )
+        if not _is_within(destination, selected):
+            raise ValueError(f"移动目标超出精选资料目录: {destination}")
         if not source.is_file():
             raise FileNotFoundError(source)
         if destination.exists():
             raise FileExistsError(destination)
         move_destinations[relative] = destination
+        final_relative_by_source[relative] = destination.relative_to(selected)
         for asset in _referenced_assets(source):
             _collision_safe_asset_destination(
                 asset,
                 selected / target_domain / "_attachments",
             )
+
     trash_destinations = {}
-    for relative in trash:
-        relative = Path(relative)
+    trash_paths = {Path(relative) for relative in trash}
+    if set(move_destinations) & trash_paths:
+        raise ValueError("同一资料不能同时 move 和 trash")
+    for raw_relative in trash:
+        relative = Path(raw_relative)
         source = selected / relative
-        destination = vault / "99_废纸篓" / SELECTED_ROOT / relative
+        destination = _review_trash_destination(vault, relative)
+        if not _is_within(source, selected):
+            raise ValueError(f"废纸篓来源超出精选资料目录: {relative}")
+        if not _is_within(destination, trash_root):
+            raise ValueError(f"废纸篓目标超出废纸篓目录: {destination}")
         if not source.is_file():
             raise FileNotFoundError(source)
         if destination.exists():
             raise FileExistsError(destination)
         trash_destinations[relative] = destination
         for asset in _referenced_assets(source):
-            target_dir = (
-                vault
-                / "99_废纸篓"
-                / SELECTED_ROOT
-                / relative.parts[0]
-                / "_attachments"
-            )
+            target_dir = trash_root / relative.parts[0] / "_attachments"
             _collision_safe_asset_destination(asset, target_dir)
+
+    for raw_source, raw_targets in links.items():
+        source = Path(raw_source)
+        targets = tuple(Path(target) for target in raw_targets)
+        if source in trash_paths or any(target in trash_paths for target in targets):
+            raise ValueError("trash 资料不能作为 links 端点")
+        for endpoint in (source, *targets):
+            original = selected / endpoint
+            final = selected / final_relative_by_source.get(endpoint, endpoint)
+            if not _is_within(original, selected) or not _is_within(final, selected):
+                raise ValueError(f"links 端点超出精选资料目录: {endpoint}")
+            if not original.is_file():
+                raise FileNotFoundError(original)
+    return move_destinations, trash_destinations, final_relative_by_source
+
+
+def execute_review(vault, moves, trash, links):
+    vault = Path(vault).resolve()
+    if not (vault / ".obsidian").is_dir():
+        raise ValueError(f"目标不是 Obsidian vault: {vault}")
+    selected = vault / SELECTED_ROOT
+    (
+        move_destinations,
+        trash_destinations,
+        final_relative_by_source,
+    ) = _preflight_review(vault, moves, trash, links)
 
     snapshot = create_review_snapshot(vault, moves, trash, links)
 
-    final_path_by_source = {}
     for relative, target_domain in moves.items():
         relative = Path(relative)
         source = selected / relative
@@ -441,7 +490,6 @@ def execute_review(vault, moves, trash, links):
         markdown = _rewrite_asset_references(markdown, asset_renames)
         destination.write_text(markdown, encoding="utf-8")
         source.unlink()
-        final_path_by_source[Path(relative)] = destination
 
     for relative in trash:
         relative = Path(relative)
@@ -472,10 +520,16 @@ def execute_review(vault, moves, trash, links):
         source.unlink()
 
     for relative, targets in links.items():
-        note = final_path_by_source.get(Path(relative), selected / relative)
+        final_relative = final_relative_by_source.get(
+            Path(relative), Path(relative)
+        )
+        note = selected / final_relative
         rendered = _render_links(
             note.read_text(encoding="utf-8"),
-            tuple(Path(target) for target in targets),
+            tuple(
+                final_relative_by_source.get(Path(target), Path(target))
+                for target in targets
+            ),
         )
         note.write_text(rendered, encoding="utf-8")
 
@@ -643,6 +697,7 @@ def load_review_decisions(path: Path) -> dict[str, object]:
         if not isinstance(target_domain, str) or not target_domain.strip():
             raise ValueError("move 目标领域不能为空")
         target_domain = target_domain.strip()
+        _validate_target_domain(target_domain)
         if target_domain == source.parts[0]:
             raise ValueError("move 目标领域不能与来源领域相同")
         moves[source] = target_domain
@@ -806,6 +861,16 @@ def _verify_snapshot(vault, snapshot):
     return len(expected), issues
 
 
+def _frontmatter_domain(note):
+    match = re.search(
+        r'(?m)^domain:\s*(?:"([^"]*)"|([^\r\n]*))$',
+        note.read_text(encoding="utf-8"),
+    )
+    if match is None:
+        return None
+    return (match.group(1) or match.group(2)).strip()
+
+
 def verify_review_results(
     vault: Path,
     moves: dict[Path, str],
@@ -827,6 +892,13 @@ def verify_review_results(
         if not destination.is_file():
             issues.append(f"移动目标不存在: {destination.relative_to(vault).as_posix()}")
             continue
+        actual_domain = _frontmatter_domain(destination)
+        if actual_domain != target_domain:
+            issues.append(
+                "移动目标 domain 不匹配: "
+                f"{destination.relative_to(vault).as_posix()} "
+                f"(应为 {target_domain}，实际 {actual_domain})"
+            )
         checked_notes.append(destination)
     for relative in trash:
         relative = Path(relative)
