@@ -125,7 +125,7 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
-_ATOMIC_REPLACE_ATTEMPTS = 20
+_ATOMIC_REPLACE_ATTEMPTS = 241
 _ATOMIC_REPLACE_RETRY_SECONDS = 0.25
 
 

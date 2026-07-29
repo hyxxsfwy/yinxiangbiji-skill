@@ -1000,6 +1000,24 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
         self.assertEqual(replace_mock.call_count, 2)
         sleep.assert_called_once()
 
+    def test_atomic_json_tolerates_onedrive_lock_longer_than_five_seconds(self):
+        from scripts.export_multi_domain import _atomic_json
+
+        with workspace_temp_dir() as temp_dir:
+            target = temp_dir / "state.json"
+            transient = PermissionError(5, "temporarily locked", str(target))
+            with (
+                patch(
+                    "scripts.export_multi_domain.Path.replace",
+                    side_effect=[transient] * 20 + [None],
+                ) as replace_mock,
+                patch("scripts.export_multi_domain.time_module.sleep") as sleep,
+            ):
+                _atomic_json(target, {"ok": True})
+
+        self.assertEqual(replace_mock.call_count, 21)
+        self.assertEqual(sleep.call_count, 20)
+
     def test_atomic_json_surfaces_persistent_permission_error(self):
         from scripts.export_multi_domain import (
             _ATOMIC_REPLACE_ATTEMPTS,
