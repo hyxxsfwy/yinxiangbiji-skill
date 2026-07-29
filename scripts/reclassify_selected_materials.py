@@ -883,6 +883,8 @@ def _frontmatter_domain(note):
         field, separator, value = line.partition(":")
         if separator and field == "domain":
             value = value.strip()
+            if value in {"|", ">"}:
+                return None
             if value.startswith('"'):
                 try:
                     return str(json.loads(value))
