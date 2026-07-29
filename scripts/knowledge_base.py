@@ -389,7 +389,35 @@ def _monthly_markdown_paths(root):
 
 
 def _archived_freshness_key(note):
-    return (note.updated, note.created, note.guid)
+    return archived_freshness_key(
+        note.updated,
+        note.created,
+        note.guid,
+    )
+
+
+def archived_freshness_key(updated, created, guid):
+    return (updated, created, guid)
+
+
+def archived_title_owners(root):
+    """返回每个归档标题按最终去重规则选出的当前 owner。"""
+    root = Path(root)
+    if not root.is_dir():
+        return {}
+
+    owners = {}
+    for path in _monthly_markdown_paths(root):
+        note = extract_note_metadata(path)
+        title = note.title.strip()
+        current = owners.get(title)
+        if (
+            current is None
+            or _archived_freshness_key(note)
+            > _archived_freshness_key(current)
+        ):
+            owners[title] = note
+    return owners
 
 
 def deduplicate_archived_notes(root):

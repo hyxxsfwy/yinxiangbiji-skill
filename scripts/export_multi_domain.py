@@ -43,6 +43,8 @@ try:
     from .knowledge_base import (
         INDEX_FILENAME,
         _split_frontmatter,
+        archived_freshness_key,
+        archived_title_owners,
         extract_note_metadata,
         finalize_knowledge_base,
     )
@@ -90,6 +92,8 @@ except ImportError:
     from knowledge_base import (
         INDEX_FILENAME,
         _split_frontmatter,
+        archived_freshness_key,
+        archived_title_owners,
         extract_note_metadata,
         finalize_knowledge_base,
     )
@@ -748,6 +752,28 @@ def _keyword_catalog_path_is_current(job, entry, metadata):
     )
 
 
+def _historical_title_owner_is_fresher(
+    owners_by_domain,
+    domain,
+    title,
+    metadata,
+):
+    owner = owners_by_domain.get(domain, {}).get(title.strip())
+    if owner is None or owner.guid == str(metadata.guid):
+        return False
+    owner_key = archived_freshness_key(
+        owner.updated,
+        owner.created,
+        owner.guid,
+    )
+    candidate_key = archived_freshness_key(
+        datetime.fromtimestamp(int(metadata.updated) / 1000),
+        datetime.fromtimestamp(int(metadata.created) / 1000),
+        str(metadata.guid),
+    )
+    return owner_key > candidate_key
+
+
 def _keyword_summary_and_hash(content):
     body = full_body_text(content or "")
     summary = body[:360].strip()
@@ -1049,6 +1075,10 @@ def _run_keyword_union_job(
         )
         state_payload["snapshot"] = snapshot_result.to_dict()
         _atomic_json(state_file, state_payload)
+        historical_title_owners = {
+            domain: archived_title_owners(job.target_for(domain))
+            for domain in job.domains
+        }
         for metadata in sorted(
             candidates.values(),
             key=_candidate_sort_key,
@@ -1078,6 +1108,30 @@ def _run_keyword_union_job(
                     finish_candidate()
                     continue
                 if cached.outcome == "duplicate_title":
+                    counts["duplicate_titles"] += 1
+                    cache_counts["body_requests_saved"] += 1
+                    processed[guid] = {
+                        "outcome": "cached_duplicate_title",
+                        "title": metadata_title,
+                    }
+                    finish_candidate()
+                    continue
+                if (
+                    cached.outcome == "accepted"
+                    and _historical_title_owner_is_fresher(
+                        historical_title_owners,
+                        cached.primary_domain,
+                        metadata_title,
+                        metadata,
+                    )
+                ):
+                    duplicate = replace(
+                        cached,
+                        outcome="duplicate_title",
+                        canonical_path=None,
+                        last_seen_at=now,
+                    )
+                    catalog.upsert_keyword(duplicate)
                     counts["duplicate_titles"] += 1
                     cache_counts["body_requests_saved"] += 1
                     processed[guid] = {
@@ -1191,6 +1245,27 @@ def _run_keyword_union_job(
                 }
                 if verbose:
                     print(f"[拒绝] {title}: 未命中关键词边界")
+                finish_candidate()
+                continue
+
+            if _historical_title_owner_is_fresher(
+                historical_title_owners,
+                entry.primary_domain,
+                title,
+                metadata,
+            ):
+                duplicate = replace(
+                    entry,
+                    outcome="duplicate_title",
+                    canonical_path=None,
+                    last_seen_at=now,
+                )
+                catalog.upsert_keyword(duplicate)
+                counts["duplicate_titles"] += 1
+                processed[guid] = {
+                    "outcome": "duplicate_title",
+                    "title": title,
+                }
                 finish_candidate()
                 continue
 

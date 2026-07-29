@@ -1668,6 +1668,136 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                 1,
             )
 
+    def test_finalization_marks_current_candidate_removed_by_newer_history_as_duplicate(self):
+        from scripts.export_catalog import ExportCatalog, KeywordCatalogEntry
+        from scripts.export_multi_domain import normalize_job, run_export_job
+        from scripts.export_search_results import export_note_to_obsidian
+        from scripts.keyword_selection import keyword_selection_hash
+
+        title = "同标题历史胜者"
+        historical = metadata(
+            "historical-guid",
+            title,
+            1775100000000,
+            created=1775100000000,
+        )
+        candidate = metadata(
+            "candidate-guid",
+            title,
+            1772400000000,
+            created=1772400000000,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            historical_path = export_note_to_obsidian(
+                full_note(
+                    historical,
+                    "<en-note>AI 历史资料</en-note>",
+                ),
+                notebook_name="微信",
+                target_dir=vault / "30_精选资料" / "AI",
+                domain="AI",
+            )
+            job = normalize_job(
+                {
+                    "since": "2026-01-01",
+                    "until": "2026-04-01",
+                    "selection_mode": "keyword_union",
+                    "domains": {"AI": {"keywords": ["AI"]}},
+                },
+                vault,
+            )
+            catalog_path = temp_dir / "catalog.sqlite3"
+            selection_hash = keyword_selection_hash(
+                job.domains,
+                job.aliases,
+            )
+            with ExportCatalog(catalog_path) as catalog:
+                catalog.upsert_keyword(
+                    KeywordCatalogEntry(
+                        guid="candidate-guid",
+                        updated_ms=candidate.updated,
+                        selection_hash=selection_hash,
+                        title=title,
+                        created_ms=candidate.created,
+                        notebook_name="微信",
+                        summary="AI 当前候选",
+                        body_sha256="a" * 64,
+                        outcome="accepted",
+                        primary_domain="AI",
+                        matched_keywords=("AI",),
+                        matched_terms=("AI",),
+                        canonical_path=(
+                            "30_精选资料/AI/2026年03月/"
+                            f"{title}.md"
+                        ),
+                        first_fetched_at="2026-07-29T10:00:00+08:00",
+                        last_fetched_at="2026-07-29T10:00:00+08:00",
+                        last_seen_at="2026-07-29T10:00:00+08:00",
+                    )
+                )
+            store = FakeNoteStore(
+                {"AI": [candidate]},
+                {},
+                forbid_body=True,
+            )
+            report = run_export_job(
+                job,
+                store,
+                "token",
+                catalog_path=catalog_path,
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+            with ExportCatalog(catalog_path) as catalog:
+                entry = catalog.get_keyword_current(
+                    "candidate-guid",
+                    candidate.updated,
+                    selection_hash,
+                )
+            historical_exists = historical_path.is_file()
+            current_path_exists = (
+                vault
+                / "30_精选资料"
+                / "AI"
+                / "2026年03月"
+                / f"{title}.md"
+            ).is_file()
+
+        self.assertTrue(historical_exists)
+        self.assertFalse(current_path_exists)
+        self.assertEqual(store.body_calls, [])
+        self.assertEqual(entry.outcome, "duplicate_title")
+        self.assertIsNone(entry.canonical_path)
+        self.assertEqual(report["candidates"]["accepted"], 0)
+        self.assertEqual(report["candidates"]["duplicate_titles"], 1)
+        self.assertEqual(
+            report["candidates"]["unique_guids"],
+            report["candidates"]["accepted"]
+            + report["candidates"]["rejected"]
+            + report["candidates"]["duplicate_titles"],
+        )
+        self.assertEqual(
+            report["candidates"]["accepted"],
+            report["materialization"]["written"]
+            + report["materialization"]["already_exported"],
+        )
+        self.assertEqual(
+            report["candidate_manifest"],
+            [
+                {
+                    "guid": "candidate-guid",
+                    "updated_ms": candidate.updated,
+                    "outcome": "duplicate_title",
+                }
+            ],
+        )
+        self.assertTrue(report["ok"])
+
     def test_changed_keywords_reuse_catalog_without_refetching_body(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
 
