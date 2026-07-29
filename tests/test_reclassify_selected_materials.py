@@ -706,6 +706,152 @@ class ReviewExecutionTests(unittest.TestCase):
             self.assertEqual(len(copied), 1)
             self.assertIn(f"../_attachments/{copied[0].name})", rendered)
 
+    def test_move_batch_reuses_equal_assets_and_hashes_different_content(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            first = Path("AI/2026年01月/批次甲.md")
+            second = Path("Quant/2026年01月/批次乙.md")
+            equal = Path("知识管理/2026年01月/批次同内容.md")
+            for relative, domain, title in (
+                (first, "AI", "批次甲"),
+                (second, "Quant", "批次乙"),
+                (equal, "知识管理", "批次同内容"),
+            ):
+                self._write_note(
+                    selected / relative,
+                    domain,
+                    title,
+                    "正文\n\n![](../_attachments/shared.png)",
+                )
+            for domain, payload in (
+                ("AI", b"content-a"),
+                ("Quant", b"content-b"),
+                ("知识管理", b"content-a"),
+            ):
+                asset = selected / domain / "_attachments/shared.png"
+                asset.parent.mkdir(parents=True)
+                asset.write_bytes(payload)
+
+            try:
+                execute_review(
+                    vault,
+                    moves={
+                        first: "软件工程",
+                        second: "软件工程",
+                        equal: "软件工程",
+                    },
+                    trash=(),
+                    links={},
+                )
+            except FileExistsError as exc:
+                self.fail(f"批次内附件冲突不应拒绝合法 move: {exc}")
+
+            target_assets = selected / "软件工程/_attachments"
+            self.assertEqual(
+                {
+                    path.name: path.read_bytes()
+                    for path in target_assets.glob("shared*.png")
+                },
+                {
+                    "shared.png": b"content-a",
+                    "shared_6ce5fb87f75c.png": b"content-b",
+                },
+            )
+            self.assertIn(
+                "../_attachments/shared.png",
+                (
+                    selected / "软件工程/2026年01月/批次甲.md"
+                ).read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "../_attachments/shared_6ce5fb87f75c.png",
+                (
+                    selected / "软件工程/2026年01月/批次乙.md"
+                ).read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "../_attachments/shared.png",
+                (
+                    selected / "软件工程/2026年01月/批次同内容.md"
+                ).read_text(encoding="utf-8"),
+            )
+
+    def test_trash_batch_reuses_equal_assets_and_hashes_different_content(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            first = Path("AI/2026年01月/废纸批次甲.md")
+            second = Path("AI/2026年01月/废纸批次乙.md")
+            equal = Path("AI/2026年01月/废纸批次同内容.md")
+            for relative, asset_group, title in (
+                (first, "a", "废纸批次甲"),
+                (second, "b", "废纸批次乙"),
+                (equal, "c", "废纸批次同内容"),
+            ):
+                self._write_note(
+                    selected / relative,
+                    "AI",
+                    title,
+                    f"正文\n\n![](../_attachments/{asset_group}/shared.png)",
+                )
+            for asset_group, payload in (
+                ("a", b"content-a"),
+                ("b", b"content-b"),
+                ("c", b"content-a"),
+            ):
+                asset = (
+                    selected
+                    / "AI"
+                    / "_attachments"
+                    / asset_group
+                    / "shared.png"
+                )
+                asset.parent.mkdir(parents=True)
+                asset.write_bytes(payload)
+
+            try:
+                execute_review(
+                    vault,
+                    moves={},
+                    trash=(first, second, equal),
+                    links={},
+                )
+            except FileExistsError as exc:
+                self.fail(f"批次内附件冲突不应拒绝合法 trash: {exc}")
+
+            trash_root = vault / "99_废纸篓/30_精选资料/AI"
+            self.assertEqual(
+                {
+                    path.name: path.read_bytes()
+                    for path in (trash_root / "_attachments").glob(
+                        "shared*.png"
+                    )
+                },
+                {
+                    "shared.png": b"content-a",
+                    "shared_6ce5fb87f75c.png": b"content-b",
+                },
+            )
+            self.assertIn(
+                "../_attachments/shared.png",
+                (trash_root / "2026年01月/废纸批次甲.md").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            self.assertIn(
+                "../_attachments/shared_6ce5fb87f75c.png",
+                (trash_root / "2026年01月/废纸批次乙.md").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            self.assertIn(
+                "../_attachments/shared.png",
+                (trash_root / "2026年01月/废纸批次同内容.md").read_text(
+                    encoding="utf-8"
+                ),
+            )
+
 
     def test_move_preflight_rejects_destination_outside_selected_root(self):
         with workspace_temp_dir() as vault:
@@ -907,6 +1053,74 @@ class ReviewExecutionTests(unittest.TestCase):
 
             self.assertTrue(source.is_file())
             self.assertEqual(tuple(outside.iterdir()), ())
+            self.assertFalse(
+                (vault / ".state/yinxiang-notes/snapshots").exists()
+            )
+
+    def test_move_rejects_target_domain_junction_to_another_domain(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            relative = Path("AI/2026年01月/跨领域根.md")
+            source = selected / relative
+            self._write_note(source, "AI", "跨领域根", "不得写入其他领域。")
+            physical_domain = selected / "Quant"
+            physical_domain.mkdir(parents=True)
+            create_directory_link_or_skip(
+                self,
+                selected / "软件工程",
+                physical_domain,
+            )
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={relative: "软件工程"},
+                    trash=(),
+                    links={},
+                )
+
+            self.assertTrue(source.is_file())
+            self.assertFalse(
+                (physical_domain / "2026年01月/跨领域根.md").exists()
+            )
+            self.assertFalse(
+                (vault / ".state/yinxiang-notes/snapshots").exists()
+            )
+
+    def test_trash_rejects_domain_mirror_junction_to_another_domain(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            relative = Path("AI/2026年01月/废纸篓领域根.md")
+            source = selected / relative
+            self._write_note(
+                source,
+                "AI",
+                "废纸篓领域根",
+                "不得写入其他领域镜像。",
+            )
+            trash_root = vault / "99_废纸篓/30_精选资料"
+            physical_domain = trash_root / "Quant"
+            physical_domain.mkdir(parents=True)
+            create_directory_link_or_skip(
+                self,
+                trash_root / "AI",
+                physical_domain,
+            )
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={},
+                    trash=(relative,),
+                    links={},
+                )
+
+            self.assertTrue(source.is_file())
+            self.assertFalse(
+                (physical_domain / "2026年01月/废纸篓领域根.md").exists()
+            )
             self.assertFalse(
                 (vault / ".state/yinxiang-notes/snapshots").exists()
             )

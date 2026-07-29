@@ -411,6 +411,23 @@ def _update_domain(markdown, domain):
     return newline.join(lines)
 
 
+def _require_domain_root(parent, domain, vault, description):
+    """要求领域根解析后仍保持 parent/domain 的规范身份。"""
+    parent = Path(parent)
+    expected = parent / domain
+    resolved = require_path_within_vault(
+        expected,
+        vault,
+        description,
+        allowed_root=parent,
+    )
+    if resolved != expected:
+        raise ValueError(
+            f"{description}解析后必须保持规范领域路径: {expected}"
+        )
+    return resolved
+
+
 def _validated_vault_roots(vault):
     vault = Path(vault).expanduser().resolve()
     obsidian = require_path_within_vault(
@@ -431,11 +448,11 @@ def _validated_vault_roots(vault):
         "精选资料废纸篓根目录",
     )
     for domain in MANAGED_DOMAINS:
-        domain_root = require_path_within_vault(
-            selected / domain,
+        domain_root = _require_domain_root(
+            selected,
+            domain,
             vault,
             f"{domain} 领域目录",
-            allowed_root=selected,
         )
         require_path_within_vault(
             domain_root / "_attachments",
@@ -443,11 +460,11 @@ def _validated_vault_roots(vault):
             f"{domain} 来源附件目录",
             allowed_root=domain_root,
         )
-        trash_domain = require_path_within_vault(
-            trash_root / domain,
+        trash_domain = _require_domain_root(
+            trash_root,
+            domain,
             vault,
             f"{domain} 废纸篓目录",
-            allowed_root=trash_root,
         )
         require_path_within_vault(
             trash_domain / "_attachments",
@@ -465,17 +482,23 @@ def _canonical_asset_target(destination, fragment=""):
 
 
 def _referenced_assets(note, vault, selected, domain):
+    domain_root = _require_domain_root(
+        selected,
+        domain,
+        vault,
+        f"{domain} 来源领域目录",
+    )
     note = require_path_within_vault(
         note,
         vault,
         "附件所属文档",
-        allowed_root=selected / domain,
+        allowed_root=domain_root,
     )
     attachment_root = require_path_within_vault(
-        selected / domain / "_attachments",
+        domain_root / "_attachments",
         vault,
         f"{domain} 来源附件目录",
-        allowed_root=selected / domain,
+        allowed_root=domain_root,
     )
     text = note.read_text(encoding="utf-8")
     for raw_target in _ASSET_LINK.findall(text):
@@ -511,16 +534,42 @@ def _referenced_assets(note, vault, selected, domain):
         )
 
 
-def _collision_safe_asset_destination(asset, target_dir):
+def _asset_destination_payload(destination, planned_assets):
+    payloads = []
+    if destination.exists():
+        payloads.append(destination.read_bytes())
+    planned = planned_assets.get(destination)
+    if planned is not None:
+        payloads.append(planned.source.read_bytes())
+    if len(set(payloads)) > 1:
+        raise FileExistsError(destination)
+    return payloads[0] if payloads else None
+
+
+def _collision_safe_asset_destination(
+    asset,
+    target_dir,
+    planned_assets=None,
+):
     asset = Path(asset)
     target_dir = Path(target_dir)
+    if planned_assets is None:
+        planned_assets = {}
     destination = target_dir / asset.name
     payload = asset.read_bytes()
-    if not destination.exists() or destination.read_bytes() == payload:
+    destination_payload = _asset_destination_payload(
+        destination,
+        planned_assets,
+    )
+    if destination_payload is None or destination_payload == payload:
         return destination
     digest = hashlib.sha256(payload).hexdigest()[:12]
     destination = target_dir / f"{asset.stem}_{digest}{asset.suffix}"
-    if destination.exists() and destination.read_bytes() != payload:
+    destination_payload = _asset_destination_payload(
+        destination,
+        planned_assets,
+    )
+    if destination_payload is not None and destination_payload != payload:
         raise FileExistsError(destination)
     return destination
 
@@ -576,11 +625,11 @@ def _validate_target_domain(target_domain):
 def _validate_domain_tree(vault, selected, domain_root):
     if not domain_root.exists():
         return
-    require_path_within_vault(
-        domain_root,
+    domain_root = _require_domain_root(
+        selected,
+        domain_root.name,
         vault,
         f"{domain_root.name} 领域目录",
-        allowed_root=selected,
     )
     for child in domain_root.iterdir():
         require_path_within_vault(
@@ -600,10 +649,17 @@ def _validate_domain_tree(vault, selected, domain_root):
             )
 
 
-def _asset_target_plan(reference, target_root, vault, allowed_root):
+def _asset_target_plan(
+    reference,
+    target_root,
+    vault,
+    allowed_root,
+    planned_assets,
+):
     destination = _collision_safe_asset_destination(
         reference.source,
         target_root,
+        planned_assets,
     )
     destination = require_path_within_vault(
         destination,
@@ -665,11 +721,11 @@ def _validate_final_index_inputs(plan):
 
 def _iter_managed_notes(vault, selected):
     for domain in MANAGED_DOMAINS:
-        domain_root = require_path_within_vault(
-            selected / domain,
+        domain_root = _require_domain_root(
+            selected,
+            domain,
             vault,
             f"{domain} 领域目录",
-            allowed_root=selected,
         )
         _validate_domain_tree(vault, selected, domain_root)
         if not domain_root.is_dir():
@@ -712,21 +768,33 @@ def _prepare_review_plan(vault, moves, trash, links):
     assets_by_destination = {}
     for relative, target_domain in moves.items():
         source_domain = relative.parts[0]
+        source_domain_root = _require_domain_root(
+            selected,
+            source_domain,
+            vault,
+            f"{source_domain} 移动来源领域目录",
+        )
         source = require_path_within_vault(
             selected / relative,
             vault,
             "移动来源",
-            allowed_root=selected,
+            allowed_root=source_domain_root,
         )
         if not source.is_file():
             raise FileNotFoundError(source)
         if _frontmatter_domain(source) != source_domain:
             raise ValueError(f"移动来源 domain 与路径不匹配: {relative}")
+        target_domain_root = _require_domain_root(
+            selected,
+            target_domain,
+            vault,
+            f"{target_domain} 移动目标领域目录",
+        )
         destination = require_path_within_vault(
             _review_move_destination(vault, relative, target_domain),
             vault,
             "移动目标",
-            allowed_root=selected,
+            allowed_root=target_domain_root,
         )
         if destination.exists():
             raise FileExistsError(destination)
@@ -738,10 +806,10 @@ def _prepare_review_plan(vault, moves, trash, links):
         destinations[destination] = relative
         final_relative_by_source[relative] = destination.relative_to(selected)
         target_root = require_path_within_vault(
-            selected / target_domain / "_attachments",
+            target_domain_root / "_attachments",
             vault,
             f"{target_domain} 目标附件目录",
-            allowed_root=selected / target_domain,
+            allowed_root=target_domain_root,
         )
         renames = {}
         for reference in _referenced_assets(
@@ -755,6 +823,7 @@ def _prepare_review_plan(vault, moves, trash, links):
                 target_root,
                 vault,
                 target_root,
+                assets_by_destination,
             )
             existing = assets_by_destination.get(planned_asset.destination)
             if (
@@ -779,27 +848,39 @@ def _prepare_review_plan(vault, moves, trash, links):
 
     for relative in trash:
         domain = relative.parts[0]
+        source_domain_root = _require_domain_root(
+            selected,
+            domain,
+            vault,
+            f"{domain} 废纸篓来源领域目录",
+        )
         source = require_path_within_vault(
             selected / relative,
             vault,
             "废纸篓来源",
-            allowed_root=selected,
+            allowed_root=source_domain_root,
         )
         if not source.is_file():
             raise FileNotFoundError(source)
+        trash_domain_root = _require_domain_root(
+            trash_root,
+            domain,
+            vault,
+            f"{domain} 废纸篓目标领域目录",
+        )
         destination = require_path_within_vault(
             _review_trash_destination(vault, relative),
             vault,
             "废纸篓目标",
-            allowed_root=trash_root,
+            allowed_root=trash_domain_root,
         )
         if destination.exists():
             raise FileExistsError(destination)
         target_root = require_path_within_vault(
-            trash_root / domain / "_attachments",
+            trash_domain_root / "_attachments",
             vault,
             f"{domain} 废纸篓附件目录",
-            allowed_root=trash_root / domain,
+            allowed_root=trash_domain_root,
         )
         renames = {}
         for reference in _referenced_assets(
@@ -813,6 +894,7 @@ def _prepare_review_plan(vault, moves, trash, links):
                 target_root,
                 vault,
                 target_root,
+                assets_by_destination,
             )
             existing = assets_by_destination.get(planned_asset.destination)
             if (
@@ -845,26 +927,44 @@ def _prepare_review_plan(vault, moves, trash, links):
 
     for relative, targets in links.items():
         final_relative = final_relative_by_source.get(relative, relative)
+        final_domain_root = _require_domain_root(
+            selected,
+            final_relative.parts[0],
+            vault,
+            f"{final_relative.parts[0]} links 最终领域目录",
+        )
         destination = require_path_within_vault(
             selected / final_relative,
             vault,
             "links 最终来源",
-            allowed_root=selected,
+            allowed_root=final_domain_root,
+        )
+        original_domain_root = _require_domain_root(
+            selected,
+            relative.parts[0],
+            vault,
+            f"{relative.parts[0]} links 原始领域目录",
         )
         original = require_path_within_vault(
             selected / relative,
             vault,
             "links 原始来源",
-            allowed_root=selected,
+            allowed_root=original_domain_root,
         )
         if not original.is_file():
             raise FileNotFoundError(original)
         for target in targets:
+            target_domain_root = _require_domain_root(
+                selected,
+                target.parts[0],
+                vault,
+                f"{target.parts[0]} links 目标领域目录",
+            )
             target_original = require_path_within_vault(
                 selected / target,
                 vault,
                 "links 目标",
-                allowed_root=selected,
+                allowed_root=target_domain_root,
             )
             if not target_original.is_file():
                 raise FileNotFoundError(target_original)
@@ -901,11 +1001,11 @@ def _prepare_review_plan(vault, moves, trash, links):
         )
 
     index_roots = tuple(
-        require_path_within_vault(
-            selected / domain,
+        _require_domain_root(
+            selected,
+            domain,
             vault,
             f"{domain} 索引目录",
-            allowed_root=selected,
         )
         for domain in MANAGED_DOMAINS
     )
