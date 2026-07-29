@@ -1,5 +1,6 @@
 """重新审阅并整理 Obsidian 精选资料。"""
 
+import argparse
 from dataclasses import dataclass
 from collections import Counter
 from datetime import datetime
@@ -8,6 +9,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import sys
 from urllib.parse import unquote
 import zipfile
 
@@ -18,6 +20,7 @@ from scripts.curate_selected_materials import (
     extract_auto_link_targets,
 )
 from scripts.knowledge_base import write_knowledge_base_index
+from scripts.runtime import configure_utf8_output, load_vault_root
 
 
 SELECTED_ROOT = "30_精选资料"
@@ -414,7 +417,7 @@ def execute_review(vault, moves, trash, links):
             )
             _collision_safe_asset_destination(asset, target_dir)
 
-    create_review_snapshot(vault, moves, trash, links)
+    snapshot = create_review_snapshot(vault, moves, trash, links)
 
     final_path_by_source = {}
     for relative, target_domain in moves.items():
@@ -481,6 +484,7 @@ def execute_review(vault, moves, trash, links):
         key=lambda path: path.name,
     ):
         write_knowledge_base_index(domain_dir, domain_dir.name)
+    return snapshot
 
 
 def validate_links(vault):
@@ -601,3 +605,337 @@ def audit_vault(vault):
         "link_issues": list(validate_links(vault)),
         "documents": documents,
     }
+
+
+def _decision_relative_path(value, field):
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} 必须是非空路径")
+    path = Path(value)
+    if path.is_absolute() or len(path.parts) < 2 or any(
+        part in {"", ".", ".."} for part in path.parts
+    ):
+        raise ValueError(f"{field} 必须相对于 {SELECTED_ROOT}")
+    return path
+
+
+def load_review_decisions(path: Path) -> dict[str, object]:
+    """读取人工确认的精选资料重分类决定并校验其操作边界。"""
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"决策文件不是有效 JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("决策文件根节点必须是对象")
+
+    raw_moves = payload.get("moves", {})
+    raw_trash = payload.get("trash", [])
+    raw_links = payload.get("links", {})
+    if not isinstance(raw_moves, dict):
+        raise ValueError("moves 必须是对象")
+    if not isinstance(raw_trash, list):
+        raise ValueError("trash 必须是列表")
+    if not isinstance(raw_links, dict):
+        raise ValueError("links 必须是对象")
+
+    moves = {}
+    for raw_source, target_domain in raw_moves.items():
+        source = _decision_relative_path(raw_source, "moves 路径")
+        if not isinstance(target_domain, str) or not target_domain.strip():
+            raise ValueError("move 目标领域不能为空")
+        target_domain = target_domain.strip()
+        if target_domain == source.parts[0]:
+            raise ValueError("move 目标领域不能与来源领域相同")
+        moves[source] = target_domain
+
+    trash = tuple(
+        _decision_relative_path(raw_path, "trash 路径")
+        for raw_path in raw_trash
+    )
+    trash_set = set(trash)
+    if set(moves) & trash_set:
+        raise ValueError("同一资料不能同时 move 和 trash")
+
+    links = {}
+    for raw_source, raw_targets in raw_links.items():
+        source = _decision_relative_path(raw_source, "links 路径")
+        if not isinstance(raw_targets, list):
+            raise ValueError("links 目标必须是列表")
+        targets = tuple(
+            _decision_relative_path(raw_target, "links 目标")
+            for raw_target in raw_targets
+        )
+        if source in targets:
+            raise ValueError("links 不允许自链接")
+        if len(set(targets)) != len(targets):
+            raise ValueError("links 不允许重复链接")
+        if len(targets) > 3:
+            raise ValueError("每篇资料最多三个 links")
+        links[source] = targets
+
+    for source, targets in links.items():
+        if source in trash_set:
+            raise ValueError("trash 资料不能作为 links 端点")
+        for target in targets:
+            if target in trash_set:
+                raise ValueError("trash 资料不能作为 links 端点")
+            if source not in links.get(target, ()):
+                raise ValueError("links 必须严格双向对称")
+
+    return {"moves": moves, "trash": trash, "links": links}
+
+
+def _review_move_destination(vault, relative, target_domain):
+    return (
+        Path(vault)
+        / SELECTED_ROOT
+        / target_domain
+        / Path(relative).parent.name
+        / Path(relative).name
+    )
+
+
+def _review_trash_destination(vault, relative):
+    return Path(vault) / "99_废纸篓" / SELECTED_ROOT / Path(relative)
+
+
+def _note_asset_issues(note, vault):
+    issues = []
+    markdown = note.read_text(encoding="utf-8")
+    for raw_target in _ASSET_LINK.findall(markdown):
+        target = unquote(raw_target.split("#", 1)[0].strip().strip("<>"))
+        if not target or "://" in target or target.lower().endswith(".md"):
+            continue
+        asset = (note.parent / target).resolve()
+        if not asset.is_file():
+            issues.append(
+                "附件不存在: "
+                f"{note.relative_to(vault).as_posix()} -> "
+                f"{asset.relative_to(vault).as_posix()}"
+            )
+    return issues
+
+
+def _verify_indexes(vault):
+    selected = Path(vault) / SELECTED_ROOT
+    issues = []
+    index_counts = {}
+    for domain_dir in sorted(
+        (path for path in selected.iterdir() if path.is_dir()),
+        key=lambda path: path.name,
+    ):
+        if domain_dir.name == "_attachments":
+            continue
+        index = domain_dir / INDEX_FILENAME
+        if not index.is_file():
+            issues.append(f"目录索引不存在: {index.relative_to(vault).as_posix()}")
+            continue
+        actual_notes = {
+            note.relative_to(domain_dir).with_suffix("").as_posix()
+            for note in domain_dir.rglob("*.md")
+            if note.name != INDEX_FILENAME
+        }
+        indexed_notes = set()
+        for raw_target in re.findall(r"\[\[([^|\]]+)(?:\|[^\]]*)?\]\]", index.read_text(encoding="utf-8")):
+            target = unquote(raw_target).strip()
+            if not target:
+                continue
+            indexed_notes.add(PurePosixPath(target).with_suffix("").as_posix())
+        index_counts[domain_dir.name] = len(indexed_notes)
+        for target in sorted(indexed_notes - actual_notes):
+            issues.append(
+                "目录索引目标不存在: "
+                f"{index.relative_to(vault).as_posix()} -> "
+                f"{domain_dir.relative_to(vault).as_posix()}/{target}.md"
+            )
+        for target in sorted(actual_notes - indexed_notes):
+            issues.append(
+                "目录索引缺少资料: "
+                f"{domain_dir.relative_to(vault).as_posix()}/{target}.md"
+            )
+    return index_counts, issues
+
+
+def _verify_snapshot(vault, snapshot):
+    archive, manifest = (Path(path) for path in snapshot)
+    issues = []
+    if not archive.is_file():
+        return 0, [f"快照 ZIP 不存在: {archive.as_posix()}"]
+    if not manifest.is_file():
+        return 0, [f"快照清单不存在: {manifest.as_posix()}"]
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        records = payload["files"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        return 0, [f"快照清单无效: {manifest.as_posix()} ({exc})"]
+    if not isinstance(records, list):
+        return 0, [f"快照清单无效: {manifest.as_posix()} (files 必须是列表)"]
+    expected = {}
+    for record in records:
+        if not isinstance(record, dict) or not all(
+            field in record for field in ("path", "size", "sha256")
+        ):
+            issues.append(f"快照清单条目无效: {manifest.as_posix()}")
+            continue
+        path = record["path"]
+        if not isinstance(path, str) or path in expected:
+            issues.append(f"快照清单路径无效: {manifest.as_posix()} -> {path!r}")
+            continue
+        expected[path] = record
+    try:
+        with zipfile.ZipFile(archive) as zipped:
+            names = set(zipped.namelist())
+            if names != set(expected):
+                issues.append(
+                    "快照 ZIP 条目与清单不一致: "
+                    f"{archive.as_posix()} / {manifest.as_posix()}"
+                )
+            for path, record in expected.items():
+                if path not in names:
+                    continue
+                content = zipped.read(path)
+                if (
+                    record["size"] != len(content)
+                    or record["sha256"] != hashlib.sha256(content).hexdigest()
+                ):
+                    issues.append(
+                        "快照 SHA-256 不匹配: "
+                        f"{manifest.as_posix()} -> {path}"
+                    )
+    except zipfile.BadZipFile:
+        issues.append(f"快照 ZIP 无效: {archive.as_posix()}")
+    return len(expected), issues
+
+
+def verify_review_results(
+    vault: Path,
+    moves: dict[Path, str],
+    trash: tuple[Path, ...],
+    links: dict[Path, tuple[Path, ...]],
+    snapshot: tuple[Path, Path] | None = None,
+) -> dict[str, object]:
+    """验证本次精选资料重分类已完成且没有破坏受控内容。"""
+    vault = Path(vault).resolve()
+    selected = vault / SELECTED_ROOT
+    issues = []
+    checked_notes = []
+    for relative, target_domain in moves.items():
+        relative = Path(relative)
+        source = selected / relative
+        destination = _review_move_destination(vault, relative, target_domain)
+        if source.exists():
+            issues.append(f"移动来源仍存在: {source.relative_to(vault).as_posix()}")
+        if not destination.is_file():
+            issues.append(f"移动目标不存在: {destination.relative_to(vault).as_posix()}")
+            continue
+        checked_notes.append(destination)
+    for relative in trash:
+        relative = Path(relative)
+        source = selected / relative
+        destination = _review_trash_destination(vault, relative)
+        if source.exists():
+            issues.append(f"废纸篓来源仍存在: {source.relative_to(vault).as_posix()}")
+        if not destination.is_file():
+            issues.append(f"废纸篓镜像不存在: {destination.relative_to(vault).as_posix()}")
+            continue
+        checked_notes.append(destination)
+
+    missing_assets = []
+    for note in checked_notes:
+        for issue in _note_asset_issues(note, vault):
+            missing_assets.append(issue)
+            issues.append(issue)
+    for issue in validate_links(vault):
+        issues.append(issue)
+    index_counts, index_issues = _verify_indexes(vault)
+    issues.extend(index_issues)
+    snapshot_files = 0
+    if snapshot is not None:
+        snapshot_files, snapshot_issues = _verify_snapshot(vault, snapshot)
+        issues.extend(snapshot_issues)
+    return {
+        "ok": not issues,
+        "moves": len(moves),
+        "trash": len(trash),
+        "managed_link_notes": len(links),
+        "missing_assets": missing_assets,
+        "index_counts": index_counts,
+        "snapshot_files": snapshot_files,
+        "issues": sorted(issues),
+    }
+
+
+def default_report_path(vault: Path, phase: str) -> Path:
+    """生成保存在 Vault 状态目录中的阶段报告路径。"""
+    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+    return (
+        Path(vault)
+        / ".state"
+        / "yinxiang-notes"
+        / "reports"
+        / f"{phase}-{stamp}.json"
+    )
+
+
+def _write_report(path, report):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="精选资料重分类审阅工具")
+    commands = parser.add_subparsers(dest="command", required=True)
+    for command in ("audit", "apply", "verify"):
+        subparser = commands.add_parser(command)
+        subparser.add_argument("--vault", type=Path)
+        subparser.add_argument("--output", type=Path)
+        if command in {"apply", "verify"}:
+            subparser.add_argument("--decisions", type=Path, required=True)
+        if command == "apply":
+            subparser.add_argument("--confirm")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    configure_utf8_output()
+    args = build_parser().parse_args(argv)
+    try:
+        vault = load_vault_root(args.vault)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    output = args.output or default_report_path(vault, args.command)
+    if args.command == "audit":
+        report = audit_vault(vault)
+        _write_report(output, report)
+        print(f"审阅报告：{output}")
+        return 0
+    if args.command == "apply" and args.confirm != "RECLASSIFY_SELECTED_MATERIALS":
+        print(
+            "apply 必须同时提供 --confirm RECLASSIFY_SELECTED_MATERIALS",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        decisions = load_review_decisions(args.decisions)
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    moves = decisions["moves"]
+    trash = decisions["trash"]
+    links = decisions["links"]
+    if args.command == "apply":
+        snapshot = execute_review(vault, moves, trash, links)
+        report = verify_review_results(vault, moves, trash, links, snapshot)
+    else:
+        report = verify_review_results(vault, moves, trash, links)
+    _write_report(output, report)
+    if not report["ok"]:
+        for issue in report["issues"]:
+            print(f"验证失败: {issue}", file=sys.stderr)
+        return 1
+    print(f"验证报告：{output}")
+    return 0
