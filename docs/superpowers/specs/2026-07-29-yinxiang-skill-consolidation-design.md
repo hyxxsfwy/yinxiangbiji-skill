@@ -138,4 +138,3 @@
 - Skill frontmatter、引用文件和命令均可解析；
 - `reviews/` 仍被 Git 忽略；
 - 不访问或修改真实 Vault，除非用户另行明确授权执行真实治理任务。
-
