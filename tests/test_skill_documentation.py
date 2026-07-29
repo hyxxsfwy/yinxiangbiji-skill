@@ -123,6 +123,38 @@ class SkillDocumentationTests(unittest.TestCase):
             self.governance_reference,
         )
 
+    def test_documents_distinguish_wrong_domain_from_discard(self):
+        """防止面向使用者的重分类流程回退到旧逐篇审阅语义。"""
+        review_sections = self.readme.split("### 精选资料重分类与兼容审阅", 1)
+        self.assertEqual(len(review_sections), 2)
+        review_section = review_sections[1]
+        review_section = review_section.split("\n## ", 1)[0]
+
+        main_commands = {
+            line.split(".py ", 1)[1].split(maxsplit=1)[0]
+            for line in review_section.splitlines()
+            if line.startswith("python scripts/reclassify_selected_materials.py ")
+        }
+        self.assertEqual(main_commands, {"audit", "apply", "verify"})
+        self.assertIn("curate_selected_materials.py", review_section)
+        self.assertIn("<vault>/.state/yinxiang-notes/reports/", review_section)
+        self.assertNotRegex(review_section, r'--review\s+["\']?reviews[\\/]')
+
+        decisions = dict(
+            re.findall(r"(?m)^- `(move|trash|pending)`：(.+)$", review_section)
+        )
+        self.assertIn("明确目标领域", decisions["move"])
+        self.assertIn("保留价值", decisions["move"])
+        self.assertIn("不属于受管范围", decisions["trash"])
+        self.assertIn("无保留价值", decisions["trash"])
+        self.assertNotIn("错域", decisions["trash"])
+        self.assertIn("唯一结论", decisions["pending"])
+
+        self.assertIn("错域但目标领域明确", self.knowledge_reference)
+        self.assertIn("`move`", self.knowledge_reference)
+        self.assertIn("`trash`", self.knowledge_reference)
+        self.assertIn("`pending`", self.knowledge_reference)
+
     def test_reclassify_help_exposes_three_stage_cli(self):
         result = subprocess.run(
             [

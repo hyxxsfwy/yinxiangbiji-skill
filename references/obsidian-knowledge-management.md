@@ -16,6 +16,10 @@
 
 固定执行顺序是：候选合并与排序、拉取完整正文、正文主旨判断、通过项按完全一致标题去重、应用数量限制、写入 Markdown 和附件、重建索引与验证。文件写入是门禁通过后的动作；不得先保存图片或文章再清理错域结果。若最新的同标题剪藏未通过，继续检查较旧版本，以免元数据去重提前丢掉真正匹配的正文。
 
+## 精选资料重分类决策
+
+对已有 `30_精选资料` 做全库重扫时，使用 `reclassify_selected_materials.py` 的 `audit / apply / verify` 主流程；详细命令、decisions 格式和兼容边界见 `references/selected-materials-governance.md`。错域但目标领域明确且值得保留的资料使用 `move`，不属于受管范围或确认无保留价值的资料使用 `trash`，不能形成唯一结论时保持 `pending`，不写入业务变更。旧 `curate_selected_materials.py` 仅用于既有逐篇清单，不承担重扫或跨领域移动。
+
 ## 最终目录
 
 ```text

@@ -221,20 +221,42 @@ python scripts/export_search_results.py `
 
 最终结构、索引职责、审核规则和旧标签映射见 `references/obsidian-knowledge-management.md`。其中 `20_知识笔记` 只保留目录索引和知识地图两份根索引，`30_精选资料` 的每个领域各自维护一份目录索引。
 
-### 精选资料逐篇审阅
+### 精选资料重分类与兼容审阅
 
-`curate_selected_materials.py` 根据显式 JSON 清单逐篇核对领域归属，并维护受控双向链接。错域资料移入 `99_废纸篓/30_精选资料/` 的镜像路径，引用的本地附件同步复制；保留资料每篇最多写入 3 条人工确认的双向链接，没有明确关联时不写链接块。执行前会创建 ZIP 快照和 SHA-256 清单，完成后重建领域索引并生成逐篇审核日志。
+对 `30_精选资料` 做全库重扫、重分类和独立验证时，使用 `reclassify_selected_materials.py` 主流程：先 `audit` 生成全库证据报告，人工据此准备显式 decisions，再 `apply`，最后用同一份 decisions 执行 `verify`。报告默认写入 `<vault>/.state/yinxiang-notes/reports/`；`audit` 和 `verify` 不改写业务资料，`apply` 需要固定确认词。
+
+```powershell
+$decisions = "D:\临时\selected-materials-decisions.json"
+
+# 全库审计：生成报告，不移动或删除资料
+python scripts/reclassify_selected_materials.py audit
+
+# 仅执行人工确认的 decisions
+python scripts/reclassify_selected_materials.py apply --decisions "$decisions" --confirm RECLASSIFY_SELECTED_MATERIALS
+
+# 使用同一 decisions 独立核验落盘结果
+python scripts/reclassify_selected_materials.py verify --decisions "$decisions"
+```
+
+决策时保持以下边界：
+
+- `move`：错域但有明确目标领域且仍有保留价值的资料，移入目标领域。
+- `trash`：不属于受管范围或确认无保留价值的资料，移入可恢复的废纸篓镜像路径。
+- `pending`：目标领域、保留价值或链接关系不能形成唯一结论时，保留原位等待人工判断。
+
+旧的 `curate_selected_materials.py` 仅兼容既有的逐篇审阅清单，不用于全库重扫或跨领域移动。审阅清单可作为本地临时材料保存；仓库 `reviews/` 已忽略，不是持久报告目录。
 
 ```powershell
 $vault = python -c "from scripts.runtime import load_vault_root; print(load_vault_root())"
+$legacyReview = "D:\临时\selected-materials-review.json"
 # 预览
-python scripts/curate_selected_materials.py --vault "$vault" --review "reviews\2026-07-27-selected-materials-review.json"
+python scripts/curate_selected_materials.py --vault "$vault" --review "$legacyReview"
 
 # 执行
-python scripts/curate_selected_materials.py --vault "$vault" --review "reviews\2026-07-27-selected-materials-review.json" --apply --confirm CURATE_SELECTED_MATERIALS
+python scripts/curate_selected_materials.py --vault "$vault" --review "$legacyReview" --apply --confirm CURATE_SELECTED_MATERIALS
 
 # 验证
-python scripts/curate_selected_materials.py --vault "$vault" --review "reviews\2026-07-27-selected-materials-review.json" --verify
+python scripts/curate_selected_materials.py --vault "$vault" --review "$legacyReview" --verify
 ```
 
 ## 写操作与安全边界
@@ -278,6 +300,8 @@ python scripts/empty_trash.py --confirm DELETE_ALL
 | `export_multi_domain.py` | 多领域全量搜索、历史解析复用、唯一归属和验收 | 只读账户；写正式 Vault 和其中的 `.state/yinxiang-notes/` |
 | `export_catalog.py` | 维护本地 SQLite 历史解析目录 | 只读本地 |
 | `export_integrity.py` | 验证索引、附件、范围和跨领域重复 | 只读本地 |
+| `reclassify_selected_materials.py` | 全库审计、按显式 decisions 重分类并验证精选资料 | `apply` 时写正式 Vault |
+| `curate_selected_materials.py` | 兼容既有的逐篇审阅清单 | `--apply` 时写正式 Vault |
 | `sync_to_obsidian.py` | 增量同步全部或指定笔记本 | 只读账户；写本地 vault |
 | `create_note.py` | 创建笔记 | 修改账户 |
 | `update_note.py` | 更新标题、内容、标签 | 修改账户 |
