@@ -396,6 +396,7 @@ def _preflight_review(vault, moves, trash, links):
     selected = (vault / SELECTED_ROOT).resolve()
     trash_root = (vault / "99_废纸篓" / SELECTED_ROOT).resolve()
     move_destinations = {}
+    move_sources_by_destination = {}
     final_relative_by_source = {}
     for raw_relative, raw_target_domain in moves.items():
         relative = Path(raw_relative)
@@ -412,6 +413,13 @@ def _preflight_review(vault, moves, trash, links):
             raise FileNotFoundError(source)
         if destination.exists():
             raise FileExistsError(destination)
+        resolved_destination = destination.resolve()
+        if resolved_destination in move_sources_by_destination:
+            raise ValueError(
+                "多个 move 不能规划到同一目标: "
+                f"{relative} 与 {move_sources_by_destination[resolved_destination]}"
+            )
+        move_sources_by_destination[resolved_destination] = relative
         move_destinations[relative] = destination
         final_relative_by_source[relative] = destination.relative_to(selected)
         for asset in _referenced_assets(source):
@@ -862,13 +870,24 @@ def _verify_snapshot(vault, snapshot):
 
 
 def _frontmatter_domain(note):
-    match = re.search(
-        r'(?m)^domain:\s*(?:"([^"]*)"|([^\r\n]*))$',
-        note.read_text(encoding="utf-8"),
-    )
-    if match is None:
+    lines = note.read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")
+    if not lines or lines[0] != "---":
         return None
-    return (match.group(1) or match.group(2)).strip()
+    try:
+        closing = lines.index("---", 1)
+    except ValueError:
+        return None
+    for line in lines[1:closing]:
+        field, separator, value = line.partition(":")
+        if separator and field.strip() == "domain":
+            value = value.strip()
+            if value.startswith('"'):
+                try:
+                    return str(json.loads(value))
+                except json.JSONDecodeError:
+                    return value.strip('"')
+            return value.strip("'")
+    return None
 
 
 def verify_review_results(

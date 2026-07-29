@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.reclassify_selected_materials import (
+    _is_within,
     audit_vault,
     classify_document,
     create_review_snapshot,
@@ -691,6 +692,31 @@ class ReviewExecutionTests(unittest.TestCase):
                 (vault / "99_废纸篓/30_精选资料/AI/2026年01月/待废弃.md").exists()
             )
 
+    def test_duplicate_planned_move_destination_stops_before_any_write(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            ai_source = Path("AI/2026年01月/同名资料.md")
+            quant_source = Path("Quant/2026年01月/同名资料.md")
+            self._write_note(selected / ai_source, "AI", "AI同名", "AI 原始正文")
+            self._write_note(
+                selected / quant_source, "Quant", "Quant同名", "Quant 原始正文"
+            )
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={ai_source: "软件工程", quant_source: "软件工程"},
+                    trash=(),
+                    links={},
+                )
+
+            self.assertTrue((selected / ai_source).is_file())
+            self.assertTrue((selected / quant_source).is_file())
+            self.assertFalse(
+                (selected / "软件工程/2026年01月/同名资料.md").exists()
+            )
+
 
 class ReviewVerificationTests(unittest.TestCase):
     def _write_note(self, path, domain, title, body):
@@ -815,6 +841,37 @@ class ReviewVerificationTests(unittest.TestCase):
                 "\n".join(report["issues"]),
             )
             self.assertIn("domain", "\n".join(report["issues"]))
+
+    def test_verify_rejects_body_domain_without_opening_frontmatter(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            moved = Path("AI/2026年01月/伪字段资料.md")
+            self._write_note(selected / moved, "AI", "伪字段资料", "待迁移正文")
+            moves = {moved: "软件工程"}
+
+            execute_review(vault, moves, trash=(), links={})
+            destination = selected / "软件工程/2026年01月/伪字段资料.md"
+            destination.write_text(
+                "# 伪字段资料\n\n正文中的伪字段不能作为 frontmatter。\n"
+                "domain: 软件工程\n",
+                encoding="utf-8",
+            )
+
+            report = verify_review_results(vault, moves, (), {})
+
+            self.assertFalse(report["ok"])
+            self.assertIn("伪字段资料.md", "\n".join(report["issues"]))
+            self.assertIn("domain", "\n".join(report["issues"]))
+
+    def test_containment_rejects_path_resolving_outside_root(self):
+        with workspace_temp_dir() as root:
+            selected = root / "30_精选资料"
+            outside = root / "outside"
+            selected.mkdir()
+            outside.mkdir()
+
+            self.assertFalse(_is_within(selected / "../outside", selected))
 
 
 class CommandLineTests(unittest.TestCase):
