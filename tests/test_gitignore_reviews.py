@@ -1,4 +1,4 @@
-"""验证根目录 reviews 忽略规则只作用于目录内容。"""
+"""验证 reviews 忽略规则只作用于同名目录内容。"""
 
 from __future__ import annotations
 
@@ -22,5 +22,6 @@ def check_ignored(path: str) -> bool:
 class ReviewsIgnoreRuleTests(unittest.TestCase):
     def test_reviews_directory_contents_are_ignored_but_plain_files_are_not(self) -> None:
         self.assertTrue(check_ignored("reviews/sentinel.md"))
-        self.assertFalse(check_ignored("reviews"))
+        self.assertTrue(check_ignored("nested/reviews/sentinel.md"))
+        self.assertFalse(check_ignored("reviews.md"))
         self.assertFalse(check_ignored("nested/reviews"))
