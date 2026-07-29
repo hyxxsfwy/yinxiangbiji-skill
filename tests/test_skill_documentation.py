@@ -81,8 +81,12 @@ class SkillDocumentationTests(unittest.TestCase):
 
         self.assertEqual(actual, expected)
         self.assertEqual(len(actual), 63)
-        self.assertEqual(payload["since"], "2026-04-01")
-        self.assertEqual(payload["until"], "2026-08-01")
+        self.assertEqual(
+            set(payload["domains"]),
+            {"软件工程", "AI", "Quant", "投资理财", "知识管理", "健康医学", "两性情感"},
+        )
+        self.assertEqual(payload["since"], "2026-01-01")
+        self.assertEqual(payload["until"], "2026-04-01")
 
     def test_skill_frontmatter_is_discoverable(self):
         frontmatter = self.skill.split("---", 2)[1]

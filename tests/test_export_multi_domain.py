@@ -166,11 +166,14 @@ class MultiDomainJobTestMixin:
         from scripts.export_multi_domain import normalize_job
 
         with workspace_temp_dir() as vault:
-            job = normalize_job(keyword_union_payload(), vault)
+            payload = keyword_union_payload()
+            payload["since"] = "2026-01-01"
+            payload["until"] = "2026-04-01"
+            job = normalize_job(payload, vault)
 
         self.assertEqual(job.selection_mode, "keyword_union")
-        self.assertEqual(job.since.isoformat(), "2026-04-01")
-        self.assertEqual(job.until.isoformat(), "2026-08-01")
+        self.assertEqual(job.since.isoformat(), "2026-01-01")
+        self.assertEqual(job.until.isoformat(), "2026-04-01")
         self.assertEqual(
             job.aliases["HugginFace"],
             ("HuggingFace", "Hugging Face"),
