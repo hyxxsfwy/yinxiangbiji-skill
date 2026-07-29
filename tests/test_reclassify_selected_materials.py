@@ -1,9 +1,12 @@
 import json
+import re
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+from urllib.parse import unquote
 from unittest.mock import patch
+import zipfile
 
 from scripts.reclassify_selected_materials import (
     _is_within,
@@ -17,10 +20,21 @@ from scripts.reclassify_selected_materials import (
     validate_links,
     verify_review_results,
 )
-from tests.support import workspace_temp_dir
+from tests.support import create_directory_link_or_skip, workspace_temp_dir
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+EXPECTED_DOMAINS = (
+    "AI",
+    "Quant",
+    "软件工程",
+    "投资理财",
+    "知识管理",
+    "健康医学",
+    "中医",
+    "两性情感",
+    "个人成长",
+)
 
 
 class ClassificationTests(unittest.TestCase):
@@ -231,6 +245,73 @@ class ReviewDecisionTests(unittest.TestCase):
                         load_review_decisions(
                             self._write_decisions(root, payload)
                         )
+
+    def test_decisions_require_exact_schema_and_canonical_document_paths(self):
+        invalid_payloads = (
+            {
+                "move": {"AI/2026年01月/文章.md": "软件工程"},
+                "trash": [],
+                "links": {},
+            },
+            {"moves": {}, "trash": []},
+            {
+                "moves": {"AI/文章.md": "软件工程"},
+                "trash": [],
+                "links": {},
+            },
+            {
+                "moves": {},
+                "trash": ["未知领域/2026年01月/文章.md"],
+                "links": {},
+            },
+            {
+                "moves": {},
+                "trash": ["AI/2026-01/文章.md"],
+                "links": {},
+            },
+            {
+                "moves": {},
+                "trash": ["AI/2026年13月/文章.md"],
+                "links": {},
+            },
+            {
+                "moves": {},
+                "trash": [r"AI\2026年01月\文章.md"],
+                "links": {},
+            },
+            {
+                "moves": {},
+                "trash": ["AI/2026年01月/目录索引.md"],
+                "links": {},
+            },
+        )
+        with workspace_temp_dir() as root:
+            for payload in invalid_payloads:
+                with self.subTest(payload=payload), self.assertRaises(ValueError):
+                    load_review_decisions(self._write_decisions(root, payload))
+
+    def test_decisions_reject_duplicate_trash_and_duplicate_json_keys(self):
+        with workspace_temp_dir() as root:
+            duplicate_trash = {
+                "moves": {},
+                "trash": [
+                    "AI/2026年01月/文章.md",
+                    "AI/2026年01月/文章.md",
+                ],
+                "links": {},
+            }
+            with self.assertRaises(ValueError):
+                load_review_decisions(
+                    self._write_decisions(root, duplicate_trash)
+                )
+
+            duplicate_key = root / "duplicate-key.json"
+            duplicate_key.write_text(
+                '{"moves": {}, "moves": {}, "trash": [], "links": {}}\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                load_review_decisions(duplicate_key)
 
 
 class ReviewExecutionTests(unittest.TestCase):
@@ -722,6 +803,363 @@ class ReviewExecutionTests(unittest.TestCase):
                 (selected / "软件工程/2026年01月/同名资料.md").exists()
             )
 
+    def test_selected_root_directory_link_escape_is_rejected_before_delete(self):
+        with workspace_temp_dir() as root:
+            vault = root / "vault"
+            outside = root / "outside-selected"
+            vault.mkdir()
+            outside.mkdir()
+            (vault / ".obsidian").mkdir()
+            source_relative = Path("AI/2026年01月/外部资料.md")
+            outside_source = outside / source_relative
+            self._write_note(
+                outside_source,
+                "AI",
+                "外部资料",
+                "不得通过目录链接读取或删除。",
+            )
+            create_directory_link_or_skip(
+                self,
+                vault / "30_精选资料",
+                outside,
+            )
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={},
+                    trash=(source_relative,),
+                    links={},
+                )
+
+            self.assertTrue(outside_source.is_file())
+            self.assertFalse(
+                (
+                    vault
+                    / "99_废纸篓"
+                    / "30_精选资料"
+                    / source_relative
+                ).exists()
+            )
+
+    def test_trash_root_directory_link_escape_is_rejected_before_write(self):
+        with workspace_temp_dir() as root:
+            vault = root / "vault"
+            outside = root / "outside-trash"
+            vault.mkdir()
+            outside.mkdir()
+            (vault / ".obsidian").mkdir()
+            source_relative = Path("AI/2026年01月/待废弃.md")
+            source = vault / "30_精选资料" / source_relative
+            self._write_note(source, "AI", "待废弃", "仍须保持在 Vault 内。")
+            trash_parent = vault / "99_废纸篓"
+            trash_parent.mkdir()
+            create_directory_link_or_skip(
+                self,
+                trash_parent / "30_精选资料",
+                outside,
+            )
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={},
+                    trash=(source_relative,),
+                    links={},
+                )
+
+            self.assertTrue(source.is_file())
+            self.assertFalse((outside / source_relative).exists())
+
+    def test_target_attachment_link_escape_is_rejected_before_snapshot(self):
+        with workspace_temp_dir() as root:
+            vault = root / "vault"
+            outside = root / "outside-assets"
+            vault.mkdir()
+            outside.mkdir()
+            (vault / ".obsidian").mkdir()
+            source_relative = Path("AI/2026年01月/附件资料.md")
+            source = vault / "30_精选资料" / source_relative
+            self._write_note(
+                source,
+                "AI",
+                "附件资料",
+                "正文\n\n![](../_attachments/picture.png)",
+            )
+            source_asset = vault / "30_精选资料/AI/_attachments/picture.png"
+            source_asset.parent.mkdir(parents=True)
+            source_asset.write_bytes(b"managed-picture")
+            target_domain = vault / "30_精选资料/软件工程"
+            target_domain.mkdir(parents=True)
+            create_directory_link_or_skip(
+                self,
+                target_domain / "_attachments",
+                outside,
+            )
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={source_relative: "软件工程"},
+                    trash=(),
+                    links={},
+                )
+
+            self.assertTrue(source.is_file())
+            self.assertEqual(tuple(outside.iterdir()), ())
+            self.assertFalse(
+                (vault / ".state/yinxiang-notes/snapshots").exists()
+            )
+
+    def test_move_rejects_external_absolute_encoded_escape_and_missing_assets(
+        self,
+    ):
+        with workspace_temp_dir() as root:
+            outside = root / "outside-secret.bin"
+            outside.write_bytes(b"outside-secret")
+            raw_targets = (
+                "../../../../outside-secret.bin",
+                "../_attachments/%2e%2e/%2e%2e/%2e%2e/"
+                "outside-secret.bin",
+                outside.resolve().as_posix(),
+                "../_attachments/missing.bin",
+            )
+            for raw_target in raw_targets:
+                with self.subTest(raw_target=raw_target):
+                    vault = root / f"vault-{raw_targets.index(raw_target)}"
+                    vault.mkdir()
+                    (vault / ".obsidian").mkdir()
+                    source_relative = Path("AI/2026年01月/附件边界.md")
+                    source = vault / "30_精选资料" / source_relative
+                    self._write_note(
+                        source,
+                        "AI",
+                        "附件边界",
+                        f"正文\n\n![]({raw_target})",
+                    )
+
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        execute_review(
+                            vault,
+                            moves={source_relative: "软件工程"},
+                            trash=(),
+                            links={},
+                        )
+
+                    self.assertTrue(source.is_file())
+                    self.assertFalse(
+                        (vault / ".state/yinxiang-notes/snapshots").exists()
+                    )
+
+    def test_encoded_asset_collision_rewrites_to_correct_hashed_content(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            source_relative = Path("Quant/2026年01月/编码附件.md")
+            source = vault / "30_精选资料" / source_relative
+            self._write_note(
+                source,
+                "Quant",
+                "编码附件",
+                "正文\n\n![](../_attachments/Expression%2067%402x.png)",
+            )
+            source_asset = (
+                vault
+                / "30_精选资料"
+                / "Quant"
+                / "_attachments"
+                / "Expression 67@2x.png"
+            )
+            source_asset.parent.mkdir(parents=True)
+            source_asset.write_bytes(b"correct-content")
+            occupied = (
+                vault
+                / "30_精选资料"
+                / "软件工程"
+                / "_attachments"
+                / "Expression 67@2x.png"
+            )
+            occupied.parent.mkdir(parents=True)
+            occupied.write_bytes(b"wrong-content")
+
+            execute_review(
+                vault,
+                moves={source_relative: "软件工程"},
+                trash=(),
+                links={},
+            )
+
+            moved = vault / "30_精选资料/软件工程/2026年01月/编码附件.md"
+            rendered = moved.read_text(encoding="utf-8")
+            raw_target = next(
+                target
+                for target in re.findall(r"\]\(([^)]+)\)", rendered)
+                if "_attachments" in target
+            )
+            referenced = (moved.parent / unquote(raw_target)).resolve()
+            self.assertNotEqual(referenced, occupied)
+            self.assertRegex(referenced.name, r"_[0-9a-f]{12}\.png$")
+            self.assertEqual(referenced.read_bytes(), b"correct-content")
+            report = verify_review_results(
+                vault,
+                {source_relative: "软件工程"},
+                (),
+                {},
+            )
+            self.assertTrue(report["ok"], report["issues"])
+
+    def test_all_frontmatter_is_rendered_before_snapshot_or_business_write(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            first = Path("AI/2026年01月/先处理.md")
+            second = Path("AI/2026年01月/后失败.md")
+            self._write_note(selected / first, "AI", "先处理", "有效正文")
+            invalid = selected / second
+            invalid.parent.mkdir(parents=True, exist_ok=True)
+            invalid.write_text("# 后失败\n\n没有 frontmatter。\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={first: "软件工程", second: "投资理财"},
+                    trash=(),
+                    links={},
+                )
+
+            self.assertTrue((selected / first).is_file())
+            self.assertTrue((selected / second).is_file())
+            self.assertFalse((selected / "软件工程/2026年01月/先处理.md").exists())
+            self.assertFalse(
+                (vault / ".state/yinxiang-notes/snapshots").exists()
+            )
+
+    def test_body_domain_line_cannot_replace_missing_frontmatter(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            relative = Path("AI/2026年01月/正文伪字段.md")
+            source = vault / "30_精选资料" / relative
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "# 正文伪字段\n\n正文。\ndomain: AI\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={relative: "软件工程"},
+                    trash=(),
+                    links={},
+                )
+
+            self.assertTrue(source.is_file())
+            self.assertFalse(
+                (vault / ".state/yinxiang-notes/snapshots").exists()
+            )
+
+    def test_index_inputs_are_validated_before_snapshot_or_move(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            moved = Path("AI/2026年01月/待移动.md")
+            self._write_note(selected / moved, "AI", "待移动", "有效正文")
+            invalid = selected / "Quant/2026年01月/缺少元数据.md"
+            invalid.parent.mkdir(parents=True)
+            invalid.write_text(
+                "---\ntype: 资料\ndomain: Quant\n---\n\n# 缺少元数据\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={moved: "软件工程"},
+                    trash=(),
+                    links={},
+                )
+
+            self.assertTrue((selected / moved).is_file())
+            self.assertFalse((selected / "软件工程/2026年01月/待移动.md").exists())
+            self.assertFalse(
+                (vault / ".state/yinxiang-notes/snapshots").exists()
+            )
+
+    def test_execute_review_defensively_rejects_duplicate_trash_before_write(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            relative = Path("AI/2026年01月/重复废弃.md")
+            source = vault / "30_精选资料" / relative
+            self._write_note(source, "AI", "重复废弃", "必须原子拒绝。")
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={},
+                    trash=(relative, relative),
+                    links={},
+                )
+
+            self.assertTrue(source.is_file())
+            self.assertFalse(
+                (vault / "99_废纸篓/30_精选资料" / relative).exists()
+            )
+            self.assertFalse(
+                (vault / ".state/yinxiang-notes/snapshots").exists()
+            )
+
+    def test_execute_review_rejects_duplicate_normalized_move_paths(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            relative = Path("AI/2026年01月/重复移动.md")
+            source = vault / "30_精选资料" / relative
+            self._write_note(source, "AI", "重复移动", "必须原子拒绝。")
+
+            with self.assertRaises(ValueError):
+                execute_review(
+                    vault,
+                    moves={
+                        relative: "软件工程",
+                        relative.as_posix(): "投资理财",
+                    },
+                    trash=(),
+                    links={},
+                )
+
+            self.assertTrue(source.is_file())
+            self.assertFalse(
+                (vault / ".state/yinxiang-notes/snapshots").exists()
+            )
+
+    def test_snapshot_excludes_unchanged_assets_and_apply_preserves_sources(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            relative = Path("AI/2026年01月/来源附件.md")
+            source = vault / "30_精选资料" / relative
+            self._write_note(
+                source,
+                "AI",
+                "来源附件",
+                "正文\n\n![](../_attachments/source.png)",
+            )
+            asset = vault / "30_精选资料/AI/_attachments/source.png"
+            asset.parent.mkdir(parents=True)
+            asset.write_bytes(b"source-stays")
+
+            archive, _ = execute_review(
+                vault,
+                moves={relative: "软件工程"},
+                trash=(),
+                links={},
+            )
+
+            with zipfile.ZipFile(archive) as zipped:
+                names = set(zipped.namelist())
+            self.assertNotIn(
+                "30_精选资料/AI/_attachments/source.png",
+                names,
+            )
+            self.assertEqual(asset.read_bytes(), b"source-stays")
+
 
 class ReviewVerificationTests(unittest.TestCase):
     def _write_note(self, path, domain, title, body):
@@ -746,6 +1184,23 @@ class ReviewVerificationTests(unittest.TestCase):
                 )
             ),
             encoding="utf-8",
+        )
+
+    def _managed_links(self, targets):
+        return "\n".join(
+            (
+                "正文",
+                "",
+                "## 相关笔记",
+                "",
+                "<!-- llmwiki:auto-links:start -->",
+                *(
+                    f"- [[30_精选资料/{target.with_suffix('').as_posix()}|"
+                    f"{target.stem}]]"
+                    for target in targets
+                ),
+                "<!-- llmwiki:auto-links:end -->",
+            )
         )
 
     def test_verify_detects_deleted_asset_and_tampered_snapshot_manifest(self):
@@ -819,6 +1274,222 @@ class ReviewVerificationTests(unittest.TestCase):
                 manifest.as_posix(),
                 "\n".join(tampered_snapshot_report["issues"]),
             )
+
+    def test_verify_compares_exact_decision_links_and_reports_each_invalid_shape(
+        self,
+    ):
+        first = Path("AI/2026年01月/一.md")
+        second = Path("AI/2026年01月/二.md")
+        third = Path("AI/2026年01月/三.md")
+        fourth = Path("AI/2026年01月/四.md")
+        fifth = Path("AI/2026年01月/五.md")
+        decisions = {first: (second,), second: (first,)}
+
+        def missing(selected):
+            self._write_note(selected / first, "AI", "一", "正文")
+            self._write_note(selected / second, "AI", "二", "正文")
+
+        def extra(selected):
+            self._write_note(
+                selected / third,
+                "AI",
+                "三",
+                self._managed_links((fourth,)),
+            )
+            self._write_note(
+                selected / fourth,
+                "AI",
+                "四",
+                self._managed_links((third,)),
+            )
+
+        def duplicate(selected):
+            self._write_note(
+                selected / first,
+                "AI",
+                "一",
+                self._managed_links((second, second)),
+            )
+
+        def self_link(selected):
+            self._write_note(
+                selected / first,
+                "AI",
+                "一",
+                self._managed_links((first,)),
+            )
+
+        def too_many(selected):
+            self._write_note(
+                selected / first,
+                "AI",
+                "一",
+                self._managed_links((second, third, fourth, fifth)),
+            )
+
+        def asymmetric(selected):
+            self._write_note(selected / second, "AI", "二", "正文")
+
+        cases = (
+            ("缺失", missing, "缺少"),
+            ("额外", extra, "额外"),
+            ("重复", duplicate, "重复"),
+            ("自链", self_link, "自链接"),
+            ("超过三条", too_many, "超过 3"),
+            ("非对称", asymmetric, "不对称"),
+        )
+        for name, mutate, marker in cases:
+            with self.subTest(case=name), workspace_temp_dir() as vault:
+                (vault / ".obsidian").mkdir()
+                selected = vault / "30_精选资料"
+                for relative in (first, second, third, fourth, fifth):
+                    self._write_note(
+                        selected / relative,
+                        "AI",
+                        relative.stem,
+                        "正文",
+                    )
+                execute_review(
+                    vault,
+                    moves={},
+                    trash=(),
+                    links=decisions,
+                )
+
+                mutate(selected)
+                report = verify_review_results(
+                    vault,
+                    moves={},
+                    trash=(),
+                    links=decisions,
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertIn(marker, "\n".join(report["issues"]))
+                if name == "缺失":
+                    self.assertEqual(report["managed_link_notes"], 0)
+
+    def test_verify_uses_same_nine_domain_type_and_month_index_contract(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            self._write_note(
+                selected / "AI/2026年01月/资料.md",
+                "AI",
+                "资料",
+                "应进入索引。",
+            )
+            knowledge = selected / "AI/2026年01月/知识.md"
+            self._write_note(knowledge, "AI", "知识", "不应进入资料索引。")
+            knowledge.write_text(
+                knowledge.read_text(encoding="utf-8").replace(
+                    'type: "资料"',
+                    'type: "知识"',
+                ),
+                encoding="utf-8",
+            )
+            execute_review(vault, moves={}, trash=(), links={})
+
+            report = verify_review_results(vault, {}, (), {})
+
+            self.assertTrue(report["ok"], report["issues"])
+            self.assertEqual(set(report["index_counts"]), set(EXPECTED_DOMAINS))
+            self.assertEqual(report["index_counts"]["AI"], 1)
+            for domain in EXPECTED_DOMAINS:
+                self.assertTrue(
+                    (selected / domain / "目录索引.md").is_file(),
+                    domain,
+                )
+
+    def test_verify_rejects_missing_indexes_for_any_managed_domain(self):
+        from scripts.knowledge_base import write_knowledge_base_index
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            ai = vault / "30_精选资料/AI"
+            ai.mkdir(parents=True)
+            write_knowledge_base_index(ai, "AI")
+
+            report = verify_review_results(vault, {}, (), {})
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                "30_精选资料/Quant/目录索引.md",
+                "\n".join(report["issues"]),
+            )
+
+    def test_verify_reports_invalid_metadata_using_index_generator_contract(self):
+        from scripts.knowledge_base import write_knowledge_base_index
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            for domain in EXPECTED_DOMAINS:
+                domain_root = selected / domain
+                domain_root.mkdir(parents=True)
+                write_knowledge_base_index(domain_root, domain)
+            invalid = selected / "AI/2026年01月/缺少元数据.md"
+            invalid.parent.mkdir(parents=True)
+            invalid.write_text(
+                "---\ntype: 资料\ndomain: AI\n---\n\n# 缺少元数据\n",
+                encoding="utf-8",
+            )
+
+            report = verify_review_results(vault, {}, (), {})
+
+            self.assertFalse(report["ok"])
+            self.assertIn("缺少 created", "\n".join(report["issues"]))
+
+    def test_verify_rejects_asset_reference_outside_managed_attachment_root(self):
+        with workspace_temp_dir() as root:
+            vault = root / "vault"
+            vault.mkdir()
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            moved = Path("AI/2026年01月/越界验证.md")
+            self._write_note(selected / moved, "AI", "越界验证", "正文")
+            execute_review(
+                vault,
+                moves={moved: "软件工程"},
+                trash=(),
+                links={},
+            )
+            outside = root / "outside.bin"
+            outside.write_bytes(b"outside")
+            destination = selected / "软件工程/2026年01月/越界验证.md"
+            destination.write_text(
+                destination.read_text(encoding="utf-8")
+                + f"\n![]({outside.resolve().as_posix()})\n",
+                encoding="utf-8",
+            )
+
+            report = verify_review_results(
+                vault,
+                {moved: "软件工程"},
+                (),
+                {},
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertIn("附件超出受管目录", "\n".join(report["issues"]))
+
+    def test_audit_and_verify_reject_selected_root_directory_link_escape(self):
+        with workspace_temp_dir() as root:
+            vault = root / "vault"
+            outside = root / "outside-selected"
+            vault.mkdir()
+            outside.mkdir()
+            (vault / ".obsidian").mkdir()
+            create_directory_link_or_skip(
+                self,
+                vault / "30_精选资料",
+                outside,
+            )
+
+            with self.assertRaises(ValueError):
+                audit_vault(vault)
+            with self.assertRaises(ValueError):
+                verify_review_results(vault, {}, (), {})
 
 
     def test_verify_rejects_moved_note_with_wrong_frontmatter_domain(self):
@@ -951,7 +1622,10 @@ class ReviewVerificationTests(unittest.TestCase):
                     )
                     destination.write_text(
                         "---\n"
+                        "type: 资料\n"
                         f"{domain_line}\n"
+                        'created: "2026-01-02 03:04:05"\n'
+                        'uid: "normal-scalar-domain"\n'
                         "---\n\n"
                         "# 普通标量领域\n",
                         encoding="utf-8",
@@ -999,6 +1673,45 @@ class CommandLineTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 for phase in ("audit", "apply", "verify"):
                     self.assertIn(phase, result.stdout)
+
+    def test_help_exposes_defaults_schema_writes_and_confirmation_boundary(self):
+        script = str(REPO_ROOT / "scripts" / "reclassify_selected_materials.py")
+        root_help = subprocess.run(
+            [sys.executable, script, "--help"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        apply_help = subprocess.run(
+            [sys.executable, script, "apply", "--help"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        verify_help = subprocess.run(
+            [sys.executable, script, "verify", "--help"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(root_help.returncode, 0, root_help.stderr)
+        self.assertIn("OBSIDIAN_VAULT_PATH", root_help.stdout)
+        self.assertIn(".state/yinxiang-notes/reports", root_help.stdout)
+        self.assertIn("moves、trash、links", root_help.stdout)
+        self.assertEqual(apply_help.returncode, 0, apply_help.stderr)
+        self.assertIn("RECLASSIFY_SELECTED_MATERIALS", apply_help.stdout)
+        self.assertIn("修改业务资料", apply_help.stdout)
+        self.assertIn("九个领域索引", apply_help.stdout)
+        self.assertEqual(verify_help.returncode, 0, verify_help.stderr)
+        self.assertIn("业务资料只读", verify_help.stdout)
+        self.assertIn("写验证报告", verify_help.stdout)
 
     def _seed_vault(self, vault):
         (vault / ".obsidian").mkdir()
@@ -1095,6 +1808,224 @@ class CommandLineTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             loader.assert_called_once_with(None)
+
+    def test_active_runtime_lock_blocks_apply_without_any_write(self):
+        from scripts.vault_state import VaultStatePaths, runtime_write_lock
+
+        with workspace_temp_dir() as vault:
+            self._seed_vault(vault)
+            decisions = self._write_decisions(
+                vault,
+                {
+                    "moves": {
+                        "AI/2026年01月/原始资料.md": "软件工程",
+                    },
+                    "trash": [],
+                    "links": {},
+                },
+            )
+            output = vault / "blocked-report.json"
+            paths = VaultStatePaths.for_vault(vault)
+            source = vault / "30_精选资料/AI/2026年01月/原始资料.md"
+            destination = (
+                vault / "30_精选资料/软件工程/2026年01月/原始资料.md"
+            )
+
+            with runtime_write_lock(paths, "active-task"):
+                result = main(
+                    [
+                        "apply",
+                        "--vault",
+                        str(vault),
+                        "--decisions",
+                        str(decisions),
+                        "--confirm",
+                        "RECLASSIFY_SELECTED_MATERIALS",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+                self.assertEqual(result, 1)
+                self.assertTrue(source.is_file())
+                self.assertFalse(destination.exists())
+                self.assertFalse(output.exists())
+
+    def test_apply_holds_runtime_lock_until_report_is_written(self):
+        from scripts.vault_state import VaultStatePaths
+
+        with workspace_temp_dir() as vault:
+            self._seed_vault(vault)
+            decisions = self._write_decisions(
+                vault,
+                {"moves": {}, "trash": [], "links": {}},
+            )
+            paths = VaultStatePaths.for_vault(vault)
+            observed = []
+
+            def observe_report(path, report):
+                del path, report
+                observed.append(paths.lock.is_file())
+
+            with patch(
+                "scripts.reclassify_selected_materials._write_report",
+                side_effect=observe_report,
+            ):
+                result = main(
+                    [
+                        "apply",
+                        "--vault",
+                        str(vault),
+                        "--decisions",
+                        str(decisions),
+                        "--confirm",
+                        "RECLASSIFY_SELECTED_MATERIALS",
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(observed, [True])
+            self.assertFalse(paths.lock.exists())
+
+    def test_apply_preflight_failure_is_stable_reported_and_atomic(self):
+        with workspace_temp_dir() as vault:
+            self._seed_vault(vault)
+            invalid = vault / "30_精选资料/AI/2026年01月/无前置字段.md"
+            invalid.write_text("# 无前置字段\n\n正文。\n", encoding="utf-8")
+            decisions = self._write_decisions(
+                vault,
+                {
+                    "moves": {
+                        "AI/2026年01月/原始资料.md": "软件工程",
+                        "AI/2026年01月/无前置字段.md": "投资理财",
+                    },
+                    "trash": [],
+                    "links": {},
+                },
+            )
+            output = vault / "failed-apply.json"
+
+            result = main(
+                [
+                    "apply",
+                    "--vault",
+                    str(vault),
+                    "--decisions",
+                    str(decisions),
+                    "--confirm",
+                    "RECLASSIFY_SELECTED_MATERIALS",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(result, 1)
+            self.assertTrue(
+                (vault / "30_精选资料/AI/2026年01月/原始资料.md").is_file()
+            )
+            self.assertTrue(invalid.is_file())
+            self.assertFalse(
+                (
+                    vault
+                    / "30_精选资料"
+                    / "软件工程"
+                    / "2026年01月"
+                    / "原始资料.md"
+                ).exists()
+            )
+            self.assertFalse(
+                (vault / ".state/yinxiang-notes/snapshots").exists()
+            )
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(report["ok"])
+            self.assertEqual(report["phase"], "apply")
+            self.assertEqual(report["completed"], [])
+            self.assertEqual(report["snapshot"], None)
+
+    def test_apply_verification_exception_report_keeps_created_snapshot(self):
+        with workspace_temp_dir() as vault:
+            self._seed_vault(vault)
+            decisions = self._write_decisions(
+                vault,
+                {
+                    "moves": {
+                        "AI/2026年01月/原始资料.md": "软件工程",
+                    },
+                    "trash": [],
+                    "links": {},
+                },
+            )
+            output = vault / "failed-verification.json"
+
+            with patch(
+                "scripts.reclassify_selected_materials.verify_review_results",
+                side_effect=ValueError("验证器异常"),
+            ):
+                result = main(
+                    [
+                        "apply",
+                        "--vault",
+                        str(vault),
+                        "--decisions",
+                        str(decisions),
+                        "--confirm",
+                        "RECLASSIFY_SELECTED_MATERIALS",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(result, 1)
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertIsNotNone(report["snapshot"])
+            self.assertTrue(Path(report["snapshot"]["archive"]).is_file())
+            self.assertTrue(Path(report["snapshot"]["manifest"]).is_file())
+
+    def test_apply_execution_failure_rolls_back_and_reports_snapshot(self):
+        with workspace_temp_dir() as vault:
+            self._seed_vault(vault)
+            decisions = self._write_decisions(
+                vault,
+                {
+                    "moves": {
+                        "AI/2026年01月/原始资料.md": "软件工程",
+                    },
+                    "trash": [],
+                    "links": {},
+                },
+            )
+            output = vault / "failed-execution.json"
+            source = vault / "30_精选资料/AI/2026年01月/原始资料.md"
+            destination = (
+                vault / "30_精选资料/软件工程/2026年01月/原始资料.md"
+            )
+
+            with patch(
+                "scripts.reclassify_selected_materials.write_knowledge_base_index",
+                side_effect=OSError("模拟索引写入中断"),
+            ):
+                result = main(
+                    [
+                        "apply",
+                        "--vault",
+                        str(vault),
+                        "--decisions",
+                        str(decisions),
+                        "--confirm",
+                        "RECLASSIFY_SELECTED_MATERIALS",
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(result, 1)
+            self.assertTrue(source.is_file())
+            self.assertFalse(destination.exists())
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(report["ok"])
+            self.assertEqual(report["completed"], [])
+            self.assertIsNotNone(report["snapshot"])
+            self.assertIn("已回滚", "\n".join(report["issues"]))
 
 
 if __name__ == "__main__":

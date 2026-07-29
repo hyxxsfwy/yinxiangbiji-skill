@@ -13,6 +13,7 @@ except ImportError:
 
 
 INDEX_FILENAME = "目录索引.md"
+MONTH_FOLDER_PATTERN = re.compile(r"^\d{4}年(?:0[1-9]|1[0-2])月$")
 
 
 def month_folder_name(created: datetime) -> str:
@@ -82,10 +83,9 @@ def _parse_datetime(value, field_name, markdown_path):
         ) from exc
 
 
-def extract_note_metadata(markdown_path):
-    """读取月度归档和索引所需的 Markdown 元数据。"""
+def extract_note_metadata_from_text(markdown_path, markdown_text):
+    """从预生成 Markdown 读取月度归档和索引所需元数据。"""
     markdown_path = Path(markdown_path)
-    markdown_text = markdown_path.read_text(encoding="utf-8")
     fields, body_lines = _split_frontmatter(markdown_text)
     if not fields.get("created"):
         raise ValueError(f"{markdown_path} 缺少 created")
@@ -119,6 +119,32 @@ def extract_note_metadata(markdown_path):
         updated=updated,
         guid=identity,
     )
+
+
+def extract_note_metadata(markdown_path):
+    """读取月度归档和索引所需的 Markdown 元数据。"""
+    markdown_path = Path(markdown_path)
+    return extract_note_metadata_from_text(
+        markdown_path,
+        markdown_path.read_text(encoding="utf-8"),
+    )
+
+
+def iter_indexable_note_paths(root, domain):
+    """枚举与索引生成器契约一致的年月资料文档。"""
+    root = Path(root)
+    for month_dir in root.iterdir():
+        if (
+            not month_dir.is_dir()
+            or not MONTH_FOLDER_PATTERN.fullmatch(month_dir.name)
+        ):
+            continue
+        for path in month_dir.glob("*.md"):
+            if path.name == INDEX_FILENAME:
+                continue
+            fields, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+            if fields.get("type") == "资料" and fields.get("domain") == domain:
+                yield path
 
 
 def _plain_markdown_text(value):
@@ -264,20 +290,10 @@ def build_note_summary(markdown_text, title):
 def write_knowledge_base_index(root, domain="AI"):
     """只收录契约匹配的本领域资料，并完整重建目录索引。"""
     root = Path(root)
-    notes = []
-    month_pattern = re.compile(r"^\d{4}年\d{2}月$")
-    for month_dir in root.iterdir():
-        if not month_dir.is_dir() or not month_pattern.fullmatch(
-            month_dir.name
-        ):
-            continue
-        for path in month_dir.glob("*.md"):
-            if path.name == INDEX_FILENAME:
-                continue
-            fields, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
-            if fields.get("type") != "资料" or fields.get("domain") != domain:
-                continue
-            notes.append(extract_note_metadata(path))
+    notes = [
+        extract_note_metadata(path)
+        for path in iter_indexable_note_paths(root, domain)
+    ]
 
     grouped = {}
     for note in notes:

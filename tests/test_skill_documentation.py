@@ -41,6 +41,34 @@ class SkillDocumentationTests(unittest.TestCase):
         self.knowledge_reference = (
             REPO_ROOT / "references" / "obsidian-knowledge-management.md"
         ).read_text(encoding="utf-8")
+        self.design = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "specs"
+            / "2026-07-29-yinxiang-skill-consolidation-design.md"
+        ).read_text(encoding="utf-8")
+        self.plan = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "plans"
+            / "2026-07-29-yinxiang-skill-consolidation.md"
+        ).read_text(encoding="utf-8")
+        self.baseline_evidence = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "skill-tests"
+            / "2026-07-29-yinxiang-notes-baseline.md"
+        ).read_text(encoding="utf-8")
+        self.verification_evidence = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "skill-tests"
+            / "2026-07-29-yinxiang-notes-verification.md"
+        ).read_text(encoding="utf-8")
         self.documentation = "\n".join(
             (
                 self.skill,
@@ -172,6 +200,95 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for command in ("audit", "apply", "verify"):
             self.assertIn(command, result.stdout)
+
+    def test_verify_route_discloses_report_write_without_business_mutation(self):
+        verify_route = next(
+            line
+            for line in self.skill.splitlines()
+            if "| 验证重分类结果 |" in line
+        )
+        self.assertIn("业务资料只读", verify_route)
+        self.assertIn("写验证报告", verify_route)
+        self.assertIn("业务资料只读", self.governance_reference)
+        self.assertIn("写验证报告", self.governance_reference)
+
+    def test_reclassification_contract_uses_fixed_nine_domains_everywhere(self):
+        domains = (
+            "AI",
+            "Quant",
+            "软件工程",
+            "投资理财",
+            "知识管理",
+            "健康医学",
+            "中医",
+            "两性情感",
+            "个人成长",
+        )
+        for document in (
+            self.design,
+            self.plan,
+            self.governance_reference,
+            self.knowledge_reference,
+        ):
+            with self.subTest(document=document[:40]):
+                self.assertIn("固定九领域", document)
+                for domain in domains:
+                    self.assertIn(domain, document)
+        self.assertIn("type: 资料", self.governance_reference)
+        self.assertIn("YYYY年MM月", self.governance_reference)
+
+    def test_snapshot_and_index_docs_match_the_full_apply_write_scope(self):
+        contract = self.governance_reference
+        self.assertIn("不包含附件副本", contract)
+        self.assertIn("来源附件仍保留", contract)
+        self.assertIn("全部九个领域", contract)
+        self.assertIn("全量重建", contract)
+        self.assertIn("全部既存索引", contract)
+        self.assertNotIn("重建受影响领域的 `目录索引.md`", contract)
+        self.assertIn("不包含附件副本", self.design)
+        self.assertIn("全部九个领域", self.design)
+
+    def test_pressure_evidence_labels_summaries_and_preserves_raw_metadata(self):
+        self.assertIn(
+            "人工摘要，不是可独立复现的原始压力证据",
+            self.verification_evidence,
+        )
+        for field in ("模型", "运行时间", "运行标识", "Skill SHA-256"):
+            self.assertRegex(
+                self.verification_evidence,
+                rf"(?m)^- {re.escape(field)}：.+$",
+            )
+        self.assertIn(
+            "运行标识：未记录",
+            self.verification_evidence,
+        )
+        skill_hash = re.search(
+            r"(?m)^- Skill SHA-256：`([0-9a-f]{64})`$",
+            self.verification_evidence,
+        )
+        self.assertIsNotNone(skill_hash)
+        self.assertEqual(
+            len(
+                re.findall(
+                    r"### 完整去敏 prompt\n\n```text\n.+?\n```",
+                    self.baseline_evidence,
+                    re.DOTALL,
+                )
+            ),
+            3,
+        )
+        self.assertEqual(
+            len(
+                re.findall(
+                    r"### 完整原始 response\n\n```text\n.+?\n```",
+                    self.baseline_evidence,
+                    re.DOTALL,
+                )
+            ),
+            3,
+        )
+        for field in ("模型：未记录", "运行时间：未记录", "运行标识：未记录"):
+            self.assertIn(field, self.baseline_evidence)
 
     def test_keyword_union_workflow_is_documented(self):
         for phrase in (

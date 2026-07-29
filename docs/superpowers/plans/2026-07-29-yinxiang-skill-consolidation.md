@@ -15,9 +15,12 @@
 - 真实 Vault 写入必须要求确认词 `RECLASSIFY_SELECTED_MATERIALS`。
 - 默认报告写入 `<vault>/.state/yinxiang-notes/reports/`。
 - `reviews/` 保持 Git 忽略；不得提交真实审阅清单或报告。
+- 精选资料固定九领域为 AI、Quant、软件工程、投资理财、知识管理、健康医学、中医、两性情感、个人成长。
 - 跨域移动更新 `domain`，保全 URL 编码附件并处理同名异内容冲突。
 - 受控链接严格双向、每篇最多三条，且不得指向待废弃或不存在文档。
 - 只有移动、废纸篓、附件、索引、受控链接和快照验证全部通过时才输出 `ok: true`。
+- 领域索引只收录 `30_精选资料/<domain>/YYYY年MM月/*.md` 中 `type: 资料` 且 `domain` 与当前领域匹配的文档；`apply` 全量重建全部九个领域索引。
+- 快照覆盖所有变更 Markdown 与全部既存索引，不包含附件副本；来源附件仍保留。
 - `curate_selected_materials.py` 保持向后兼容；其 `trash` 只表示不保留，不再表示所有错域资料。
 
 ---
@@ -180,7 +183,7 @@ Expected: FAIL，因为 `verify_review_results` 尚不存在。
 }
 ```
 
-索引链接目标先 `urllib.parse.unquote` 再与实际资料集合比较。快照存在时校验 ZIP 条目集合、大小和 SHA-256。
+索引链接目标先 `urllib.parse.unquote` 再与固定九领域中位于 `YYYY年MM月`、`type: 资料` 且 `domain` 匹配的实际资料集合比较。快照存在时校验 ZIP 条目集合、大小和 SHA-256。
 
 - [ ] **Step 7: 写 CLI 失败测试**
 
@@ -214,7 +217,7 @@ Expected: FAIL，因为 CLI 入口尚不存在。
 
 - [ ] **Step 9: 实现 CLI**
 
-`audit` 只读并输出审计报告；`apply` 校验确认词、执行并立即运行结果验证；`verify` 只读验证。默认输出文件名包含阶段和本地时间，父目录固定为 `<vault>/.state/yinxiang-notes/reports/`。所有报告使用 UTF-8、`ensure_ascii=False` 和结尾换行。
+`audit` 对业务资料只读并输出审计报告；`apply` 校验确认词、执行并立即运行结果验证；`verify` 对业务资料只读，但会写验证报告。默认输出文件名包含阶段和本地时间，父目录固定为 `<vault>/.state/yinxiang-notes/reports/`。所有报告使用 UTF-8、`ensure_ascii=False` 和结尾换行。
 
 - [ ] **Step 10: 运行聚焦测试**
 

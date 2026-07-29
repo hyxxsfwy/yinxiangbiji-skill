@@ -15,6 +15,8 @@ description: Use when a user needs 印象笔记中国版 note operations or loca
 - 精选资料逐篇决策、双向链接与审核：`references/selected-materials-governance.md`
 - Obsidian 目录、Properties、索引与 LLM Wiki：`references/obsidian-knowledge-management.md`
 
+精选资料固定受管九个领域：AI、Quant、软件工程、投资理财、知识管理、健康医学、中医、两性情感、个人成长。
+
 ## 凭据与路径边界
 
 ```powershell
@@ -44,7 +46,7 @@ Copy-Item .env.example .env
 | 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --verify` | 只读本地 |
 | 重扫并审计精选资料归类 | `references/selected-materials-governance.md` → `python scripts/reclassify_selected_materials.py audit` | 只读本地；写审计报告 |
 | 执行重分类决定 | `python scripts/reclassify_selected_materials.py apply --decisions "decisions.json" --confirm RECLASSIFY_SELECTED_MATERIALS` | 修改本地 Vault |
-| 验证重分类结果 | `python scripts/reclassify_selected_materials.py verify --decisions "decisions.json"` | 只读本地 |
+| 验证重分类结果 | `python scripts/reclassify_selected_materials.py verify --decisions "decisions.json"` | 业务资料只读；写验证报告 |
 | 应用旧逐篇清单 | `references/selected-materials-governance.md` 兼容小节 → `python scripts/curate_selected_materials.py --help` | 默认只读本地 |
 
 完整参数以 `python scripts/<脚本>.py --help` 和 `README.md` 为准。
