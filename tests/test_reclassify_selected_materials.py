@@ -864,6 +864,31 @@ class ReviewVerificationTests(unittest.TestCase):
             self.assertIn("伪字段资料.md", "\n".join(report["issues"]))
             self.assertIn("domain", "\n".join(report["issues"]))
 
+    def test_verify_rejects_domain_inside_frontmatter_block_scalar(self):
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            selected = vault / "30_精选资料"
+            moved = Path("AI/2026年01月/块标量伪字段.md")
+            self._write_note(selected / moved, "AI", "块标量伪字段", "待迁移正文")
+            moves = {moved: "软件工程"}
+
+            execute_review(vault, moves, trash=(), links={})
+            destination = selected / "软件工程/2026年01月/块标量伪字段.md"
+            destination.write_text(
+                "---\n"
+                "notes: |\n"
+                '  domain: "软件工程"\n'
+                "---\n\n"
+                "# 块标量伪字段\n",
+                encoding="utf-8",
+            )
+
+            report = verify_review_results(vault, moves, (), {})
+
+            self.assertFalse(report["ok"])
+            self.assertIn("块标量伪字段.md", "\n".join(report["issues"]))
+            self.assertIn("domain", "\n".join(report["issues"]))
+
     def test_containment_rejects_path_resolving_outside_root(self):
         with workspace_temp_dir() as root:
             selected = root / "30_精选资料"

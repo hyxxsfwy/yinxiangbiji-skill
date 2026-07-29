@@ -878,8 +878,10 @@ def _frontmatter_domain(note):
     except ValueError:
         return None
     for line in lines[1:closing]:
+        if line.startswith((" ", "\t")):
+            continue
         field, separator, value = line.partition(":")
-        if separator and field.strip() == "domain":
+        if separator and field == "domain":
             value = value.strip()
             if value.startswith('"'):
                 try:
