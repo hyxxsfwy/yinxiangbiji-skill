@@ -243,6 +243,7 @@ git commit -m "完善精选资料重分类命令与验收"
 - Create: `references/export-workflows.md`
 - Create: `references/selected-materials-governance.md`
 - Modify: `tests/test_skill_documentation.py`
+- Modify: `tests/test_curate_selected_materials.py`
 
 **Interfaces:**
 - Consumes: Task 2 CLI 契约和现有 `references/obsidian-knowledge-management.md`。
@@ -303,6 +304,9 @@ Expected: FAIL，现有入口超过 150 行、描述缺少本地治理触发词�
 - [ ] **Step 5: 调整旧文档测试**
 
 把固定日期、固定关键词和长流程字面量的断言从 `SKILL.md` 移到对应模板、README 或 reference。测试长期契约，不要求入口重复所有细节。
+
+删除 `tests/test_curate_selected_materials.py` 对仓库内
+`reviews/2026-07-27-selected-materials-review.json` 的直接读取；决策清单解析和双向链接语义继续使用测试临时目录中的显式 JSON 夹具验证，不恢复、不跟踪真实 `reviews/` 文件。
 
 - [ ] **Step 6: 运行文档测试**
 
