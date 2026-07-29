@@ -11,6 +11,6 @@ scripts/.sync_state.json
 note_enml_output.xml
 tests/.tmp-*
 .worktrees/
-reviews/
+reviews
 # Vault 内跨设备同步的运行状态、迁移清单和写锁
 .state/
