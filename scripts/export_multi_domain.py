@@ -752,13 +752,20 @@ def _keyword_catalog_path_is_current(job, entry, metadata):
     )
 
 
+def _metadata_freshness_key(metadata):
+    return archived_freshness_key(
+        datetime.fromtimestamp(int(metadata.updated) / 1000),
+        datetime.fromtimestamp(int(metadata.created) / 1000),
+        str(metadata.guid),
+    )
+
+
 def _historical_title_owner_is_fresher(
-    owners_by_domain,
-    domain,
+    owners_by_title,
     title,
     metadata,
 ):
-    owner = owners_by_domain.get(domain, {}).get(title.strip())
+    owner = owners_by_title.get(title.strip())
     if owner is None or owner.guid == str(metadata.guid):
         return False
     owner_key = archived_freshness_key(
@@ -766,12 +773,25 @@ def _historical_title_owner_is_fresher(
         owner.created,
         owner.guid,
     )
-    candidate_key = archived_freshness_key(
-        datetime.fromtimestamp(int(metadata.updated) / 1000),
-        datetime.fromtimestamp(int(metadata.created) / 1000),
-        str(metadata.guid),
+    return owner_key > _metadata_freshness_key(metadata)
+
+
+def _older_historical_title_paths(
+    notes_by_title,
+    title,
+    metadata,
+):
+    candidate_key = _metadata_freshness_key(metadata)
+    return tuple(
+        note.path
+        for note in notes_by_title.get(title.strip(), ())
+        if archived_freshness_key(
+            note.updated,
+            note.created,
+            note.guid,
+        )
+        < candidate_key
     )
-    return owner_key > candidate_key
 
 
 def _keyword_summary_and_hash(content):
@@ -818,12 +838,70 @@ def _keyword_entry_from_note(
     )
 
 
-def reconcile_keyword_outputs(job, catalog, selection_hash, task_id):
+def reconcile_keyword_outputs(
+    job,
+    catalog,
+    selection_hash,
+    task_id,
+    *,
+    older_title_paths=(),
+):
     """将当前关键词任务判定为非规范的旧副本移入可恢复隔离区。"""
     state_root = VaultStatePaths.for_vault(job.vault).root
     quarantine_root = state_root / "quarantine" / task_id
     manifest_path = quarantine_root / "manifest.json"
     records = []
+    affected_domains = set()
+
+    def quarantine_path(path, metadata, reason):
+        source = Path(path).resolve()
+        try:
+            relative_path = source.relative_to(job.vault)
+        except ValueError as exc:
+            raise ValueError(
+                f"隔离源文件逃逸出 Vault: {source}"
+            ) from exc
+        if (
+            len(relative_path.parts) < 3
+            or relative_path.parts[0] != "30_精选资料"
+        ):
+            raise ValueError(
+                f"隔离源文件不在领域目录内: {source}"
+            )
+        if not source.is_file():
+            return
+
+        relative = relative_path.as_posix()
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        destination = (
+            quarantine_root
+            / "files"
+            / relative_path
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            existing_digest = hashlib.sha256(
+                destination.read_bytes()
+            ).hexdigest()
+            if existing_digest != digest:
+                raise RuntimeError(
+                    f"隔离区文件冲突，未移动旧副本: {destination}"
+                )
+            source.unlink()
+        else:
+            _replace_path_with_retry(source, destination)
+        records.append(
+            {
+                "guid": metadata.guid,
+                "reason": reason,
+                "sha256": digest,
+                "source": relative,
+                "quarantine": destination.relative_to(
+                    job.vault
+                ).as_posix(),
+            }
+        )
+        affected_domains.add(relative_path.parts[1])
 
     for directory_domain in job.domains:
         root = job.target_for(directory_domain)
@@ -876,35 +954,20 @@ def reconcile_keyword_outputs(job, catalog, selection_hash, task_id):
             else:
                 continue
 
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            destination = (
-                quarantine_root
-                / "files"
-                / Path(*Path(relative).parts)
-            )
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                existing_digest = hashlib.sha256(
-                    destination.read_bytes()
-                ).hexdigest()
-                if existing_digest != digest:
-                    raise RuntimeError(
-                        f"隔离区文件冲突，未移动旧副本: {destination}"
-                    )
-                path.unlink()
-            else:
-                _replace_path_with_retry(path, destination)
-            records.append(
-                {
-                    "guid": metadata.guid,
-                    "reason": reason,
-                    "sha256": digest,
-                    "source": relative,
-                    "quarantine": destination.relative_to(
-                        job.vault
-                    ).as_posix(),
-                }
-            )
+            quarantine_path(path, metadata, reason)
+
+    for path in sorted(
+        {Path(item).resolve() for item in older_title_paths},
+        key=str,
+    ):
+        if not path.is_file():
+            continue
+        metadata = extract_note_metadata(path)
+        quarantine_path(
+            path,
+            metadata,
+            "older_cross_domain_title",
+        )
 
     previous_records = []
     if manifest_path.is_file():
@@ -935,6 +998,7 @@ def reconcile_keyword_outputs(job, catalog, selection_hash, task_id):
         "quarantined": len(records),
         "quarantined_total": len(combined),
         "manifest": str(manifest_path),
+        "affected_domains": sorted(affected_domains),
     }
 
 
@@ -1075,10 +1139,25 @@ def _run_keyword_union_job(
         )
         state_payload["snapshot"] = snapshot_result.to_dict()
         _atomic_json(state_file, state_payload)
+        historical_title_notes = {}
+        for domain in _known_vault_domains(job):
+            root = job.vault / "30_精选资料" / domain
+            for title, note in archived_title_owners(root).items():
+                historical_title_notes.setdefault(title, []).append(
+                    note
+                )
         historical_title_owners = {
-            domain: archived_title_owners(job.target_for(domain))
-            for domain in job.domains
+            title: max(
+                notes,
+                key=lambda note: archived_freshness_key(
+                    note.updated,
+                    note.created,
+                    note.guid,
+                ),
+            )
+            for title, notes in historical_title_notes.items()
         }
+        older_title_paths = set()
         for metadata in sorted(
             candidates.values(),
             key=_candidate_sort_key,
@@ -1120,7 +1199,6 @@ def _run_keyword_union_job(
                     cached.outcome == "accepted"
                     and _historical_title_owner_is_fresher(
                         historical_title_owners,
-                        cached.primary_domain,
                         metadata_title,
                         metadata,
                     )
@@ -1156,6 +1234,13 @@ def _run_keyword_union_job(
                         }
                     else:
                         selected_titles.add(metadata_title)
+                        older_title_paths.update(
+                            _older_historical_title_paths(
+                                historical_title_notes,
+                                metadata_title,
+                                metadata,
+                            )
+                        )
                         counts["accepted"] += 1
                         materialization["already_exported"] += 1
                         processed[guid] = {
@@ -1250,7 +1335,6 @@ def _run_keyword_union_job(
 
             if _historical_title_owner_is_fresher(
                 historical_title_owners,
-                entry.primary_domain,
                 title,
                 metadata,
             ):
@@ -1307,6 +1391,13 @@ def _run_keyword_union_job(
                 last_seen_at=now,
             )
             catalog.upsert_keyword(entry)
+            older_title_paths.update(
+                _older_historical_title_paths(
+                    historical_title_notes,
+                    title,
+                    metadata,
+                )
+            )
             counts["accepted"] += 1
             materialization["written"] += 1
             processed[guid] = {
@@ -1332,6 +1423,7 @@ def _run_keyword_union_job(
             catalog,
             selection_hash,
             _job_id(job),
+            older_title_paths=older_title_paths,
         )
         catalog_stats = catalog.keyword_stats(selection_hash)
         candidate_manifest = [
@@ -1349,8 +1441,16 @@ def _run_keyword_union_job(
             for guid, metadata in sorted(candidates.items())
         ]
 
-    for domain in job.domains:
-        target = job.target_for(domain)
+    finalization_domains = tuple(
+        dict.fromkeys(
+            (
+                *job.domains,
+                *reconciliation["affected_domains"],
+            )
+        )
+    )
+    for domain in finalization_domains:
+        target = job.vault / "30_精选资料" / domain
         target.mkdir(parents=True, exist_ok=True)
         finalization = finalize_knowledge_base(target, domain=domain)
         if finalization.errors:
@@ -1360,7 +1460,7 @@ def _run_keyword_union_job(
 
     integrity = scan_keyword_export_integrity(
         job.vault,
-        domains=tuple(job.domains),
+        domains=_known_vault_domains(job),
         since=datetime.combine(job.since, time.min),
         until=datetime.combine(job.until, time.min),
         selection_hash=selection_hash,

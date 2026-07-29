@@ -1798,6 +1798,129 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
         )
         self.assertTrue(report["ok"])
 
+    def test_newer_cross_domain_history_skips_current_candidate_body(self):
+        from scripts.export_catalog import (
+            ExportCatalog,
+            KeywordCatalogEntry,
+        )
+        from scripts.export_multi_domain import normalize_job, run_export_job
+        from scripts.export_search_results import export_note_to_obsidian
+        from scripts.knowledge_base import finalize_knowledge_base
+        from scripts.keyword_selection import keyword_selection_hash
+
+        title = "跨领域历史胜者"
+        historical = metadata(
+            "historical-engineering",
+            title,
+            1775100000000,
+            created=1775100000000,
+        )
+        candidate = metadata(
+            "candidate-ai",
+            title,
+            1772400000000,
+            created=1772400000000,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            engineering_target = (
+                vault / "30_精选资料" / "软件工程"
+            )
+            historical_path = export_note_to_obsidian(
+                full_note(
+                    historical,
+                    "<en-note>软件工程历史资料</en-note>",
+                ),
+                notebook_name="微信",
+                target_dir=engineering_target,
+                domain="软件工程",
+            )
+            finalize_knowledge_base(
+                engineering_target,
+                domain="软件工程",
+            )
+            job = normalize_job(
+                {
+                    "since": "2026-01-01",
+                    "until": "2026-04-01",
+                    "selection_mode": "keyword_union",
+                    "domains": {"AI": {"keywords": ["AI"]}},
+                },
+                vault,
+            )
+            catalog_path = temp_dir / "catalog.sqlite3"
+            selection_hash = keyword_selection_hash(
+                job.domains,
+                job.aliases,
+            )
+            with ExportCatalog(catalog_path) as catalog:
+                catalog.upsert_keyword(
+                    KeywordCatalogEntry(
+                        guid=candidate.guid,
+                        updated_ms=candidate.updated,
+                        selection_hash=selection_hash,
+                        title=title,
+                        created_ms=candidate.created,
+                        notebook_name="微信",
+                        summary="AI 当前候选",
+                        body_sha256="a" * 64,
+                        outcome="accepted",
+                        primary_domain="AI",
+                        matched_keywords=("AI",),
+                        matched_terms=("AI",),
+                        canonical_path=(
+                            "30_精选资料/AI/2026年03月/"
+                            f"{title}.md"
+                        ),
+                        first_fetched_at=(
+                            "2026-07-29T10:00:00+08:00"
+                        ),
+                        last_fetched_at=(
+                            "2026-07-29T10:00:00+08:00"
+                        ),
+                        last_seen_at="2026-07-29T10:00:00+08:00",
+                    )
+                )
+            store = FakeNoteStore(
+                {"AI": [candidate]},
+                {},
+                forbid_body=True,
+            )
+            report = run_export_job(
+                job,
+                store,
+                "token",
+                catalog_path=catalog_path,
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+            with ExportCatalog(catalog_path) as catalog:
+                entry = catalog.get_keyword_current(
+                    candidate.guid,
+                    candidate.updated,
+                    selection_hash,
+                )
+
+            self.assertTrue(historical_path.is_file())
+            self.assertEqual(store.body_calls, [])
+            self.assertEqual(entry.outcome, "duplicate_title")
+            self.assertIsNone(entry.canonical_path)
+            self.assertEqual(report["candidates"]["accepted"], 0)
+            self.assertEqual(
+                report["candidates"]["duplicate_titles"],
+                1,
+            )
+            self.assertEqual(report["materialization"]["written"], 0)
+            self.assertEqual(
+                report["integrity"]["cross_domain_title_duplicates"],
+                {},
+            )
+            self.assertTrue(report["ok"])
+
     def test_changed_keywords_reuse_catalog_without_refetching_body(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
 
@@ -2012,6 +2135,112 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                 set(report["integrity"]["cross_domain_title_duplicates"]),
                 {"跨领域同标题"},
             )
+
+    def test_newer_current_candidate_quarantines_older_cross_domain_title(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+        from scripts.export_search_results import export_note_to_obsidian
+        from scripts.knowledge_base import finalize_knowledge_base
+
+        existing = metadata("existing-investment", "跨领域同标题", 1779000000000)
+        candidate = metadata("new-ai", "跨领域同标题", 1780000000000)
+        existing_note = full_note(
+            existing,
+            "<en-note>基金配置、股票估值、投资组合、资产配置和风险控制。</en-note>",
+        )
+        candidate_note = full_note(
+            candidate,
+            "<en-note>AI、大语言模型、RAG、智能体、机器学习和模型推理。</en-note>",
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            investment_target = vault / "30_精选资料" / "投资理财"
+            historical_path = export_note_to_obsidian(
+                existing_note,
+                notebook_name="微信",
+                target_dir=investment_target,
+                domain="投资理财",
+            )
+            finalize_knowledge_base(investment_target, domain="投资理财")
+            historical_relative = historical_path.relative_to(
+                vault
+            ).as_posix()
+            historical_digest = hashlib.sha256(
+                historical_path.read_bytes()
+            ).hexdigest()
+            job = normalize_job(
+                {
+                    "since": "2026-04-01",
+                    "until": "2026-07-01",
+                    "selection_mode": "keyword_union",
+                    "domains": {"AI": {"keywords": ["AI"]}},
+                },
+                vault,
+            )
+            report = run_export_job(
+                job,
+                FakeNoteStore(
+                    {"AI": [candidate]},
+                    {"new-ai": candidate_note},
+                ),
+                "token",
+                catalog_path=temp_dir / "catalog.sqlite3",
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+            manifest_path = Path(
+                report["reconciliation"]["manifest"]
+            )
+            manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+            records = [
+                item
+                for item in manifest["records"]
+                if item["source"] == historical_relative
+            ]
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            quarantine_path = vault / Path(
+                *Path(record["quarantine"]).parts
+            )
+
+            self.assertFalse(historical_path.exists())
+            self.assertTrue(quarantine_path.is_file())
+            self.assertEqual(
+                hashlib.sha256(
+                    quarantine_path.read_bytes()
+                ).hexdigest(),
+                historical_digest,
+            )
+            self.assertEqual(record["sha256"], historical_digest)
+            self.assertEqual(
+                record["reason"],
+                "older_cross_domain_title",
+            )
+            self.assertEqual(
+                report["reconciliation"]["quarantined"],
+                1,
+            )
+            self.assertEqual(
+                report["integrity"]["cross_domain_title_duplicates"],
+                {},
+            )
+            self.assertIn(
+                "投资理财",
+                report["integrity"]["domains"],
+            )
+            investment_index = (
+                investment_target / "目录索引.md"
+            ).read_text(encoding="utf-8")
+            self.assertNotIn(historical_path.name, investment_index)
+            self.assertEqual(report["candidates"]["accepted"], 1)
+            self.assertEqual(report["materialization"]["written"], 1)
+            self.assertTrue(report["ok"])
 
     def test_existing_export_bootstraps_catalog_before_new_keyword_task(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
