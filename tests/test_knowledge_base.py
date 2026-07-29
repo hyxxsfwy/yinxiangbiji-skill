@@ -287,6 +287,38 @@ class IndexTests(unittest.TestCase):
         self.assertNotIn("%2B", index)
         self.assertNotIn("https://example.com/source", index)
 
+    def test_index_url_encodes_square_brackets_in_link_target(self):
+        from scripts.knowledge_base import write_knowledge_base_index
+
+        with workspace_temp_dir() as root:
+            month = root / "2026年07月"
+            write_note(
+                month / "[比特币已死] [比特币将要归零].md",
+                title="比特币已死 比特币将要归零",
+                created="2026-07-24 11:00:27",
+                updated="2026-07-26 09:00:00",
+                guid="square-brackets",
+                body="正文分析比特币市场周期与投资风险。",
+                domain="AI",
+            )
+
+            index = write_knowledge_base_index(
+                root,
+                domain="AI",
+            ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            (
+                "- [[2026年07月/%5B比特币已死%5D "
+                "%5B比特币将要归零%5D.md|比特币已死 比特币将要归零]]"
+            ),
+            index,
+        )
+        self.assertIn(
+            "位置：`2026年07月/[比特币已死] [比特币将要归零].md`",
+            index,
+        )
+
     def test_empty_index_explicitly_states_no_materials(self):
         from scripts.knowledge_base import write_knowledge_base_index
 

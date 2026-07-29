@@ -128,6 +128,10 @@ def _plain_markdown_text(value):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _wikilink_target(relative):
+    return str(relative).replace("[", "%5B").replace("]", "%5D")
+
+
 def _is_effective_paragraph(line):
     stripped = line.strip()
     if stripped.startswith("<!--"):
@@ -306,12 +310,13 @@ def write_knowledge_base_index(root, domain="AI"):
         month_notes.sort(key=lambda note: note.created, reverse=True)
         for note in month_notes:
             relative = note.path.relative_to(root).as_posix()
+            link_target = _wikilink_target(relative)
             markdown_text = note.path.read_text(encoding="utf-8")
             summary = build_note_summary(markdown_text, note.title)
             alias = note.title.replace("|", "｜").replace("]", "］")
             lines.extend(
                 [
-                    f"- [[{relative}|{alias}]]",
+                    f"- [[{link_target}|{alias}]]",
                     f"  - 位置：`{relative}`",
                     f"  - 简介：{summary}",
                 ]
