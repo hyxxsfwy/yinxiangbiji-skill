@@ -85,6 +85,49 @@ def seed_keyword_article(
 
 
 class ExportIntegrityTests(unittest.TestCase):
+    def test_keyword_integrity_ignores_files_owned_by_other_selection(self):
+        from scripts.export_catalog import ExportCatalog
+        from scripts.export_integrity import scan_keyword_export_integrity
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            article = seed_keyword_article(
+                vault,
+                domain="AI",
+                title="其他任务文章",
+                guid="guid-other",
+                created="2026-07-01 00:00:00",
+                updated_ms=1000,
+                selection_hash="selection-other",
+                matched_keywords=["AI"],
+            )
+            write_index(
+                vault,
+                "AI",
+                [
+                    article.relative_to(
+                        vault / "30_精选资料" / "AI"
+                    ).as_posix()
+                ],
+            )
+            catalog_path = temp_dir / "catalog.sqlite3"
+            with ExportCatalog(catalog_path):
+                pass
+
+            report = scan_keyword_export_integrity(
+                vault,
+                domains=("AI",),
+                since=datetime(2026, 1, 1),
+                until=datetime(2026, 4, 1),
+                selection_hash="selection-current",
+                catalog_path=catalog_path,
+                expected_candidates={},
+                canonical_keywords=("AI",),
+            )
+
+        self.assertTrue(report.ok)
+
     def test_keyword_integrity_reports_missing_cache_and_wrong_selection(self):
         from scripts.export_catalog import ExportCatalog
         from scripts.export_integrity import scan_keyword_export_integrity

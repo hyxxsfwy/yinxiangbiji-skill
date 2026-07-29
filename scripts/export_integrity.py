@@ -377,8 +377,7 @@ def scan_keyword_export_integrity(
                     else None
                 )
                 is_keyword_file = (
-                    fields.get("selection_mode") == "keyword_union"
-                    or metadata.guid in expected_candidates
+                    metadata.guid in expected_candidates
                     or entry is not None
                 )
                 if not is_keyword_file:
