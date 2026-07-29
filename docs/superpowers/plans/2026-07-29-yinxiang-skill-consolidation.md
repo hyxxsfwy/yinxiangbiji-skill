@@ -443,7 +443,7 @@ $env:PYTHONUTF8='1'
 python -m unittest discover -s tests
 python -m compileall -q scripts tests
 git diff --check
-git check-ignore -v reviews
+git check-ignore -v reviews/
 ```
 
 Expected: 所有测试通过；编译和空白检查无错误；`reviews/` 命中 `.gitignore`。
