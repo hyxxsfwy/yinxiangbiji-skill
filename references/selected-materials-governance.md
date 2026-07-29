@@ -1,98 +1,117 @@
-# Obsidian 精选资料治理
+# Obsidian 精选资料重分类与治理
 
-## 决策模型
+## 主流程与决策语义
 
-先对每篇资料做正向判断，再生成脚本可执行的显式清单：
+对 `30_精选资料` 做全局重扫或重新归类时，以 `reclassify_selected_materials.py` 为主工具。先运行 `audit` 取得全库证据，再由人工把需要执行的决定写入 JSON；未写入决定文件的资料不变。
 
-| 决策 | 适用条件 | 后续动作 |
+| 决策 | 适用条件 | 执行动作 |
 |---|---|---|
-| `keep` | 领域正确、仍有引用价值，当前位置合理 | 保留原文；只维护人工确认的受控链接 |
-| `move` | 内容值得保留，但生命周期或目录归类错误 | 交给 Vault 重组或另一次明确的重分类任务，不用链接伪装搬运 |
-| `trash` | 错域、无保留价值或明确进入可恢复删除阶段 | 移入 `99_废纸篓/30_精选资料/` 镜像路径并保留所需附件 |
-| `pending` | 证据不足、链接有歧义或需要人工决定 | 不写入；补充证据后重新审核 |
+| `keep` | 当前领域正确且仍值得保留 | 不移动；可按证据维护受控链接 |
+| `move` | 文档错域，但有明确目标领域且值得保留 | 移到目标领域，更新 `domain`，迁移附件并重建索引 |
+| `trash` | 文档不属于受管范围，或已确认无保留价值 | 移到可恢复的 `99_废纸篓/30_精选资料/` 镜像路径 |
+| `pending` | 目标领域、保留价值或链接关系仍不确定 | 不写入 decisions，保留原位等待人工判断 |
 
-`move` 与 `pending` 是治理层决策，不是当前 `curate_selected_materials.py` 的可执行值。当前脚本保持兼容边界：清单根节点必须是数组，每项字段精确为 `path`、`decision`、`reason`、`topic`、`links`，且 `decision` 只接受 `keep` 或 `trash`。需要移动时先完成独立重分类；待定项不能伪装成 `keep`。
+审计结果中的 `unclassified` 视为 `pending`，不能直接推断为 `trash`。错域只说明当前位置不正确；只要目标领域明确且资料值得保留，就必须使用 `move`。
 
-## 显式决策 JSON
+## `audit / apply / verify`
 
-路径相对 `30_精选资料/`，使用 POSIX 分隔符。保留项的链接目标必须也在清单中、决定为 `keep`，并显式写出反向边；`trash` 项的 `links` 必须为空。
+完整参数先运行 `python scripts/reclassify_selected_materials.py --help` 查看。未提供 `--vault` 时，脚本从当前设备的 `OBSIDIAN_VAULT_PATH` 加载正式 Vault；报告默认写入 `<vault>/.state/yinxiang-notes/reports/`。
+
+```powershell
+# audit：扫描全库，生成分类、链接和待人工确认的审计报告
+python scripts/reclassify_selected_materials.py audit
+
+# apply：仅执行显式 decisions；固定确认词之外一律拒绝
+python scripts/reclassify_selected_materials.py apply --decisions "decisions.json" --confirm RECLASSIFY_SELECTED_MATERIALS
+
+# verify：根据同一 decisions 独立验证已执行结果
+python scripts/reclassify_selected_materials.py verify --decisions "decisions.json"
+```
+
+`audit` 不移动或删除业务文件。`apply` 与 `verify` 必须使用同一份 UTF-8 decisions；只有用户明确授权后才能运行 `apply`。
+
+## 显式 decisions JSON
+
+根节点固定为对象，包含 `moves`、`trash`、`links`。路径相对 `30_精选资料/`，使用正斜杠：
+
+```json
+{
+  "moves": {
+    "健康医学/月份/关系沟通.md": "两性情感"
+  },
+  "trash": [
+    "AI/月份/无保留价值资料.md"
+  ],
+  "links": {
+    "AI/月份/Agent 架构.md": [
+      "AI/月份/Agent 状态.md"
+    ],
+    "AI/月份/Agent 状态.md": [
+      "AI/月份/Agent 架构.md"
+    ]
+  }
+}
+```
+
+- `moves` 是“来源相对路径 → 目标领域”的对象。目标领域必须受支持，且不能与来源领域相同。
+- `trash` 是确认移入可恢复废纸篓的路径列表；同一资料不能同时出现在 `moves` 和 `trash`。
+- `links` 是“来源相对路径 → 目标路径列表”的对象。不得自链接或重复，每篇最多 3 条，所有边必须显式双向对称。
+- `keep` 与 `pending` 不作为写操作字段；不需要变更的资料不写入对象。
+
+## 全局审计与写入预检
+
+`audit` 扫描整个 `30_精选资料`，读取正文与当前领域，输出每篇资料的分类证据、建议决定和现有链接问题。人工必须复核建议，尤其是 `unclassified`、低证据、并列领域和同名目标。
+
+`apply` 在任何业务写入前统一预检 decisions：
+
+- 所有路径均位于 `30_精选资料` 内，来源存在，目标领域与目标路径合法；
+- `moves` 与 `trash` 不重叠，目标同路径异内容时中止；
+- 本地附件源与目标可解析，目标冲突时使用内容哈希区分，不覆盖不同内容；
+- `links` 端点存在于精选资料，不能包含 `trash` 端点，移动后的两端路径可重映射；
+- 链接严格双向、每篇不超过 3 条，预检失败时不产生部分移动或删除。
+
+## 快照、附件、链接与索引
+
+通过预检后，`apply` 先为所有将移动、移入废纸篓或改写链接的 Markdown 与本地附件创建 ZIP 快照和 SHA-256 清单。
+
+`move` 保留正文和来源元数据，更新 frontmatter 的 `domain`，把本地附件迁移到目标领域的 `_attachments/`，并改写相对引用。`trash` 保留可恢复副本及其本地附件，不把无保留价值判断扩展到其他错域资料。
+
+自动链接只写入受管理的 `llmwiki:auto-links` 区域，按路径稳定排序；重复执行保持幂等，空链接决定移除受管理区域而不改正文或人工链接。写入完成后重建受影响领域的 `目录索引.md`。
+
+## 验证门禁
+
+`verify --decisions` 至少检查：
+
+- `moves` 的来源已消失，目标文件存在且 `domain` 等于目标领域；
+- `trash` 只存在于废纸篓镜像路径，相关本地附件仍可解析；
+- 受管理链接与 decisions 一致、严格双向、端点存在且没有歧义；
+- 受影响领域的索引存在、条目可打开，不再引用旧路径；
+- 所有核验路径均位于 Vault 内。
+
+`apply` 会先生成快照与 SHA-256 清单，并在写入后同时验证快照和结果；仍须再运行独立 `verify` 核对落盘状态。只有报告 `ok: true` 且问题列表为空时，才能声明重分类完成。
+
+## 旧 `curate_selected_materials.py` 兼容边界
+
+旧工具仅用于继续执行既有的逐篇审阅数组，不承担全库重扫或跨领域 `move`。旧清单根节点是数组，每项字段精确为 `path`、`decision`、`reason`、`topic`、`links`，其中 `decision` 只接受 `keep` 或 `trash`：
 
 ```json
 [
   {
-    "path": "AI/月份/Agent 架构.md",
+    "path": "AI/月份/保留资料.md",
     "decision": "keep",
-    "reason": "正文讨论 Agent 架构，领域与目录一致",
+    "reason": "正文与当前领域一致",
     "topic": "Agent 工程",
-    "links": ["AI/月份/Agent 状态.md"]
-  },
-  {
-    "path": "AI/月份/Agent 状态.md",
-    "decision": "keep",
-    "reason": "正文讨论 Agent 状态，领域与目录一致",
-    "topic": "Agent 工程",
-    "links": ["AI/月份/Agent 架构.md"]
-  },
-  {
-    "path": "AI/月份/错域资料.md",
-    "decision": "trash",
-    "reason": "正文主旨不属于当前领域",
-    "topic": "错域",
     "links": []
   }
 ]
 ```
 
-每篇保留资料最多 3 条人工确认、语义明确的双向链接；仅关键词相同不构成关系，没有明确关联时保持空数组。
-
-## `audit / apply / verify`
-
-先运行 `--help` 核对当前参数。以下命令的 `--review` 指向本次显式清单：
+兼容命令：
 
 ```powershell
-# audit：默认预览和全局预检，不修改 Vault
-python scripts/curate_selected_materials.py --review "审阅清单.json"
-
-# apply：获得明确授权后执行
-python scripts/curate_selected_materials.py --review "审阅清单.json" --apply --confirm CURATE_SELECTED_MATERIALS
-
-# verify：对已执行结果做只读验证
-python scripts/curate_selected_materials.py --review "审阅清单.json" --verify
+python scripts/curate_selected_materials.py --review "旧审阅清单.json"
+python scripts/curate_selected_materials.py --review "旧审阅清单.json" --apply --confirm CURATE_SELECTED_MATERIALS
+python scripts/curate_selected_materials.py --review "旧审阅清单.json" --verify
 ```
 
-`--apply` 与 `--verify` 互斥；执行只接受固定确认词 `CURATE_SELECTED_MATERIALS`。未提供 `--vault` 时从当前设备的 `OBSIDIAN_VAULT_PATH` 加载正式 Vault。
-
-## 全局预检
-
-写入前必须完成整个 `30_精选资料` 的预检，而不是只检查准备移动的条目：
-
-- 清单精确覆盖全部非索引 Markdown，路径唯一、存在、位于 Vault 内且不含向上穿越；
-- 字段完整，`reason` 与 `topic` 非空，决策处于兼容集合；
-- 每条自动链接的目标唯一、在清单内、决定为 `keep` 且反向边存在；
-- `trash` 没有链接，单篇链接不超过 3 条且不重复；
-- 废纸篓目标、附件目标与待修改 Markdown 不存在同路径异内容冲突；
-- 当前 Vault 没有其他活动写锁，旧状态迁移不会覆盖异内容文件。
-
-任一问题都应在创建快照或写入前中止，并保持业务文件不变。
-
-## 快照、附件与写入
-
-执行前为所有将修改或移动的 Markdown 及其本地附件创建 ZIP 快照和 SHA-256 清单。错域资料移动到 `99_废纸篓/30_精选资料/` 的镜像路径；被其引用的本地附件复制到可继续解析的镜像位置，不能因移动而产生断链。
-
-原始正文保持不变。自动链接只写入受管理的 `llmwiki:auto-links` 区域，按路径稳定排序，重复执行结果幂等；清单链接变空时移除整个受管理区域，不触碰正文或人工链接。
-
-完成写入后重建受影响领域的 `目录索引.md`，并把逐篇决策、理由、主题和链接写入审核日志。索引是可重建视图，不保存人工评语。
-
-## 验证契约
-
-验证必须覆盖：
-
-- `keep` 文件仍在规范路径，`trash` 文件只在废纸篓镜像路径；
-- 移动后的 Markdown 与所有本地附件引用可解析；
-- 受管理链接与清单一致、严格双向、数量受控且没有歧义；
-- 领域索引存在、条目可打开，未引用被移走的资料；
-- ZIP 快照与 SHA-256 清单覆盖全部实际变更；
-- 审核日志存在且逐篇记录可追溯；
-- Vault 外没有写入，真实印象笔记账号和凭据未被访问。
-
-只有 `apply` 后的内置验证与独立 `verify` 都通过，才能声明治理完成。
+需要重扫、重分类、移动错域但有价值的资料时，必须回到本页主流程。

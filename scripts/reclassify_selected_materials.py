@@ -13,14 +13,24 @@ import sys
 from urllib.parse import unquote
 import zipfile
 
-from scripts.curate_selected_materials import (
-    AUTO_LINKS_END,
-    AUTO_LINKS_SECTION,
-    AUTO_LINKS_START,
-    extract_auto_link_targets,
-)
-from scripts.knowledge_base import write_knowledge_base_index
-from scripts.runtime import configure_utf8_output, load_vault_root
+try:
+    from scripts.curate_selected_materials import (
+        AUTO_LINKS_END,
+        AUTO_LINKS_SECTION,
+        AUTO_LINKS_START,
+        extract_auto_link_targets,
+    )
+    from scripts.knowledge_base import write_knowledge_base_index
+    from scripts.runtime import configure_utf8_output, load_vault_root
+except ModuleNotFoundError:
+    from curate_selected_materials import (
+        AUTO_LINKS_END,
+        AUTO_LINKS_SECTION,
+        AUTO_LINKS_START,
+        extract_auto_link_targets,
+    )
+    from knowledge_base import write_knowledge_base_index
+    from runtime import configure_utf8_output, load_vault_root
 
 
 SELECTED_ROOT = "30_精选资料"
@@ -1034,3 +1044,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"验证报告：{output}")
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

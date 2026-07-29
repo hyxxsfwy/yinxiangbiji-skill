@@ -42,7 +42,10 @@ Copy-Item .env.example .env
 | 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py` | 只读本地 |
 | 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 Vault |
 | 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --verify` | 只读本地 |
-| 审核精选资料 | `references/selected-materials-governance.md` → `python scripts/curate_selected_materials.py --help` | 默认只读本地 |
+| 重扫并审计精选资料归类 | `references/selected-materials-governance.md` → `python scripts/reclassify_selected_materials.py audit` | 只读本地；写审计报告 |
+| 执行重分类决定 | `python scripts/reclassify_selected_materials.py apply --decisions "decisions.json" --confirm RECLASSIFY_SELECTED_MATERIALS` | 修改本地 Vault |
+| 验证重分类结果 | `python scripts/reclassify_selected_materials.py verify --decisions "decisions.json"` | 只读本地 |
+| 应用旧逐篇清单 | `references/selected-materials-governance.md` 兼容小节 → `python scripts/curate_selected_materials.py --help` | 默认只读本地 |
 
 完整参数以 `python scripts/<脚本>.py --help` 和 `README.md` 为准。
 
@@ -52,7 +55,8 @@ Copy-Item .env.example .env
 - 创建、更新、移入废纸篓必须对应用户的明确请求。
 - 永久清空只接受固定确认词 `DELETE_ALL`，且仍需用户明确授权。
 - Vault 重组只接受 `MIGRATE_OBSIDIAN_VAULT`。
-- 精选资料执行只接受 `CURATE_SELECTED_MATERIALS`；默认命令仅审核，不落盘。
+- 精选资料重分类只接受 `RECLASSIFY_SELECTED_MATERIALS`；必须先运行 `audit` 并人工确认 decisions。
+- 旧逐篇清单执行只接受 `CURATE_SELECTED_MATERIALS`；默认命令仅预览，不落盘。
 - 不用真实账号执行创建、更新或删除回归测试。
 
 ## 完成门禁
@@ -60,5 +64,5 @@ Copy-Item .env.example .env
 - 导出：只在 JSON 报告为 `ok: true`，且范围、唯一归属、标题去重、索引和附件验证全部通过后声明完成。
 - 限流或验收失败：保留状态，报告部分完成并按 reference 续跑，不把进程结束等同于业务完成。
 - Vault 重组：快照、路径、Properties、索引、链接和附件验证全部通过后才完成。
-- 精选资料治理：全局预检、快照、写入、索引重建、双向链接和附件验证全部通过后才完成。
+- 精选资料重分类：`audit` 已覆盖全局、`apply` 已创建快照，且独立 `verify` 的索引、双向链接和附件验证全部通过后才完成。
 - 账户写入：核对目标 GUID、操作结果和用户授权范围；不可恢复操作必须单独说明。

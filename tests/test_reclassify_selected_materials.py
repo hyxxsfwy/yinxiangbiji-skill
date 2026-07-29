@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +18,9 @@ from scripts.reclassify_selected_materials import (
     verify_review_results,
 )
 from tests.support import workspace_temp_dir
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class ClassificationTests(unittest.TestCase):
@@ -967,6 +972,34 @@ class ReviewVerificationTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_help_works_for_script_and_module_entry_points(self):
+        commands = (
+            (
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "reclassify_selected_materials.py"),
+                "--help",
+            ),
+            (
+                sys.executable,
+                "-m",
+                "scripts.reclassify_selected_materials",
+                "--help",
+            ),
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                result = subprocess.run(
+                    command,
+                    cwd=REPO_ROOT,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for phase in ("audit", "apply", "verify"):
+                    self.assertIn(phase, result.stdout)
+
     def _seed_vault(self, vault):
         (vault / ".obsidian").mkdir()
         note = vault / "30_精选资料/AI/2026年01月/原始资料.md"

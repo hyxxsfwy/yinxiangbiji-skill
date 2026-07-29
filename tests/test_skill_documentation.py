@@ -65,6 +65,82 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("references/export-workflows.md", self.skill)
         self.assertIn("references/selected-materials-governance.md", self.skill)
 
+    def test_skill_routes_reclassification_and_legacy_curation_separately(self):
+        self.assertIn("reclassify_selected_materials.py", self.skill)
+        self.assertIn("RECLASSIFY_SELECTED_MATERIALS", self.skill)
+        self.assertIn("curate_selected_materials.py", self.skill)
+
+    def test_reclassification_reference_uses_three_stage_cli_and_object_decisions(self):
+        commands = [
+            line.strip()
+            for block in re.findall(
+                r"```powershell\n(.*?)\n```",
+                self.governance_reference,
+                re.DOTALL,
+            )
+            for line in block.splitlines()
+            if line.strip().startswith(
+                "python scripts/reclassify_selected_materials.py"
+            )
+        ]
+        self.assertEqual(len(commands), 3)
+        audit = next(command for command in commands if " audit" in command)
+        apply = next(command for command in commands if " apply" in command)
+        verify = next(command for command in commands if " verify" in command)
+        self.assertNotIn("--decisions", audit)
+        self.assertIn("--decisions", apply)
+        self.assertIn("--confirm RECLASSIFY_SELECTED_MATERIALS", apply)
+        self.assertIn("--decisions", verify)
+
+        decision_block = re.search(
+            r"```json\n(.*?)\n```",
+            self.governance_reference,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(decision_block)
+        decisions = json.loads(decision_block.group(1))
+        self.assertIsInstance(decisions, dict)
+        self.assertEqual(set(decisions), {"moves", "trash", "links"})
+        self.assertIsInstance(decisions["moves"], dict)
+        self.assertIsInstance(decisions["trash"], list)
+        self.assertIsInstance(decisions["links"], dict)
+
+    def test_reclassification_decisions_preserve_reclassifiable_documents(self):
+        table_lines = self.governance_reference.splitlines()
+        move = next(line for line in table_lines if line.startswith("| `move`"))
+        trash = next(line for line in table_lines if line.startswith("| `trash`"))
+        pending = next(
+            line for line in table_lines if line.startswith("| `pending`")
+        )
+
+        self.assertIn("明确目标领域", move)
+        self.assertIn("值得保留", move)
+        self.assertIn("无保留价值", trash)
+        self.assertNotIn("错域", trash)
+        self.assertIn("不确定", pending)
+        self.assertNotIn(
+            "错域资料移动到 `99_废纸篓",
+            self.governance_reference,
+        )
+
+    def test_reclassify_help_exposes_three_stage_cli(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "reclassify_selected_materials.py"),
+                "--help",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for command in ("audit", "apply", "verify"):
+            self.assertIn(command, result.stdout)
+
     def test_keyword_union_workflow_is_documented(self):
         for phrase in (
             "keyword_union",
@@ -757,6 +833,7 @@ class SkillDocumentationTests(unittest.TestCase):
             "update_note.py",
             "curate_selected_materials.py",
             "restructure_obsidian_vault.py",
+            "reclassify_selected_materials.py",
         ]
         for script_name in command_scripts:
             with self.subTest(script=script_name):
