@@ -12,7 +12,7 @@ from unittest.mock import patch
 from evernote.edam.type.ttypes import NoteSortOrder
 
 from scripts.sync_to_obsidian import save_attachments
-from tests.support import create_directory_symlink_or_skip, workspace_temp_dir
+from tests.support import create_directory_link_or_skip, workspace_temp_dir
 
 
 class SearchQueryTests(unittest.TestCase):
@@ -1244,7 +1244,7 @@ class AttachmentLinkTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
-    def test_domain_target_symlink_cannot_escape_vault(self):
+    def test_domain_target_link_cannot_escape_vault(self):
         from scripts.export_search_results import derive_domain_target
 
         with workspace_temp_dir() as temp_dir:
@@ -1253,7 +1253,7 @@ class CommandLineTests(unittest.TestCase):
             selected = vault / "30_精选资料"
             selected.mkdir(parents=True)
             outside.mkdir()
-            create_directory_symlink_or_skip(
+            create_directory_link_or_skip(
                 self,
                 selected / "AI",
                 outside,

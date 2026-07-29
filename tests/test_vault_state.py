@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from tests.support import create_directory_symlink_or_skip, workspace_temp_dir
+from tests.support import create_directory_link_or_skip, workspace_temp_dir
 
 from scripts.vault_state import (
     StateMigrationConflict,
@@ -38,13 +38,13 @@ class VaultStatePathTests(unittest.TestCase):
         self.assertEqual(paths.migrations.name, "migrations")
         self.assertEqual(paths.lock.name, "active-run.lock")
 
-    def test_for_vault_rejects_state_symlink_that_resolves_outside_vault(self):
+    def test_for_vault_rejects_state_link_that_resolves_outside_vault(self):
         with workspace_temp_dir() as temp_dir:
             vault = temp_dir / "vault"
             outside = temp_dir / "outside-state"
             vault.mkdir()
             outside.mkdir()
-            create_directory_symlink_or_skip(
+            create_directory_link_or_skip(
                 self,
                 vault / ".state",
                 outside,
