@@ -128,6 +128,67 @@ class ExportIntegrityTests(unittest.TestCase):
 
         self.assertTrue(report.ok)
 
+    def test_keyword_integrity_ignores_same_selection_history_outside_job(self):
+        from scripts.export_catalog import (
+            ExportCatalog,
+            KeywordCatalogEntry,
+        )
+        from scripts.export_integrity import scan_keyword_export_integrity
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            article = seed_keyword_article(
+                vault,
+                domain="AI",
+                title="历史关键词文章",
+                guid="guid-history",
+                created="2026-01-15 00:00:00",
+                updated_ms=1000,
+                selection_hash="selection-current",
+                matched_keywords=["AI"],
+            )
+            relative_domain = article.relative_to(
+                vault / "30_精选资料" / "AI"
+            ).as_posix()
+            relative_vault = article.relative_to(vault).as_posix()
+            write_index(vault, "AI", [relative_domain])
+            catalog_path = temp_dir / "catalog.sqlite3"
+            with ExportCatalog(catalog_path) as catalog:
+                catalog.upsert_keyword(
+                    KeywordCatalogEntry(
+                        guid="guid-history",
+                        updated_ms=1000,
+                        selection_hash="selection-current",
+                        title="历史关键词文章",
+                        created_ms=900,
+                        notebook_name="收件箱",
+                        summary="历史摘要",
+                        body_sha256="a" * 64,
+                        outcome="accepted",
+                        primary_domain="AI",
+                        matched_keywords=("AI",),
+                        matched_terms=("AI",),
+                        canonical_path=relative_vault,
+                        first_fetched_at="2026-01-15T00:00:00+08:00",
+                        last_fetched_at="2026-01-15T00:00:00+08:00",
+                        last_seen_at="2026-01-15T00:00:00+08:00",
+                    )
+                )
+
+            report = scan_keyword_export_integrity(
+                vault,
+                domains=("AI",),
+                since=datetime(2026, 7, 1),
+                until=datetime(2026, 8, 1),
+                selection_hash="selection-current",
+                catalog_path=catalog_path,
+                expected_candidates={},
+                canonical_keywords=("AI",),
+            )
+
+        self.assertTrue(report.ok, report.to_dict())
+
     def test_keyword_integrity_reports_missing_cache_and_wrong_selection(self):
         from scripts.export_catalog import ExportCatalog
         from scripts.export_integrity import scan_keyword_export_integrity

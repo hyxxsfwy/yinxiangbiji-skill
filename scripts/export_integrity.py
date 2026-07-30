@@ -376,10 +376,7 @@ def scan_keyword_export_integrity(
                     if updated_ms is not None
                     else None
                 )
-                is_keyword_file = (
-                    metadata.guid in expected_candidates
-                    or entry is not None
-                )
+                is_keyword_file = metadata.guid in expected_candidates
                 if not is_keyword_file:
                     continue
                 if not (since <= metadata.created < until):

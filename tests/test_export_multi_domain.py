@@ -2242,6 +2242,86 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
             self.assertEqual(report["materialization"]["written"], 1)
             self.assertTrue(report["ok"])
 
+    def test_current_candidate_quarantines_equal_guid_copy_outside_job_domains(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+        from scripts.export_search_results import export_note_to_obsidian
+        from scripts.keyword_selection import keyword_selection_hash
+
+        item = metadata(
+            "shared-guid",
+            "同一 GUID 历史副本",
+            1784050000000,
+            created=1784044800000,
+        )
+        note = full_note(
+            item,
+            "<en-note>AI、大语言模型、RAG、智能体、机器学习和模型推理。</en-note>",
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            job = normalize_job(
+                {
+                    "since": "2026-07-01",
+                    "until": "2026-08-01",
+                    "selection_mode": "keyword_union",
+                    "domains": {"AI": {"keywords": ["AI"]}},
+                },
+                vault,
+            )
+            selection_hash = keyword_selection_hash(
+                job.domains,
+                job.aliases,
+            )
+            historical_path = export_note_to_obsidian(
+                note,
+                notebook_name="微信",
+                target_dir=vault / "30_精选资料" / "自定义专题",
+                domain="自定义专题",
+                selection_mode="keyword_union",
+                matched_keywords=("AI",),
+                selection_hash=selection_hash,
+            )
+
+            report = run_export_job(
+                job,
+                FakeNoteStore(
+                    {"AI": [item]},
+                    {"shared-guid": note},
+                ),
+                "token",
+                catalog_path=temp_dir / "catalog.sqlite3",
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+            manifest = json.loads(
+                Path(report["reconciliation"]["manifest"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            matching_records = [
+                record
+                for record in manifest["records"]
+                if record["source"]
+                == historical_path.relative_to(vault).as_posix()
+            ]
+
+            self.assertTrue(report["ok"], report)
+            self.assertFalse(historical_path.exists())
+            self.assertEqual(len(matching_records), 1)
+            self.assertEqual(
+                matching_records[0]["reason"],
+                "noncanonical_path",
+            )
+            self.assertEqual(
+                report["integrity"]["cross_domain_guid_duplicates"],
+                {},
+            )
+
     def test_existing_export_bootstraps_catalog_before_new_keyword_task(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
         from scripts.export_search_results import export_note_to_obsidian

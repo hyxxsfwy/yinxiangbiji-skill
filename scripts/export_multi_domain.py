@@ -507,15 +507,26 @@ def _content_analysis(content):
 
 def _known_vault_domains(job):
     existing_root = job.vault / "30_精选资料"
-    existing = (
-        [
-            domain
-            for domain in DOMAIN_PROFILES
-            if (existing_root / domain).is_dir()
-        ]
-        if existing_root.is_dir()
-        else []
-    )
+    existing = []
+    if existing_root.is_dir():
+        vault_root = job.vault.resolve()
+        selected_root = existing_root.resolve()
+        try:
+            selected_root.relative_to(vault_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"精选资料目录逃逸出 Vault: {existing_root}"
+            ) from exc
+        for path in sorted(existing_root.iterdir(), key=lambda item: item.name):
+            if not path.is_dir() or not _valid_domain_name(path.name):
+                continue
+            try:
+                path.resolve().relative_to(selected_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"领域目录逃逸出 30_精选资料: {path.name}"
+                ) from exc
+            existing.append(path.name)
     return tuple(dict.fromkeys((*job.domains, *existing)))
 
 
@@ -844,6 +855,7 @@ def reconcile_keyword_outputs(
     selection_hash,
     task_id,
     *,
+    expected_candidates,
     older_title_paths=(),
 ):
     """将当前关键词任务判定为非规范的旧副本移入可恢复隔离区。"""
@@ -903,8 +915,12 @@ def reconcile_keyword_outputs(
         )
         affected_domains.add(relative_path.parts[1])
 
-    for directory_domain in job.domains:
-        root = job.target_for(directory_domain)
+    candidate_updates = {
+        str(guid): int(updated_ms)
+        for guid, updated_ms in expected_candidates.items()
+    }
+    for directory_domain in _known_vault_domains(job):
+        root = job.vault / "30_精选资料" / directory_domain
         if not root.is_dir():
             continue
         for path in sorted(root.rglob("*.md")):
@@ -917,13 +933,17 @@ def reconcile_keyword_outputs(
                 metadata = extract_note_metadata(path)
             except (OSError, TypeError, UnicodeError, ValueError):
                 continue
+            expected_updated_ms = candidate_updates.get(metadata.guid)
+            if expected_updated_ms is None:
+                continue
             if not (
                 job.since <= metadata.created.date() < job.until
             ):
                 continue
 
-            entry = catalog.get_keyword(
+            entry = catalog.get_keyword_current(
                 metadata.guid,
+                expected_updated_ms,
                 selection_hash,
             )
             if entry is None:
@@ -1423,6 +1443,7 @@ def _run_keyword_union_job(
             catalog,
             selection_hash,
             _job_id(job),
+            expected_candidates=expected_candidates,
             older_title_paths=older_title_paths,
         )
         catalog_stats = catalog.keyword_stats(selection_hash)
