@@ -3,7 +3,7 @@
 
 import argparse
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timezone
 import hashlib
 from html.parser import HTMLParser
 import json
@@ -91,11 +91,22 @@ except ImportError:
     )
 
 
+def _utc_search_timestamp(value):
+    boundary = (
+        value
+        if isinstance(value, datetime)
+        else datetime.combine(value, time.min)
+    )
+    if boundary.tzinfo is None:
+        boundary = boundary.astimezone()
+    return boundary.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
 def build_keyword_queries(keywords, since, until=None):
-    since_text = since.strftime("%Y%m%d")
+    since_text = _utc_search_timestamp(since)
     date_terms = f"created:{since_text}"
     if until is not None:
-        date_terms += f" -created:{until:%Y%m%d}"
+        date_terms += f" -created:{_utc_search_timestamp(until)}"
     return [f"{date_terms} {keyword}" for keyword in keywords]
 
 

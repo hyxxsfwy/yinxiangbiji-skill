@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -24,32 +24,49 @@ class SearchQueryTests(unittest.TestCase):
 
         queries = build_keyword_queries(
             ["AI", "Agent", "人工智能"],
-            since=date(2025, 7, 26),
+            since=datetime(2025, 7, 26, tzinfo=timezone.utc),
         )
 
         self.assertEqual(
             queries,
             [
-                "created:20250726 AI",
-                "created:20250726 Agent",
-                "created:20250726 人工智能",
+                "created:20250726T000000Z AI",
+                "created:20250726T000000Z Agent",
+                "created:20250726T000000Z 人工智能",
             ],
         )
 
     def test_builds_an_exclusive_end_date_into_each_keyword_query(self):
         from scripts.export_search_results import build_keyword_queries
 
+        china_standard_time = timezone(timedelta(hours=8))
         queries = build_keyword_queries(
             ["AI", "量化"],
-            since=date(2026, 7, 1),
-            until=date(2026, 8, 1),
+            since=datetime(
+                2026,
+                7,
+                1,
+                tzinfo=china_standard_time,
+            ),
+            until=datetime(
+                2026,
+                8,
+                1,
+                tzinfo=china_standard_time,
+            ),
         )
 
         self.assertEqual(
             queries,
             [
-                "created:20260701 -created:20260801 AI",
-                "created:20260701 -created:20260801 量化",
+                (
+                    "created:20260630T160000Z "
+                    "-created:20260731T160000Z AI"
+                ),
+                (
+                    "created:20260630T160000Z "
+                    "-created:20260731T160000Z 量化"
+                ),
             ],
         )
 
@@ -237,16 +254,32 @@ class SearchQueryTests(unittest.TestCase):
             note_store,
             token="test-token",
             keywords=["AI", "Agent"],
-            since=date(2025, 7, 26),
-            until=date(2025, 8, 1),
+            since=datetime(
+                2025,
+                7,
+                26,
+                tzinfo=timezone(timedelta(hours=8)),
+            ),
+            until=datetime(
+                2025,
+                8,
+                1,
+                tzinfo=timezone(timedelta(hours=8)),
+            ),
             max_per_keyword=25,
         )
 
         self.assertEqual(
             [call["words"] for call in note_store.calls],
             [
-                "created:20250726 -created:20250801 AI",
-                "created:20250726 -created:20250801 Agent",
+                (
+                    "created:20250725T160000Z "
+                    "-created:20250731T160000Z AI"
+                ),
+                (
+                    "created:20250725T160000Z "
+                    "-created:20250731T160000Z Agent"
+                ),
             ],
         )
         self.assertTrue(
