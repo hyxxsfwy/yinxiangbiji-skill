@@ -49,6 +49,7 @@ try:
         finalize_knowledge_base,
     )
     from .keyword_selection import (
+        MANAGED_DOMAINS,
         assess_keyword_union,
         expanded_query_terms,
         keyword_selection_hash,
@@ -98,6 +99,7 @@ except ImportError:
         finalize_knowledge_base,
     )
     from keyword_selection import (
+        MANAGED_DOMAINS,
         assess_keyword_union,
         expanded_query_terms,
         keyword_selection_hash,
@@ -143,7 +145,10 @@ class ExportJob:
     aliases: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def target_for(self, domain):
-        if domain not in self.domains:
+        allowed_domains = set(self.domains)
+        if self.selection_mode == "keyword_union":
+            allowed_domains.update(MANAGED_DOMAINS)
+        if domain not in allowed_domains:
             raise ValueError(f"任务未声明领域: {domain}")
         root = (self.vault / "30_精选资料").resolve()
         target = (root / domain).resolve()
@@ -896,10 +901,24 @@ def reconcile_keyword_outputs(
                 destination.read_bytes()
             ).hexdigest()
             if existing_digest != digest:
-                raise RuntimeError(
-                    f"隔离区文件冲突，未移动旧副本: {destination}"
+                destination = destination.with_name(
+                    f"{destination.stem}_{digest[:12]}"
+                    f"{destination.suffix}"
                 )
-            source.unlink()
+                if destination.exists():
+                    version_digest = hashlib.sha256(
+                        destination.read_bytes()
+                    ).hexdigest()
+                    if version_digest != digest:
+                        raise RuntimeError(
+                            "隔离区哈希文件冲突，未移动旧副本: "
+                            f"{destination}"
+                        )
+                    source.unlink()
+                else:
+                    _replace_path_with_retry(source, destination)
+            else:
+                source.unlink()
         else:
             _replace_path_with_retry(source, destination)
         records.append(
@@ -999,7 +1018,10 @@ def reconcile_keyword_outputs(
         except (OSError, TypeError, UnicodeError, ValueError):
             previous_records = []
     combined = {
-        item["source"]: item
+        (
+            item["source"],
+            item.get("sha256") or item.get("quarantine", ""),
+        ): item
         for item in (*previous_records, *records)
     }
     if records or not manifest_path.exists():
@@ -1069,7 +1091,10 @@ def _run_keyword_union_job(
     def on_wait(seconds):
         wait_stats["events"] += 1
         wait_stats["seconds"] += seconds
-        print(f"API 限流，等待 {seconds} 秒后继续")
+        print(
+            f"API 限流，等待 {seconds} 秒后继续",
+            flush=True,
+        )
 
     def api_call(operation):
         remaining = max(0, max_rate_limit_wait - wait_stats["seconds"])
@@ -1153,7 +1178,7 @@ def _run_keyword_union_job(
         )
         snapshot_result = create_domain_snapshot(
             job.vault,
-            tuple(job.domains),
+            tuple(dict.fromkeys((*job.domains, *MANAGED_DOMAINS))),
             VaultStatePaths.for_vault(job.vault).root / "snapshots",
             _job_id(job),
         )
@@ -1466,6 +1491,11 @@ def _run_keyword_union_job(
         dict.fromkeys(
             (
                 *job.domains,
+                *(
+                    item["primary_domain"]
+                    for item in processed.values()
+                    if item.get("primary_domain")
+                ),
                 *reconciliation["affected_domains"],
             )
         )

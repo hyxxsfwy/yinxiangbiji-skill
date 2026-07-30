@@ -935,6 +935,57 @@ class ExportNoteTests(unittest.TestCase):
         )
         self.assertIn('selection_hash: "selection-1"', markdown)
 
+    def test_reexport_preserves_existing_controlled_links(self):
+        from scripts.export_search_results import export_note_to_obsidian
+
+        note = SimpleNamespace(
+            guid="linked-guid",
+            title="AI 量化研究",
+            created=1775000000000,
+            updated=1775000001000,
+            content="<en-note>第一版正文</en-note>",
+            resources=[],
+        )
+        controlled_links = (
+            "\n## 相关笔记\n\n"
+            "<!-- llmwiki:auto-links:start -->\n"
+            "- [[30_精选资料/Quant/2026年07月/关联资料|关联资料]]\n"
+            "<!-- llmwiki:auto-links:end -->\n"
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            path = export_note_to_obsidian(
+                note,
+                notebook_name="收件箱",
+                target_dir=temp_dir,
+                domain="AI",
+            )
+            path.write_text(
+                path.read_text(encoding="utf-8") + controlled_links,
+                encoding="utf-8",
+            )
+            note.content = "<en-note>第二版正文</en-note>"
+            note.updated += 1000
+
+            exported = export_note_to_obsidian(
+                note,
+                notebook_name="收件箱",
+                target_dir=temp_dir,
+                domain="AI",
+            )
+            markdown = exported.read_text(encoding="utf-8")
+
+        self.assertIn("第二版正文", markdown)
+        self.assertNotIn("第一版正文", markdown)
+        self.assertEqual(
+            markdown.count("llmwiki:auto-links:start"),
+            1,
+        )
+        self.assertIn(
+            "[[30_精选资料/Quant/2026年07月/关联资料|关联资料]]",
+            markdown,
+        )
+
     def test_exports_plain_text_note_with_source_metadata(self):
         try:
             from scripts.export_search_results import export_note_to_obsidian

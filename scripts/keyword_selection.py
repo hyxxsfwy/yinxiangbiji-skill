@@ -5,9 +5,14 @@ import re
 import unicodedata
 
 from scripts.export_search_results import full_body_text
+from scripts.reclassify_selected_materials import (
+    CLASSIFICATION_POLICY_VERSION,
+    MANAGED_DOMAINS,
+    classify_document,
+)
 
 
-KEYWORD_SELECTION_POLICY_VERSION = 1
+KEYWORD_SELECTION_POLICY_VERSION = 2
 _ASCII_TERM_RE = re.compile(r"[a-z0-9]+(?:[ ._-][a-z0-9]+)*")
 
 
@@ -93,6 +98,7 @@ def match_keyword_terms(title, content, domains, aliases):
 
 
 def assess_keyword_union(title, content, domains, aliases):
+    body = full_body_text(content)
     matches, terms_by_keyword = _match_details(
         title,
         content,
@@ -108,10 +114,26 @@ def assess_keyword_union(title, content, domains, aliases):
             reason="标题和完整正文均未命中规范关键词或别名",
         )
 
-    primary_domain = max(
+    keyword_primary_domain = max(
         matches,
         key=lambda domain: len(matches[domain]),
     )
+    primary_domain = keyword_primary_domain
+    classification_reason = ""
+    if keyword_primary_domain in MANAGED_DOMAINS:
+        classification = classify_document(
+            title,
+            body,
+            keyword_primary_domain,
+        )
+        if (
+            classification.decision in {"keep", "move"}
+            and classification.target_domain
+        ):
+            primary_domain = classification.target_domain
+            classification_reason = (
+                f"，九领域判定为 {primary_domain}"
+            )
     matched_keywords = tuple(
         keyword
         for domain in domains
@@ -131,7 +153,7 @@ def assess_keyword_union(title, content, domains, aliases):
         matched_terms=matched_terms,
         reason=(
             f"命中 {len(matched_keywords)} 个规范关键词，"
-            f"主目录为 {primary_domain}"
+            f"主目录为 {primary_domain}{classification_reason}"
         ),
     )
 
@@ -139,6 +161,7 @@ def assess_keyword_union(title, content, domains, aliases):
 def keyword_selection_hash(domains, aliases):
     payload = {
         "version": KEYWORD_SELECTION_POLICY_VERSION,
+        "classification_policy_version": CLASSIFICATION_POLICY_VERSION,
         "domains": [
             {
                 "domain": domain,

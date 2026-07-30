@@ -183,6 +183,21 @@ class MultiDomainJobTestMixin:
             vault.resolve() / "30_精选资料" / "软件工程",
         )
 
+    def test_keyword_union_can_target_managed_domain_outside_search_buckets(self):
+        from scripts.export_multi_domain import normalize_job
+
+        with workspace_temp_dir() as vault:
+            job = normalize_job(keyword_union_payload(), vault)
+
+            try:
+                target = job.target_for("中医")
+            except ValueError as exc:
+                self.fail(f"受管领域不应受搜索分组限制: {exc}")
+            self.assertEqual(
+                target,
+                vault.resolve() / "30_精选资料" / "中医",
+            )
+
     def test_keyword_union_rejects_path_escape_and_unknown_alias_key(self):
         from scripts.export_multi_domain import normalize_job
 
@@ -1096,6 +1111,79 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
             all(value == 0 for value in report["integrity_summary"].values())
         )
 
+    def test_keyword_export_routes_and_indexes_managed_domain_outside_search_bucket(
+        self,
+    ):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+
+        item = metadata(
+            "guid-tcm",
+            "倪海厦：气血不足的调理方法",
+            1781481600000,
+            created=1781481600000,
+        )
+        store = FakeNoteStore(
+            {"中医": [item]},
+            {
+                "guid-tcm": full_note(
+                    item,
+                    (
+                        "<en-note>讨论中医辨证、经络、穴位、"
+                        "方剂和气血调理。</en-note>"
+                    ),
+                )
+            },
+        )
+        payload = {
+            "since": "2026-04-01",
+            "until": "2026-08-01",
+            "selection_mode": "keyword_union",
+            "domains": {
+                "健康医学": {
+                    "keywords": ["中医"],
+                }
+            },
+            "aliases": {},
+        }
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            job = normalize_job(payload, vault)
+            try:
+                report = run_export_job(
+                    job,
+                    store,
+                    "token",
+                    catalog_path=temp_dir / "catalog.sqlite3",
+                    state_file=temp_dir / "state.json",
+                    report_file=temp_dir / "report.json",
+                    rate_limit_mode="stop",
+                    max_rate_limit_wait=0,
+                )
+            except ValueError as exc:
+                self.fail(f"受管领域路由不应被搜索分组拒绝: {exc}")
+
+            exported = list(
+                (vault / "30_精选资料" / "中医").rglob(
+                    "倪海厦：气血不足的调理方法.md"
+                )
+            )
+            exported_text = (
+                exported[0].read_text(encoding="utf-8")
+                if len(exported) == 1
+                else ""
+            )
+            index_path = vault / "30_精选资料" / "中医" / "目录索引.md"
+            if not index_path.is_file():
+                self.fail("中医输出目录必须重建目录索引")
+            index_text = index_path.read_text(encoding="utf-8")
+
+        self.assertEqual(len(exported), 1)
+        self.assertIn('domain: "中医"', exported_text)
+        self.assertIn("倪海厦：气血不足的调理方法", index_text)
+        self.assertTrue(report["ok"], report)
+
     def test_keyword_snapshot_exists_before_first_materialization(self):
         from scripts import export_multi_domain
         from scripts.export_multi_domain import (
@@ -1534,6 +1622,143 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
             self.assertTrue(quarantine_manifest.is_file())
             self.assertEqual(report["reconciliation"]["quarantined"], 1)
             self.assertTrue(report["ok"])
+
+    def test_reconciliation_preserves_different_versions_at_same_quarantine_path(
+        self,
+    ):
+        from scripts.export_multi_domain import (
+            normalize_job,
+            reconcile_keyword_outputs,
+        )
+
+        item = metadata("guid-conflict", "同一来源的新版本", 1780000000000)
+
+        class CatalogStub:
+            def get_keyword_current(
+                self,
+                guid,
+                updated_ms,
+                selection_hash,
+            ):
+                return SimpleNamespace(
+                    outcome="accepted",
+                    canonical_path=canonical_relative,
+                )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            canonical = seed_keyword_markdown(
+                vault,
+                domain="AI",
+                title=item.title,
+                guid=item.guid,
+                created="2026-05-02 10:00:00",
+                body="AI Agent 规范正文",
+                updated_ms=item.updated,
+            )
+            legacy = seed_keyword_markdown(
+                vault,
+                domain="Quant",
+                title=item.title,
+                guid=item.guid,
+                created="2026-05-02 10:00:00",
+                body="第二版旧副本，内容与上次隔离版本不同",
+                updated_ms=item.updated,
+            )
+            canonical_relative = canonical.relative_to(vault).as_posix()
+            job = normalize_job(
+                {
+                    "since": "2026-04-01",
+                    "until": "2026-08-01",
+                    "selection_mode": "keyword_union",
+                    "domains": {"AI": {"keywords": ["AI"]}},
+                },
+                vault,
+            )
+            original_destination = (
+                vault
+                / ".state"
+                / "yinxiang-notes"
+                / "quarantine"
+                / "same-task"
+                / "files"
+                / legacy.relative_to(vault)
+            )
+            original_destination.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            original_destination.write_text(
+                "第一次隔离的不同内容",
+                encoding="utf-8",
+            )
+            original_payload = original_destination.read_bytes()
+            manifest_path = (
+                vault
+                / ".state"
+                / "yinxiang-notes"
+                / "quarantine"
+                / "same-task"
+                / "manifest.json"
+            )
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "job_id": "same-task",
+                        "selection_hash": "old-selection-hash",
+                        "records": [
+                            {
+                                "guid": item.guid,
+                                "reason": "noncanonical_path",
+                                "sha256": hashlib.sha256(
+                                    original_payload
+                                ).hexdigest(),
+                                "source": legacy.relative_to(
+                                    vault
+                                ).as_posix(),
+                                "quarantine": original_destination.relative_to(
+                                    vault
+                                ).as_posix(),
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = reconcile_keyword_outputs(
+                job,
+                CatalogStub(),
+                "selection-hash",
+                "same-task",
+                expected_candidates={item.guid: item.updated},
+            )
+
+            manifest = json.loads(
+                Path(result["manifest"]).read_text(encoding="utf-8")
+            )
+            records = [
+                record
+                for record in manifest["records"]
+                if record["source"]
+                == legacy.relative_to(vault).as_posix()
+            ]
+            self.assertFalse(legacy.exists())
+            self.assertEqual(original_destination.read_bytes(), original_payload)
+            self.assertEqual(len(records), 2)
+            self.assertEqual(
+                len({record["quarantine"] for record in records}),
+                2,
+            )
+            for record in records:
+                self.assertTrue(
+                    (
+                        vault
+                        / Path(*Path(record["quarantine"]).parts)
+                    ).is_file()
+                )
 
     def test_keyword_bootstrap_skips_out_of_range_or_missing_attachment(self):
         from scripts.export_catalog import ExportCatalog

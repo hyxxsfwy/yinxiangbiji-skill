@@ -59,6 +59,7 @@ _ASSET_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _WIKILINK = re.compile(r"\[\[([^|\]]+)(?:\|[^\]]*)?\]\]")
 _MONTH_DIRECTORY = re.compile(r"^\d{4}年(?:0[1-9]|1[0-2])月$")
 _REMOTE_TARGET = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+CLASSIFICATION_POLICY_VERSION = 12
 
 DOMAIN_PROFILES = {
     "AI": {
@@ -70,6 +71,10 @@ DOMAIN_PROFILES = {
             "开源模型", "模型推理", "参数规模",
             "agent", "agent skills", "skill", "本体论", "推理技术",
             "openclaw", "workbuddy", "coding agent",
+            "anthropic", "glm", "kimi", "minimax", "huggingface",
+            "hugging face", "rwkv", "rlhf",
+            "ai时代", "ai创业", "vibe coding", "文生视频", "视频生成",
+            "自动出视频", "吴恩达", "andrew ng", "loop engineering",
         ),
         "support": (
             "agent", "prompt", "提示词", "token", "embedding", "向量检索",
@@ -83,7 +88,8 @@ DOMAIN_PROFILES = {
             "交易策略", "技术交易", "量化金融",
             "止损", "交易系统", "历史行情",
             "交易法", "短线交易", "交易信号", "量化策略",
-            "quant",
+            "quant", "因子", "日内交易", "截面反转", "反转策略",
+            "高频", "做市", "量化分析", "量化分析师",
         ),
         "support": (
             "alpha", "因子", "交易信号", "最大回撤", "夏普", "时间序列",
@@ -97,6 +103,8 @@ DOMAIN_PROFILES = {
             "linux 内核", "c++", "javascript", "数据库", "kubernetes",
             "rocketmq", "kafka", "electron", "程序员", "开源项目",
             "postgresql", "mysql", "bug", "源码", "编程", "软件",
+            "好产品", "产品开发", "需求验证", "产品体验", "技术评估",
+            "开发排期", "项目管理",
         ),
         "support": (
             "代码", "开发", "测试", "接口", "api", "部署", "编译器",
@@ -112,6 +120,7 @@ DOMAIN_PROFILES = {
             "币圈", "defi", "美股", "a股", "白银", "黄金", "挖矿",
             "储蓄", "存钱", "个人理财",
             "港股", "港卡", "现金流", "交易商", "银行卡", "信用卡",
+            "以太坊", "ethereum", "eth", "solana", "sol", "期权",
         ),
         "support": (
             "收益率", "仓位", "现金流", "分红", "利率", "财报", "牛市",
@@ -136,6 +145,7 @@ DOMAIN_PROFILES = {
             "猝死", "基因组", "医疗", "护士",
             "bmi", "代谢", "体重", "脂肪",
             "减肥", "减重", "盆底肌", "卵巢", "疲劳", "睡眠", "心血管",
+            "脑梗", "中风", "抑郁", "抑郁症",
         ),
         "support": (
             "健康", "症状", "手术", "感染", "营养", "睡眠", "心脏",
@@ -145,7 +155,8 @@ DOMAIN_PROFILES = {
     "中医": {
         "core": (
             "中医", "中药", "经络", "针灸", "穴位", "方剂", "辨证论治",
-            "阴阳", "气血", "脏腑",
+            "阴阳", "气血", "脏腑", "黄帝内经", "五运六气", "气机",
+            "寒湿", "疏肝", "舒肝", "散结",
         ),
         "support": ("调理", "体质", "养生", "脉象", "舌象"),
     },
@@ -154,7 +165,7 @@ DOMAIN_PROFILES = {
             "两性", "婚姻", "伴侣", "夫妻", "恋爱", "亲密关系", "情感关系",
             "婚恋", "离婚", "彩礼", "婚房", "婆媳", "择偶",
             "出轨", "老公", "老婆", "丈夫", "妻子", "男友", "女友",
-            "小三",
+            "媳妇", "结婚", "小三",
             "关系冲突", "心理边界", "人际关系",
             "亲亲抱抱", "女权", "男权", "性格", "课题分离",
         ),
@@ -168,6 +179,8 @@ DOMAIN_PROFILES = {
             "个人成长", "自我管理", "时间管理", "职业规划", "习惯养成",
             "学习方法", "认知提升", "情绪管理", "自我反思",
             "人生选择", "前额叶", "拖延", "生活方式", "自我提升",
+            "工作倦怠", "辞职", "失业", "裁员", "跳槽", "找工作",
+            "职业转型", "离职", "招聘", "学历", "资历", "人才成长",
         ),
         "support": (
             "复盘", "目标管理", "专注", "阅读", "学习", "职业", "沟通",
@@ -176,24 +189,52 @@ DOMAIN_PROFILES = {
     },
 }
 MANAGED_DOMAINS = tuple(DOMAIN_PROFILES)
-SPECIFIC_DOMAINS = {"Quant", "中医", "两性情感", "知识管理"}
+SPECIFIC_DOMAINS = {
+    "Quant",
+    "投资理财",
+    "中医",
+    "两性情感",
+    "知识管理",
+}
+FORCED_SPECIFIC_TITLE_PATTERNS = (
+    (
+        "Quant",
+        re.compile(
+            r"量化(?:研究|分析|策略|交易|投资|因子)|AI量化",
+            re.I,
+        ),
+    ),
+    (
+        "中医",
+        re.compile(r"中医|中药|倪海厦|徐文兵|黄帝内经|五运六气"),
+    ),
+    (
+        "知识管理",
+        re.compile(r"Obsidian|PKM|GTD|卡片笔记|第二大脑", re.I),
+    ),
+)
 TITLE_FALLBACKS = (
     ("Quant", re.compile(
-        r"量化|TDXQuant|Alpha|因子|回测|时间序列|缠论|交易策略|交易系统|"
-        r"短线交易|技术交易|实盘",
+        r"量化|TDXQuant|因子|回测|缠论|交易策略|交易系统|"
+        r"短线交易|技术交易|实盘|日内|截面反转|高频|做市|"
+        r"(?=.*交易者)(?=.*时间周期)",
         re.I,
     )),
     ("知识管理", re.compile(r"知识库|Obsidian|PKM|GTD|卡片笔记", re.I)),
     ("投资理财", re.compile(
         r"币安|币圈|港股|港卡|牛市|熊市|现金流|房贷|贷款|银行|万事达|"
         r"VISA|财富自由|OKE|V神|以太坊|比特币|交易商|股票|证券|基金|"
-        r"美股|A股|黄金|白银|理财",
+        r"美股|A股|黄金(?!时代)|白银|理财|以太坊|Ethereum|ETH|SOL|期权",
         re.I,
     )),
-    ("中医", re.compile(r"中医|中药|倪海厦|徐文兵|针灸|穴位|气血|灸|药酒")),
+    ("中医", re.compile(
+        r"中医|中药|倪海厦|徐文兵|针灸|穴位|气血|灸|药酒|"
+        r"黄帝内经|五运六气|气机|寒湿|疏肝|舒肝|散结"
+    )),
     ("健康医学", re.compile(
         r"癌|肺|基因|细胞|免疫|病毒|医生|医学|医疗|医院|猝死|睡眠|"
-        r"体重|减肥|脂肪|代谢|卵巢|盆底肌|心脏|健康|器官|犯困",
+        r"体重|减肥|脂肪|代谢|卵巢|盆底肌|心脏|健康|器官|犯困|"
+        r"脑梗|中风|抑郁",
     )),
     ("两性情感", re.compile(
         r"婚|妻|夫|老公|老婆|伴侣|恋爱|女友|男友|小三|出轨|两性|"
@@ -201,7 +242,8 @@ TITLE_FALLBACKS = (
     )),
     ("个人成长", re.compile(
         r"个人成长|人生选择|自我|前额叶|拖延|生活方式|内卷|职业规划|"
-        r"失业|裁员|跳槽|找工作|沟通",
+        r"失业|裁员|跳槽|找工作|辞职|离职|工作倦怠|职业转型|"
+        r"招聘|学历|资历|人才成长|沟通",
     )),
     ("软件工程", re.compile(
         r"C\+\+|JavaScript|PostgreSQL|MySQL|Win11|Windows|BUG|GitHub|"
@@ -213,7 +255,9 @@ TITLE_FALLBACKS = (
         r"GLM(?:-\d+(?:\.\d+)?)?|Kimi|Claude|Anthropic|"
         r"Agent|Skills?|Cursor|Qoder|OpenClaw|Hermes|LightGBM|YOLO|RAG)"
         r"(?![A-Za-z0-9])|"
-        r"大模型|机器学习|开源模型|本体论|推理技术",
+        r"大模型|机器学习|开源模型|本体论|推理技术|模型|AI时代|AI创业|"
+        r"Vibe Coding|文生视频|视频生成|自动出视频|吴恩达|Andrew Ng|"
+        r"Loop Engineering",
         re.I,
     )),
 )
@@ -326,6 +370,14 @@ def _fallback_classification(title, current_domain, scores, evidence):
     return Classification("unclassified", None, scores, evidence)
 
 
+def _title_fallback_domains(title):
+    return tuple(
+        domain
+        for domain, pattern in TITLE_FALLBACKS
+        if pattern.search(title)
+    )
+
+
 def classify_document(title, body, current_domain):
     scored = {
         domain: _score_profile(title, body, profile)
@@ -341,21 +393,66 @@ def classify_document(title, body, current_domain):
         domain: value[0] for domain, value in title_scored.items()
     }
     current_title_score = title_scores.get(current_domain, 0)
-    if current_domain in SPECIFIC_DOMAINS and current_title_score >= 8:
-        return Classification("keep", current_domain, scores, evidence)
+    fallback_domains = _title_fallback_domains(title)
+    forced_specific_title = next(
+        (
+            domain
+            for domain, pattern in FORCED_SPECIFIC_TITLE_PATTERNS
+            if pattern.search(title)
+        ),
+        None,
+    )
+    has_competing_specific_title = any(
+        domain in SPECIFIC_DOMAINS and domain != current_domain
+        for domain in fallback_domains
+    )
     if (
-        current_title_score >= 8
-        and current_title_score == max(title_scores.values(), default=0)
+        forced_specific_title in {None, current_domain}
+        and current_domain in fallback_domains
+        and (
+            len(fallback_domains) == 1
+            or current_domain in SPECIFIC_DOMAINS
+            or (
+                not has_competing_specific_title
+                and current_title_score
+                >= max(title_scores.values(), default=0) - 5
+            )
+        )
     ):
         return Classification("keep", current_domain, scores, evidence)
-    target_domain, target_score = max(
-        scores.items(),
-        key=lambda item: (
-            title_scores[item[0]],
-            item[1],
-            item[0],
-        ),
-    )
+    if (
+        forced_specific_title in {None, current_domain}
+        and current_domain in SPECIFIC_DOMAINS
+        and current_title_score >= 8
+    ):
+        return Classification("keep", current_domain, scores, evidence)
+    if (
+        forced_specific_title in {None, current_domain}
+        and current_title_score >= 8
+        and current_title_score == max(title_scores.values(), default=0)
+        and (
+            current_domain in SPECIFIC_DOMAINS
+            or not has_competing_specific_title
+        )
+    ):
+        return Classification("keep", current_domain, scores, evidence)
+    if forced_specific_title is not None:
+        target_domain = forced_specific_title
+        target_score = scores[target_domain]
+    elif max(title_scores.values(), default=0) >= 8:
+        target_domain, target_score = max(
+            scores.items(),
+            key=lambda item: (
+                title_scores[item[0]],
+                item[1],
+                item[0],
+            ),
+        )
+    else:
+        target_domain, target_score = max(
+            scores.items(),
+            key=lambda item: (item[1], item[0]),
+        )
     target_has_core = any(
         term in evidence[target_domain]
         for term in DOMAIN_PROFILES[target_domain]["core"]
@@ -366,16 +463,24 @@ def classify_document(title, body, current_domain):
         )
     if target_domain == current_domain:
         return Classification("keep", current_domain, scores, evidence)
+    if forced_specific_title is not None:
+        return Classification("move", target_domain, scores, evidence)
     current_score = scores.get(current_domain, 0)
     title_evidence = title_scored[target_domain][1]
     title_has_core = any(
         term in title_evidence
         for term in DOMAIN_PROFILES[target_domain]["core"]
-    )
+    ) or target_domain in fallback_domains
     body_core_hits = sum(
         term in evidence[target_domain]
         for term in DOMAIN_PROFILES[target_domain]["core"]
     )
+    if (
+        not title_has_core
+        and current_score >= 8
+        and target_score < current_score + 8
+    ):
+        return Classification("keep", current_domain, scores, evidence)
     if not title_has_core and body_core_hits < 3:
         if current_score >= 8:
             return Classification("keep", current_domain, scores, evidence)

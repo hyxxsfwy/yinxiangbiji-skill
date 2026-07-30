@@ -14,6 +14,13 @@ from urllib.parse import unquote
 import evernote.edam.notestore.NoteStore as NoteStore
 from evernote.edam.type.ttypes import NoteSortOrder
 
+_CONTROLLED_LINKS_SECTION = re.compile(
+    r"(?:\r?\n)?## 相关笔记\r?\n\r?\n"
+    r"<!-- llmwiki:auto-links:start -->\r?\n.*?"
+    r"<!-- llmwiki:auto-links:end -->\r?\n?",
+    re.DOTALL,
+)
+
 try:
     from .knowledge_base import (
         extract_note_metadata,
@@ -973,6 +980,19 @@ def export_note_to_obsidian(
         note.guid,
         {},
     )
+    if output_path.is_file():
+        existing = output_path.read_text(encoding="utf-8")
+        controlled_links = _CONTROLLED_LINKS_SECTION.search(existing)
+        if (
+            controlled_links is not None
+            and not _CONTROLLED_LINKS_SECTION.search(markdown)
+        ):
+            markdown = (
+                markdown.rstrip()
+                + "\n\n"
+                + controlled_links.group(0).strip()
+                + "\n"
+            )
     output_path.write_text(markdown, encoding="utf-8")
     return output_path
 

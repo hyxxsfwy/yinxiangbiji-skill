@@ -87,6 +87,283 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(result.decision, "keep")
         self.assertEqual(result.target_domain, "AI")
 
+    def test_anthropic_title_keeps_ai_when_body_mentions_software(self):
+        result = classify_document(
+            "Anthropic万字爆火长文的三个判断，以及一个值得警惕的阳谋",
+            (
+                "文章分析 Claude 与大模型竞争，同时多次讨论软件、"
+                "代码、数据库、开发、测试、部署和系统架构。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "AI")
+
+    def test_gpt_coding_title_keeps_ai_when_software_score_is_close(self):
+        result = classify_document(
+            "GPT-5.5和Opus 4.8都搞不定的Bug，被Fable 5一晚上解决",
+            (
+                "比较 GPT 与其他大模型解决代码缺陷的能力，正文包含"
+                "数据库、测试、部署、接口和软件开发细节。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "AI")
+
+    def test_ai_business_strategy_is_not_moved_by_incidental_software_terms(self):
+        result = classify_document(
+            "卖铲子不再是好生意",
+            (
+                "很多创业者在AI时代选择做工具，服务律师、程序员和设计师。"
+                "文章讨论大模型重构产业分工，以及AI改变供需、AI重构服务关系；"
+                "正文举例软件开发、编程、软件、代码、测试和部署，"
+                "只是为了说明商业模式。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "AI")
+
+    def test_ai_video_generator_is_not_moved_by_open_source_project_label(self):
+        result = classify_document(
+            "开源项目爆火，输入一句话就能全自动出视频",
+            (
+                "AI团队发布视频生成工具，能够用大模型写文案、生成画面、"
+                "语音和背景音乐，再自动合成视频。项目在GitHub提供源码和API。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "AI")
+
+    def test_vibe_coding_article_stays_ai(self):
+        result = classify_document(
+            "胡彦斌苦修Vibe Coding，还上架了APP",
+            (
+                "作者用AI辅助编程完成应用，大模型生成代码并反复修复Bug，"
+                "正文也介绍JavaScript、数据库、测试、部署和软件开发。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "AI")
+
+    def test_andrew_ng_loop_engineering_article_stays_ai(self):
+        result = classify_document(
+            "吴恩达对 Loop Engineering 的理解真深刻",
+            (
+                "Andrew Ng讨论Agent自主写代码、调试和修复Bug，"
+                "分析AI参与软件开发后形成的多层反馈循环。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "AI")
+
+    def test_ai_accelerated_product_development_stays_in_software(self):
+        result = classify_document(
+            "AI让开发快了10倍，为什么好产品没有多10倍",
+            (
+                "产品经理用AI快速开发数据工具，但用户并不需要。"
+                "文章讨论需求验证、产品体验、技术评估、开发排期和项目管理，"
+                "重点是软件产品是否解决真实问题。"
+            ),
+            "软件工程",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "软件工程")
+
+    def test_binance_alpha_reward_article_is_investment_not_quant(self):
+        result = classify_document(
+            "停更几个月的币安 Alpha，竟然又开始赚钱了",
+            (
+                "记录币安用户活动与代币奖励，围绕加密货币行情、"
+                "账户收益和币圈体验。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "投资理财")
+
+    def test_general_time_series_article_stays_ai(self):
+        result = classify_document(
+            "解决现阶段时间序列所遇问题的方法",
+            (
+                "使用机器学习、深度学习、Transformer 和神经网络"
+                "处理时间序列预测问题。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "AI")
+
+    def test_ethereum_title_keeps_investment_despite_ai_discussion(self):
+        result = classify_document(
+            "以太坊基金会一口气离开 54 人！",
+            (
+                "文章主要记录基金会人员调整。后半部分比较 AI 公司、"
+                "大模型、Agent 和机器学习团队的人才流动。"
+            ),
+            "投资理财",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "投资理财")
+
+    def test_intraday_reversal_strategy_stays_quant(self):
+        result = classify_document(
+            "为什么股票最后几分钟的价格走势更重要？一个日内截面反转策略",
+            (
+                "使用股票历史行情做因子回测，生成交易信号，"
+                "比较策略收益、最大回撤和实盘表现。"
+            ),
+            "Quant",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "Quant")
+
+    def test_trading_timeframe_method_moves_from_investment_to_quant(self):
+        result = classify_document(
+            "真正能赚钱的时间周期，只有一个（99%的交易者一开始就选错了）",
+            (
+                "比较5分钟、1小时、日线和周线交易方式，"
+                "分析市场噪音、入场时机、交易逻辑与持续盈利方法。"
+            ),
+            "投资理财",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "Quant")
+
+    def test_machine_learning_factor_research_moves_to_quant(self):
+        result = classify_document(
+            "基于SHAP与XGBoost的中国A股可解释因子分解",
+            (
+                "使用机器学习解释多因子信号，进行历史回测，"
+                "比较因子收益、最大回撤和策略表现。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "Quant")
+
+    def test_ai_quant_researcher_moves_to_more_specific_quant_domain(self):
+        result = classify_document(
+            "XALPHA：AI量化研究员——研报理解、策略挖掘与代码生成",
+            (
+                "系统大量使用AI、LLM、机器学习、智能体、Agent和大模型，"
+                "通过AI理解量化研报、挖掘Alpha因子并生成交易策略代码。"
+                "正文反复介绍AI Agent架构，最后完成历史回测和收益评估。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "Quant")
+
+    def test_claude_options_quant_analyst_prefers_quant_over_investment(self):
+        result = classify_document(
+            "我把 Claude 爆改成了期权量化分析师",
+            (
+                "通过MCP、代码和Claude构建智能交易界面，"
+                "分析期权链、仓位、Delta、交易策略与策略收益。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "Quant")
+
+    def test_explicit_quant_analysis_moves_from_broader_investment_domain(self):
+        result = classify_document(
+            "期权量化分析师：自动生成策略并完成回测",
+            (
+                "分析期权链、仓位和收益，同时生成量化交易策略、"
+                "历史回测、交易信号与最大回撤报告。"
+            ),
+            "投资理财",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "Quant")
+
+    def test_ai_golden_age_phrase_is_not_treated_as_gold_investment(self):
+        result = classify_document(
+            "让它崩：AI泡沫之后，黄金时代才会开始",
+            (
+                "文章讨论人工智能基础设施、数据中心、大模型产业周期，"
+                "并用铁路和互联网泡沫解释AI技术扩散。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "AI")
+
+    def test_programmer_resignation_story_moves_to_personal_growth(self):
+        result = classify_document(
+            "干程序员久了，为什么总有干不下去想辞职的感觉",
+            (
+                "从职业规划、工作倦怠、人生选择和自我反思角度，"
+                "讨论如何面对辞职与转型。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "个人成长")
+
+    def test_resignation_compensation_options_move_to_personal_growth(self):
+        result = classify_document(
+            "1700天无过错被动离职：绩效期权被清零",
+            (
+                "记录被动离职、职业转型、劳动经历和找工作计划；"
+                "期权只是离职补偿的一项。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "个人成长")
+
+    def test_marriage_conflict_beats_job_loss_signal(self):
+        result = classify_document(
+            "才失业一周，天天被媳妇催找工作，后悔结婚",
+            (
+                "重点讨论夫妻沟通、婚姻冲突、伴侣支持和情感关系；"
+                "失业是矛盾发生的背景。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "两性情感")
+
+    def test_crypto_hiring_article_moves_to_personal_growth(self):
+        result = classify_document(
+            "a16z：不要只看学历资历，找到更有加密精神的招聘方法",
+            (
+                "文章讨论招聘、职业经历、学历筛选和人才成长，"
+                "加密行业只是招聘场景。"
+            ),
+            "投资理财",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "个人成长")
+
     def test_investment_mentions_do_not_reclassify_unrelated_industry_news(self):
         result = classify_document(
             "120秒稳态运行！中国核聚变再突破",
@@ -181,6 +458,45 @@ class ClassificationTests(unittest.TestCase):
             "健康医学",
         )
         self.assertEqual(result.decision, "keep")
+
+    def test_workplace_stroke_story_stays_health(self):
+        result = classify_document(
+            "大厂员工被约谈后，在工位上脑梗了",
+            (
+                "文章记录公司约谈、裁员压力、职业选择和找工作焦虑，"
+                "员工最终在工位突发脑梗。"
+            ),
+            "健康医学",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "健康医学")
+
+    def test_liver_soothing_nodule_remedy_moves_to_tcm(self):
+        result = classify_document(
+            "这个能消灭结节的小果子，舒肝又散结",
+            (
+                "文章依据黄帝内经和五运六气理论，讨论气机、寒湿、"
+                "疏肝理气与中药食疗方法。"
+            ),
+            "健康医学",
+        )
+
+        self.assertEqual(result.decision, "move")
+        self.assertEqual(result.target_domain, "中医")
+
+    def test_depression_story_stays_health(self):
+        result = classify_document(
+            "朋友得了抑郁症，还不敢离开大厂",
+            (
+                "文章记录职业压力、离职顾虑、找工作和人生选择，"
+                "朋友已经确诊抑郁症。"
+            ),
+            "健康医学",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "健康医学")
 
     def test_communication_psychology_stays_relationships(self):
         result = classify_document(
