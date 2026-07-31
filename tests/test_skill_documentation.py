@@ -321,6 +321,21 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertNotIn("HugginFace", self.export_reference)
         self.assertNotRegex(self.export_reference, r"20\d{2}-\d{2}-\d{2}")
 
+    def test_export_snapshot_retention_contract(self):
+        for phrase in (
+            "只保留当前任务的一组完整导出快照",
+            "snapshot_cleanup",
+            "验收失败",
+            "不清理",
+            "重分类快照",
+            "孤立文件",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.export_reference)
+
+        self.assertIn("快照自动保留", self.skill)
+        self.assertIn("snapshot_cleanup", self.readme)
+
     def test_keyword_union_template_contains_every_requested_keyword(self):
         payload = json.loads(
             (
