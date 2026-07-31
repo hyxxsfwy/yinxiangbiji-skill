@@ -61,15 +61,29 @@
 
 旧仓库状态首次迁移时复制并校验哈希，不删除旧状态；目标同名异内容时停止。锁文件不是分布式锁，禁止两台设备同时写同一个 Vault。换设备前必须等待任务结束、SQLite 关闭和 Vault 同步完成。
 
-限流在等待预算内按服务端时长继续。退出码 `75` 表示限流预算耗尽：保留 SQLite、快照、运行状态和已物化文件，稍后用同一任务命令续跑。退出码 `1` 表示业务验收未通过：读取 JSON 报告、修复后续跑，不得改写报告的 `ok`。
+限流在等待预算内按服务端时长继续。退出码 `75` 表示限流预算耗尽：保留 SQLite、增量事务快照、运行状态和已物化文件，稍后用同一任务命令续跑。退出码 `1` 表示业务验收未通过：读取 JSON 报告、修复后续跑，不得改写报告的 `ok`。
 
-## 导出快照自动保留
+## 增量事务快照与 Markdown-only Git
 
-`keyword_union` 在首次物化前创建 `<16 位任务 ID>-before.zip` 与对应的 `.sha256.json`，并在持有当前 Vault 写锁期间管理这些快照。只有最终完整性验收成功、报告即将以 `ok: true` 落盘且当前 ZIP 的大小和 SHA-256 与清单一致时，才自动清理旧导出快照；默认只保留当前任务的一组完整导出快照。
+`keyword_union` 不再为每次任务创建 7 GB 级全量 ZIP。首次业务写入前会在 `.state/yinxiang-notes/transactions/<job-id>/` 建立增量事务快照：文件新增只记录路径，覆盖、删除和移动只保存一次原始前像；目录库使用 SQLite backup API 建立一致检查点。未变化附件不扫描、不哈希、不进入事务对象。报告的 `transaction_snapshot` 记录事务状态、变更路径数、对象数、实际存储字节和目录库检查点。
 
-自动清理只识别直接位于 `.state/yinxiang-notes/snapshots/`、名称严格符合 16 位十六进制任务 ID 且 ZIP 与清单成对存在的普通文件。重分类快照、迁移快照、孤立文件、非法名称、目录和符号链接均不清理；报告、SQLite、运行状态和隔离区不属于快照清理范围。
+正式 Vault 使用 Markdown-only Git 保存文本历史。先运行：
 
-限流退出、运行异常、验收失败或当前快照校验失败时不清理任何历史快照。成功报告的 `snapshot_cleanup` 记录是否执行、保留的任务 ID、删除文件、释放字节和安全跳过项；若清理本身失败，报告改为 `ok: false` 并记录 `reason: cleanup_failed`，不得把业务写入结束表述为导出完成。
+```powershell
+python scripts/vault_git.py init
+python scripts/vault_git.py verify
+```
+
+Git 只跟踪 Markdown、目录索引、根目录 `.gitignore`/`.gitattributes` 和稳定 `.obsidian` 配置；明确忽略 `_attachments`、`.state`、`workspace*.json`、凭据和其他二进制。启用后，导出前要求被跟踪工作树干净；验收成功后只暂存事务清单内允许路径并创建本地提交，不自动推送。报告的 `git_history` 必须为 `committed` 或 `no_changes` 才可视为 Git 阶段成功。没有远程仓库时只能称为本地历史，不能称为独立异地备份。
+
+事务可只读检查；恢复必须没有活动锁、当前文件仍符合事务后哈希，并使用固定确认词：
+
+```powershell
+python scripts/export_transaction.py inspect --job-id <job-id>
+python scripts/export_transaction.py restore --job-id <job-id> --confirm ROLLBACK_KEYWORD_EXPORT
+```
+
+首个真实增量任务、完整性验收和 Git 提交全部成功后，`legacy_snapshot_cleanup` 才删除旧的 16 位任务 ID 全量 ZIP 与清单。验收失败、Git 失败或 Git 未启用时不清理。自动清理只识别完整且校验通过的旧导出快照对；重分类快照、迁移快照、孤立文件、非法名称、目录和符号链接均不清理。清理失败时报告改为 `ok: false`，不得把业务写入结束表述为导出完成。
 
 ## 完整性门禁
 
@@ -81,6 +95,6 @@
 - Markdown 的范围、日期、选择指纹和目录归属符合任务；
 - 索引条目都能打开，简介非空，数量与唯一标题和按月统计一致；
 - 所有本地附件引用可解析，缺失附件为零；
-- 拒绝项没有 Markdown 或附件残留，快照和报告可用于审计与恢复。
+- 拒绝项没有 Markdown 或附件残留，事务快照、Git 历史和报告可用于审计与恢复。
 
 进程退出码为零但完整性门禁未通过时，只能报告部分完成。

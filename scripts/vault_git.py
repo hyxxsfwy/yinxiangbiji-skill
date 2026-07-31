@@ -366,8 +366,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("init", "verify"))
     args = parser.parse_args(argv)
-    from scripts.runtime import load_vault_root
+    try:
+        from .runtime import configure_utf8_output, load_vault_root
+    except ImportError:
+        from runtime import configure_utf8_output, load_vault_root
 
+    configure_utf8_output()
     vault = load_vault_root()
     if args.command == "init":
         payload = initialize_vault_git(vault).to_dict()

@@ -389,8 +389,12 @@ def main(argv=None):
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--confirm")
     args = parser.parse_args(argv)
-    from scripts.runtime import load_vault_root
+    try:
+        from .runtime import configure_utf8_output, load_vault_root
+    except ImportError:
+        from runtime import configure_utf8_output, load_vault_root
 
+    configure_utf8_output()
     vault = load_vault_root()
     state_root = vault / ".state" / "yinxiang-notes"
     journal = _load_existing(vault, state_root, args.job_id)

@@ -1,7 +1,10 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -24,6 +27,79 @@ def _create_catalog(path):
 
 
 class ExportTransactionTests(unittest.TestCase):
+    def test_cli_inspects_and_requires_fixed_restore_confirmation(self):
+        from scripts.export_transaction import VaultMutationJournal
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            state_root = vault / ".state" / "yinxiang-notes"
+            note = vault / "文章.md"
+            note.write_text("before", encoding="utf-8")
+            journal = VaultMutationJournal.begin(
+                vault,
+                state_root,
+                "cli-job",
+                "selection",
+                state_root / "catalog.sqlite3",
+            )
+            journal.prepare_write(note)
+            note.write_text("after", encoding="utf-8")
+            journal.record_write(note)
+            environment = {
+                **os.environ,
+                "OBSIDIAN_VAULT_PATH": str(vault),
+            }
+            command = [
+                sys.executable,
+                "scripts/export_transaction.py",
+            ]
+
+            inspected = subprocess.run(
+                [*command, "inspect", "--job-id", "cli-job"],
+                cwd=Path(__file__).resolve().parent.parent,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            refused = subprocess.run(
+                [*command, "restore", "--job-id", "cli-job"],
+                cwd=Path(__file__).resolve().parent.parent,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            restored = subprocess.run(
+                [
+                    *command,
+                    "restore",
+                    "--job-id",
+                    "cli-job",
+                    "--confirm",
+                    "ROLLBACK_KEYWORD_EXPORT",
+                ],
+                cwd=Path(__file__).resolve().parent.parent,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+
+            self.assertEqual(inspected.returncode, 0, inspected.stderr)
+            self.assertEqual(
+                json.loads(inspected.stdout)["state"],
+                "in_progress",
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("ROLLBACK_KEYWORD_EXPORT", refused.stderr)
+            self.assertEqual(restored.returncode, 0, restored.stderr)
+            self.assertEqual(note.read_text(encoding="utf-8"), "before")
+
     def test_atomic_manifest_write_retries_a_transient_windows_lock(self):
         from scripts import export_transaction
 

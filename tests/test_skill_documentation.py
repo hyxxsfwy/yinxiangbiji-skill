@@ -321,10 +321,12 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertNotIn("HugginFace", self.export_reference)
         self.assertNotRegex(self.export_reference, r"20\d{2}-\d{2}-\d{2}")
 
-    def test_export_snapshot_retention_contract(self):
+    def test_incremental_snapshot_and_markdown_git_contract(self):
         for phrase in (
-            "只保留当前任务的一组完整导出快照",
-            "snapshot_cleanup",
+            "transaction_snapshot",
+            "git_history",
+            "Markdown-only Git",
+            "ROLLBACK_KEYWORD_EXPORT",
             "验收失败",
             "不清理",
             "重分类快照",
@@ -333,8 +335,8 @@ class SkillDocumentationTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.export_reference)
 
-        self.assertIn("快照自动保留", self.skill)
-        self.assertIn("snapshot_cleanup", self.readme)
+        self.assertIn("增量事务快照", self.skill)
+        self.assertIn("legacy_snapshot_cleanup", self.readme)
 
     def test_keyword_union_template_contains_every_requested_keyword(self):
         payload = json.loads(
@@ -988,6 +990,7 @@ class SkillDocumentationTests(unittest.TestCase):
             "empty_trash.py",
             "export_multi_domain.py",
             "export_search_results.py",
+            "export_transaction.py",
             "get_note_enml.py",
             "list_notebooks.py",
             "list_tags.py",
@@ -995,6 +998,7 @@ class SkillDocumentationTests(unittest.TestCase):
             "search_notes.py",
             "sync_to_obsidian.py",
             "update_note.py",
+            "vault_git.py",
             "curate_selected_materials.py",
             "restructure_obsidian_vault.py",
             "reclassify_selected_materials.py",

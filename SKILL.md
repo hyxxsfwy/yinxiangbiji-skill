@@ -64,7 +64,7 @@ Copy-Item .env.example .env
 ## 完成门禁
 
 - 导出：只在 JSON 报告为 `ok: true`，且范围、唯一归属、标题去重、索引和附件验证全部通过后声明完成。
-- 关键词并集快照自动保留：最终验收成功后只保留当前任务的一组完整导出快照；清理明细以 `snapshot_cleanup` 为准。
+- 关键词并集增量事务快照：只保存本次实际变更的文件前像和 SQLite 检查点；最终验收与 Markdown-only Git 提交成功后，清理明细以 `legacy_snapshot_cleanup` 为准。
 - 限流或验收失败：保留状态，报告部分完成并按 reference 续跑，不把进程结束等同于业务完成。
 - Vault 重组：快照、路径、Properties、索引、链接和附件验证全部通过后才完成。
 - 精选资料重分类：`audit` 已覆盖全局、`apply` 已创建快照，且独立 `verify` 的索引、双向链接和附件验证全部通过后才完成。
