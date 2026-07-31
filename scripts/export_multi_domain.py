@@ -39,7 +39,10 @@ try:
         full_body_text,
         markdown_attachments_complete,
     )
-    from .export_snapshot import create_domain_snapshot
+    from .export_snapshot import (
+        create_domain_snapshot,
+        prune_export_snapshots,
+    )
     from .knowledge_base import (
         INDEX_FILENAME,
         _split_frontmatter,
@@ -89,7 +92,10 @@ except ImportError:
         full_body_text,
         markdown_attachments_complete,
     )
-    from export_snapshot import create_domain_snapshot
+    from export_snapshot import (
+        create_domain_snapshot,
+        prune_export_snapshots,
+    )
     from knowledge_base import (
         INDEX_FILENAME,
         _split_frontmatter,
@@ -1599,6 +1605,27 @@ def _run_keyword_union_job(
         "integrity": integrity.to_dict(),
         "integrity_summary": integrity_summary,
     }
+    if report["ok"]:
+        try:
+            cleanup = prune_export_snapshots(
+                job.vault,
+                VaultStatePaths.for_vault(job.vault).root / "snapshots",
+                current_job_id=_job_id(job),
+            )
+        except (OSError, ValueError) as exc:
+            report["ok"] = False
+            report["snapshot_cleanup"] = {
+                "executed": False,
+                "reason": "cleanup_failed",
+                "error": str(exc),
+            }
+        else:
+            report["snapshot_cleanup"] = cleanup.to_dict()
+    else:
+        report["snapshot_cleanup"] = {
+            "executed": False,
+            "reason": "export_validation_failed",
+        }
     _atomic_json(report_file, report)
     return report
 

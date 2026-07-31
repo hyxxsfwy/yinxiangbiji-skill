@@ -1250,6 +1250,140 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                 Path(report["snapshot"]["manifest"]).is_file()
             )
 
+    def test_successful_keyword_export_prunes_old_export_snapshots(self):
+        from scripts.export_multi_domain import (
+            _job_id,
+            normalize_job,
+            run_export_job,
+        )
+        from scripts.export_snapshot import create_domain_snapshot
+
+        item = metadata("guid-1", "AI Agent", 1780000000000)
+        store = FakeNoteStore(
+            {"AI": [item]},
+            {
+                "guid-1": full_note(
+                    item,
+                    "<en-note>AI Agent</en-note>",
+                )
+            },
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            seed_keyword_markdown(
+                vault,
+                domain="AI",
+                title="AI 旧文章",
+                guid="existing-guid",
+                created="2026-05-01 10:00:00",
+                body="AI before",
+            )
+            snapshot_dir = (
+                vault / ".state" / "yinxiang-notes" / "snapshots"
+            )
+            old = create_domain_snapshot(
+                vault,
+                ("AI",),
+                snapshot_dir,
+                "1111111111111111",
+            )
+            job = normalize_job(keyword_union_payload(), vault)
+
+            report = run_export_job(
+                job,
+                store,
+                "token",
+                catalog_path=temp_dir / "catalog.sqlite3",
+                state_file=temp_dir / "state.json",
+                report_file=temp_dir / "report.json",
+                rate_limit_mode="stop",
+                max_rate_limit_wait=0,
+            )
+
+            current = (
+                snapshot_dir / f"{_job_id(job)}-before.zip"
+            )
+            self.assertTrue(report["ok"], report)
+            self.assertFalse(old.archive.exists())
+            self.assertFalse(old.manifest.exists())
+            self.assertTrue(current.is_file())
+            self.assertTrue(report["snapshot_cleanup"]["executed"])
+            self.assertEqual(
+                report["snapshot_cleanup"]["deleted_files"],
+                2,
+            )
+
+    def test_failed_keyword_export_keeps_old_export_snapshots(self):
+        from scripts.export_multi_domain import (
+            normalize_job,
+            run_export_job,
+        )
+        from scripts.export_snapshot import create_domain_snapshot
+
+        item = metadata("guid-1", "AI Agent", 1780000000000)
+        store = FakeNoteStore(
+            {"AI": [item]},
+            {
+                "guid-1": full_note(
+                    item,
+                    "<en-note>AI Agent</en-note>",
+                )
+            },
+        )
+        failed_integrity = SimpleNamespace(
+            ok=False,
+            domains={},
+            cross_domain_guid_duplicates=(),
+            cross_domain_title_duplicates=(),
+            to_dict=lambda: {"ok": False},
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            seed_keyword_markdown(
+                vault,
+                domain="AI",
+                title="AI 旧文章",
+                guid="existing-guid",
+                created="2026-05-01 10:00:00",
+                body="AI before",
+            )
+            snapshot_dir = (
+                vault / ".state" / "yinxiang-notes" / "snapshots"
+            )
+            old = create_domain_snapshot(
+                vault,
+                ("AI",),
+                snapshot_dir,
+                "1111111111111111",
+            )
+            job = normalize_job(keyword_union_payload(), vault)
+
+            with patch(
+                "scripts.export_multi_domain.scan_keyword_export_integrity",
+                return_value=failed_integrity,
+            ):
+                report = run_export_job(
+                    job,
+                    store,
+                    "token",
+                    catalog_path=temp_dir / "catalog.sqlite3",
+                    state_file=temp_dir / "state.json",
+                    report_file=temp_dir / "report.json",
+                    rate_limit_mode="stop",
+                    max_rate_limit_wait=0,
+                )
+
+            self.assertFalse(report["ok"])
+            self.assertTrue(old.archive.is_file())
+            self.assertTrue(old.manifest.is_file())
+            self.assertFalse(report["snapshot_cleanup"]["executed"])
+            self.assertEqual(
+                report["snapshot_cleanup"]["reason"],
+                "export_validation_failed",
+            )
+
     def test_keyword_union_searches_every_query_term_and_merges_guid(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
         from scripts.keyword_selection import expanded_query_terms
