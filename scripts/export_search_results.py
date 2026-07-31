@@ -894,6 +894,7 @@ def export_note_to_obsidian(
     selection_mode="domain_gate",
     matched_keywords=(),
     selection_hash=None,
+    journal=None,
 ):
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -903,7 +904,11 @@ def export_note_to_obsidian(
     if resources:
         attachments_dir = target_dir / "_attachments"
         attachments_dir.mkdir(parents=True, exist_ok=True)
-        hash_to_file = save_attachments(resources, str(attachments_dir))
+        hash_to_file = save_attachments(
+            resources,
+            str(attachments_dir),
+            journal=journal,
+        )
 
     created = datetime.fromtimestamp(note.created / 1000)
     updated_ms = getattr(note, "updated", 0) or note.created
@@ -993,7 +998,17 @@ def export_note_to_obsidian(
                 + controlled_links.group(0).strip()
                 + "\n"
             )
-    output_path.write_text(markdown, encoding="utf-8")
+    existing_markdown = (
+        output_path.read_text(encoding="utf-8")
+        if output_path.is_file()
+        else None
+    )
+    if existing_markdown != markdown:
+        if journal is not None:
+            journal.prepare_write(output_path)
+        output_path.write_text(markdown, encoding="utf-8")
+        if journal is not None:
+            journal.record_write(output_path)
     return output_path
 
 

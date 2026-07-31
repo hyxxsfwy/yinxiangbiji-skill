@@ -261,6 +261,30 @@ source_guid: "image-guid"
 
 
 class IndexTests(unittest.TestCase):
+    def test_unchanged_index_is_not_recorded_as_a_transaction_change(self):
+        from scripts.export_transaction import VaultMutationJournal
+        from scripts.knowledge_base import write_knowledge_base_index
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            root = vault / "30_精选资料" / "AI"
+            root.mkdir(parents=True)
+            write_knowledge_base_index(root)
+            state_root = vault / ".state" / "yinxiang-notes"
+            journal = VaultMutationJournal.begin(
+                vault,
+                state_root,
+                "unchanged-index-job",
+                "selection",
+                state_root / "catalog.sqlite3",
+            )
+
+            write_knowledge_base_index(root, journal=journal)
+            summary = journal.seal()
+
+            self.assertEqual(summary.changed_paths, 0)
+            self.assertEqual(summary.object_count, 0)
+
     def test_index_uses_explicit_wikilink_for_dotted_plus_title(self):
         from scripts.knowledge_base import write_knowledge_base_index
 
@@ -463,6 +487,48 @@ class IndexTests(unittest.TestCase):
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_finalization_records_moves_deletes_and_index_write(self):
+        from scripts.export_transaction import VaultMutationJournal
+        from scripts.knowledge_base import finalize_knowledge_base
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            root = vault / "30_精选资料" / "AI"
+            write_note(
+                root / "根目录文章.md",
+                title="根目录文章",
+                created="2026-07-24 11:00:27",
+                updated="2026-07-25 11:00:27",
+                guid="root-guid",
+                body="用于验证事务记录的正文。",
+            )
+            state_root = vault / ".state" / "yinxiang-notes"
+            journal = VaultMutationJournal.begin(
+                vault,
+                state_root,
+                "finalize-job",
+                "selection",
+                state_root / "catalog.sqlite3",
+            )
+
+            result = finalize_knowledge_base(root, journal=journal)
+            journal.seal()
+            changed = set(journal.changed_paths())
+
+            self.assertIn(
+                "30_精选资料/AI/根目录文章.md",
+                changed,
+            )
+            self.assertIn(
+                "30_精选资料/AI/2026年07月/根目录文章.md",
+                changed,
+            )
+            self.assertIn(
+                "30_精选资料/AI/目录索引.md",
+                changed,
+            )
+            self.assertEqual(result.errors, ())
+
     def test_moves_root_note_to_created_month_and_rewrites_attachments(self):
         from scripts.knowledge_base import archive_root_notes
 

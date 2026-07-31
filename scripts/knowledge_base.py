@@ -287,7 +287,7 @@ def build_note_summary(markdown_text, title):
     return summary
 
 
-def write_knowledge_base_index(root, domain="AI"):
+def write_knowledge_base_index(root, domain="AI", journal=None):
     """只收录契约匹配的本领域资料，并完整重建目录索引。"""
     root = Path(root)
     notes = [
@@ -342,10 +342,19 @@ def write_knowledge_base_index(root, domain="AI"):
         lines.extend(["## 当前资料", "", "- 暂无", ""])
 
     rendered = "\n".join(lines).rstrip() + "\n"
+    index_path = root / INDEX_FILENAME
+    if (
+        index_path.is_file()
+        and index_path.read_text(encoding="utf-8") == rendered
+    ):
+        return index_path
     temporary = root / f".{INDEX_FILENAME}.tmp"
     temporary.write_text(rendered, encoding="utf-8")
-    index_path = root / INDEX_FILENAME
+    if journal is not None:
+        journal.prepare_write(index_path)
     temporary.replace(index_path)
+    if journal is not None:
+        journal.record_write(index_path)
     return index_path
 
 
@@ -364,7 +373,7 @@ def _rewrite_root_attachment_paths(markdown_text):
     )
 
 
-def archive_root_notes(root):
+def archive_root_notes(root, journal=None):
     """把根目录文章迁入创建月份目录，并报告无法迁移的文件。"""
     root = Path(root)
     moved = []
@@ -380,7 +389,11 @@ def archive_root_notes(root):
             if destination.exists():
                 destination_metadata = extract_note_metadata(destination)
                 if destination_metadata.guid == metadata.guid:
+                    if journal is not None:
+                        journal.prepare_delete(source)
                     source.unlink()
+                    if journal is not None:
+                        journal.record_delete(source)
                     moved.append(destination)
                     continue
                 destination = resolve_note_path(
@@ -391,11 +404,15 @@ def archive_root_notes(root):
                 )
 
             markdown_text = source.read_text(encoding="utf-8")
+            if journal is not None:
+                journal.prepare_move(source, destination)
             destination.write_text(
                 _rewrite_root_attachment_paths(markdown_text),
                 encoding="utf-8",
             )
             source.unlink()
+            if journal is not None:
+                journal.record_move(source, destination)
             moved.append(destination)
         except (OSError, UnicodeError, ValueError) as exc:
             errors.append(f"{source}: {exc}")
@@ -441,7 +458,7 @@ def archived_title_owners(root):
     return owners
 
 
-def deduplicate_archived_notes(root):
+def deduplicate_archived_notes(root, journal=None):
     """删除同标题旧版本，并把胜出文件恢复为规范标题文件名。"""
     groups = {}
     for path in _monthly_markdown_paths(root):
@@ -461,19 +478,31 @@ def deduplicate_archived_notes(root):
         for note in notes:
             if note.path == winner.path:
                 continue
+            if journal is not None:
+                journal.prepare_delete(note.path)
             note.path.unlink()
+            if journal is not None:
+                journal.record_delete(note.path)
             removed.append(note.path)
 
         if winner.path != canonical:
+            if journal is not None:
+                journal.prepare_move(winner.path, canonical)
             winner.path.replace(canonical)
+            if journal is not None:
+                journal.record_move(winner.path, canonical)
     return removed
 
 
-def finalize_knowledge_base(root, domain="AI"):
+def finalize_knowledge_base(root, domain="AI", journal=None):
     """迁移、去重并重建索引；重复运行保持幂等。"""
-    archive = archive_root_notes(root)
-    removed = tuple(deduplicate_archived_notes(root))
-    index_path = write_knowledge_base_index(root, domain=domain)
+    archive = archive_root_notes(root, journal=journal)
+    removed = tuple(deduplicate_archived_notes(root, journal=journal))
+    index_path = write_knowledge_base_index(
+        root,
+        domain=domain,
+        journal=journal,
+    )
     return FinalizationResult(
         moved=archive.moved,
         removed=removed,

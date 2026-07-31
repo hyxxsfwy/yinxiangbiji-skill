@@ -334,7 +334,7 @@ def extract_resources(note):
     return resources
 
 
-def save_attachments(resources, attachments_dir):
+def save_attachments(resources, attachments_dir, journal=None):
     """保存附件到目录（按文件名，hash 去重）"""
     os.makedirs(attachments_dir, exist_ok=True)
     saved = {}
@@ -360,8 +360,12 @@ def save_attachments(resources, attachments_dir):
                 counter += 1
             fp = os.path.join(attachments_dir, filename)
             if not os.path.exists(fp):
+                if journal is not None:
+                    journal.prepare_write(fp)
                 with open(fp, 'wb') as f:
                     f.write(res['data'])
+                if journal is not None:
+                    journal.record_write(fp)
                 break
             if os.path.isfile(fp):
                 with open(fp, 'rb') as f:

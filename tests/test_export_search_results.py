@@ -1132,6 +1132,49 @@ class ExportNoteTests(unittest.TestCase):
 
 
 class AttachmentSavingTests(unittest.TestCase):
+    def test_journal_records_only_the_new_attachment(self):
+        from scripts.export_transaction import VaultMutationJournal
+
+        data = b"new-image"
+        resources = {
+            "attachment-hash": {
+                "filename": "image.png",
+                "data": data,
+                "mime": "image/png",
+                "hash": "attachment-hash",
+                "content_hash": hashlib.sha256(data).hexdigest(),
+            }
+        }
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            attachments = vault / "30_精选资料" / "AI" / "_attachments"
+            untouched = attachments / "large.bin"
+            untouched.parent.mkdir(parents=True)
+            untouched.write_bytes(b"untouched")
+            state_root = vault / ".state" / "yinxiang-notes"
+            journal = VaultMutationJournal.begin(
+                vault,
+                state_root,
+                "attachments-job",
+                "selection",
+                state_root / "catalog.sqlite3",
+            )
+
+            saved = save_attachments(resources, attachments, journal=journal)
+            summary = journal.seal()
+            saved_path = attachments / saved["attachment-hash"]
+
+            self.assertEqual(summary.changed_paths, 1)
+            self.assertIn(
+                saved_path.relative_to(vault).as_posix(),
+                journal.changed_paths(),
+            )
+            self.assertNotIn(
+                untouched.relative_to(vault).as_posix(),
+                journal.changed_paths(),
+            )
+
     def test_same_filename_with_different_content_gets_unique_paths(self):
         first_data = b"first-image"
         second_data = b"second-image"

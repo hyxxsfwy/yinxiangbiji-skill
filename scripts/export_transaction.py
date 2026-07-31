@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import sys
+import time
 
 
 ROLLBACK_CONFIRMATION = "ROLLBACK_KEYWORD_EXPORT"
@@ -34,7 +35,14 @@ def _atomic_json(path, payload):
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    os.replace(temporary, path)
+    for attempt in range(5):
+        try:
+            os.replace(temporary, path)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.02 * (attempt + 1))
 
 
 @dataclass(frozen=True)

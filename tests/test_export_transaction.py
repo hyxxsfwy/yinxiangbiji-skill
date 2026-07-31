@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sqlite3
 import unittest
+from unittest import mock
 
 from tests.support import workspace_temp_dir
 
@@ -23,6 +24,34 @@ def _create_catalog(path):
 
 
 class ExportTransactionTests(unittest.TestCase):
+    def test_atomic_manifest_write_retries_a_transient_windows_lock(self):
+        from scripts import export_transaction
+
+        with workspace_temp_dir() as temp_dir:
+            target = temp_dir / "manifest.json"
+            real_replace = export_transaction.os.replace
+            calls = 0
+
+            def transient_replace(source, destination):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise PermissionError(5, "transient lock")
+                return real_replace(source, destination)
+
+            with mock.patch.object(
+                export_transaction.os,
+                "replace",
+                side_effect=transient_replace,
+            ):
+                export_transaction._atomic_json(target, {"ok": True})
+
+            self.assertGreaterEqual(calls, 2)
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                {"ok": True},
+            )
+
     def test_records_preimages_and_restores_write_delete_and_move(self):
         from scripts.export_transaction import VaultMutationJournal
 
