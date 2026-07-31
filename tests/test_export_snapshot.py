@@ -137,6 +137,151 @@ class ExportSnapshotTests(unittest.TestCase):
                 )
             self.assertEqual(archive.read_bytes(), b"corrupted")
 
+    def test_prune_keeps_current_and_removes_complete_old_export_pair(self):
+        from scripts.export_snapshot import (
+            create_domain_snapshot,
+            prune_export_snapshots,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            ai = vault / "30_精选资料" / "AI"
+            ai.mkdir(parents=True)
+            (ai / "文章.md").write_text("AI", encoding="utf-8")
+            snapshot_dir = (
+                vault / ".state" / "yinxiang-notes" / "snapshots"
+            )
+            old = create_domain_snapshot(
+                vault,
+                ("AI",),
+                snapshot_dir,
+                "1111111111111111",
+            )
+            current = create_domain_snapshot(
+                vault,
+                ("AI",),
+                snapshot_dir,
+                "2222222222222222",
+            )
+            expected_deleted_bytes = (
+                old.archive.stat().st_size
+                + old.manifest.stat().st_size
+            )
+
+            result = prune_export_snapshots(
+                vault,
+                snapshot_dir,
+                current_job_id="2222222222222222",
+            )
+
+            self.assertFalse(old.archive.exists())
+            self.assertFalse(old.manifest.exists())
+            self.assertTrue(current.archive.is_file())
+            self.assertTrue(current.manifest.is_file())
+            self.assertEqual(result.deleted_files, 2)
+            self.assertEqual(result.deleted_bytes, expected_deleted_bytes)
+            self.assertEqual(
+                result.kept_job_ids,
+                ("2222222222222222",),
+            )
+
+    def test_prune_ignores_other_workflows_and_orphaned_export_files(self):
+        from scripts.export_snapshot import (
+            create_domain_snapshot,
+            prune_export_snapshots,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            ai = vault / "30_精选资料" / "AI"
+            ai.mkdir(parents=True)
+            (ai / "文章.md").write_text("AI", encoding="utf-8")
+            snapshot_dir = (
+                vault / ".state" / "yinxiang-notes" / "snapshots"
+            )
+            create_domain_snapshot(
+                vault,
+                ("AI",),
+                snapshot_dir,
+                "2222222222222222",
+            )
+            reclassification = (
+                snapshot_dir
+                / "20260730-selected-materials-rescan-before.zip"
+            )
+            reclassification.write_bytes(b"reclassification")
+            orphan = snapshot_dir / "3333333333333333-before.zip"
+            orphan.write_bytes(b"orphan")
+
+            result = prune_export_snapshots(
+                vault,
+                snapshot_dir,
+                current_job_id="2222222222222222",
+            )
+
+            self.assertTrue(reclassification.is_file())
+            self.assertTrue(orphan.is_file())
+            self.assertEqual(result.deleted_files, 0)
+            skipped_paths = {
+                item["path"] for item in result.skipped
+            }
+            self.assertIn(reclassification.name, skipped_paths)
+            self.assertIn(orphan.name, skipped_paths)
+
+    def test_prune_validates_current_snapshot_before_deleting_history(self):
+        from scripts.export_snapshot import (
+            create_domain_snapshot,
+            prune_export_snapshots,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            ai = vault / "30_精选资料" / "AI"
+            ai.mkdir(parents=True)
+            (ai / "文章.md").write_text("AI", encoding="utf-8")
+            snapshot_dir = (
+                vault / ".state" / "yinxiang-notes" / "snapshots"
+            )
+            old = create_domain_snapshot(
+                vault,
+                ("AI",),
+                snapshot_dir,
+                "1111111111111111",
+            )
+            current = create_domain_snapshot(
+                vault,
+                ("AI",),
+                snapshot_dir,
+                "2222222222222222",
+            )
+            current.archive.write_bytes(b"corrupted")
+
+            with self.assertRaisesRegex(ValueError, "哈希或大小不一致"):
+                prune_export_snapshots(
+                    vault,
+                    snapshot_dir,
+                    current_job_id="2222222222222222",
+                )
+
+            self.assertTrue(old.archive.is_file())
+            self.assertTrue(old.manifest.is_file())
+
+    def test_prune_rejects_snapshot_directory_outside_vault(self):
+        from scripts.export_snapshot import prune_export_snapshots
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            outside = temp_dir / "outside"
+            outside.mkdir()
+
+            with self.assertRaisesRegex(ValueError, "逃逸出 Vault"):
+                prune_export_snapshots(
+                    vault,
+                    outside,
+                    current_job_id="2222222222222222",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
