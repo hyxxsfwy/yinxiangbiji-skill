@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import time as time_module
 import uuid
 
@@ -40,8 +41,11 @@ try:
         markdown_attachments_complete,
     )
     from .export_snapshot import (
-        create_domain_snapshot,
-        prune_export_snapshots,
+        prune_legacy_export_snapshots,
+    )
+    from .export_transaction import (
+        VaultMutationJournal,
+        prune_committed_transactions,
     )
     from .knowledge_base import (
         INDEX_FILENAME,
@@ -72,6 +76,10 @@ try:
         require_path_within_vault,
         runtime_write_lock,
     )
+    from .vault_git import (
+        commit_transaction,
+        preflight_vault_git,
+    )
 except ImportError:
     from export_catalog import (
         CatalogEntry,
@@ -93,8 +101,11 @@ except ImportError:
         markdown_attachments_complete,
     )
     from export_snapshot import (
-        create_domain_snapshot,
-        prune_export_snapshots,
+        prune_legacy_export_snapshots,
+    )
+    from export_transaction import (
+        VaultMutationJournal,
+        prune_committed_transactions,
     )
     from knowledge_base import (
         INDEX_FILENAME,
@@ -124,6 +135,10 @@ except ImportError:
         migrate_legacy_state,
         require_path_within_vault,
         runtime_write_lock,
+    )
+    from vault_git import (
+        commit_transaction,
+        preflight_vault_git,
     )
 
 
@@ -868,6 +883,7 @@ def reconcile_keyword_outputs(
     *,
     expected_candidates,
     older_title_paths=(),
+    journal=None,
 ):
     """将当前关键词任务判定为非规范的旧副本移入可恢复隔离区。"""
     state_root = VaultStatePaths.for_vault(job.vault).root
@@ -920,13 +936,29 @@ def reconcile_keyword_outputs(
                             "隔离区哈希文件冲突，未移动旧副本: "
                             f"{destination}"
                         )
+                    if journal is not None:
+                        journal.prepare_delete(source)
                     source.unlink()
+                    if journal is not None:
+                        journal.record_delete(source)
                 else:
+                    if journal is not None:
+                        journal.prepare_move(source, destination)
                     _replace_path_with_retry(source, destination)
+                    if journal is not None:
+                        journal.record_move(source, destination)
             else:
+                if journal is not None:
+                    journal.prepare_delete(source)
                 source.unlink()
+                if journal is not None:
+                    journal.record_delete(source)
         else:
+            if journal is not None:
+                journal.prepare_move(source, destination)
             _replace_path_with_retry(source, destination)
+            if journal is not None:
+                journal.record_move(source, destination)
         records.append(
             {
                 "guid": metadata.guid,
@@ -1031,6 +1063,8 @@ def reconcile_keyword_outputs(
         for item in (*previous_records, *records)
     }
     if records or not manifest_path.exists():
+        if journal is not None:
+            journal.prepare_write(manifest_path)
         _atomic_json(
             manifest_path,
             {
@@ -1042,6 +1076,8 @@ def reconcile_keyword_outputs(
                 ],
             },
         )
+        if journal is not None:
+            journal.record_write(manifest_path)
     return {
         "quarantined": len(records),
         "quarantined_total": len(combined),
@@ -1168,6 +1204,35 @@ def _run_keyword_union_job(
     counts["unique_guids"] = len(candidates)
     state_payload["candidate_count"] = len(candidates)
     _atomic_json(state_file, state_payload)
+    git_baseline = preflight_vault_git(job.vault)
+    state_root = VaultStatePaths.for_vault(job.vault).root
+    resolved_catalog = Path(catalog_path).resolve()
+    try:
+        resolved_catalog.relative_to(job.vault)
+    except ValueError:
+        if git_baseline.enabled:
+            raise ValueError(
+                "启用 Vault Git 后，关键词目录库必须位于 Vault 的 .state 内"
+            )
+        journal_catalog = state_root / "external-catalog-not-protected.sqlite3"
+        catalog_protected = False
+    else:
+        journal_catalog = resolved_catalog
+        catalog_protected = True
+    journal = VaultMutationJournal.begin(
+        job.vault,
+        state_root,
+        _job_id(job),
+        selection_hash,
+        journal_catalog,
+        baseline_git_head=git_baseline.head,
+    )
+    state_payload["transaction_snapshot"] = {
+        "mode": "incremental",
+        **journal.to_dict(),
+        "catalog_protected": catalog_protected,
+    }
+    _atomic_json(state_file, state_payload)
     notebooks = api_call(lambda: note_store.listNotebooks(token))
     notebook_map = {item.guid: item.name for item in notebooks}
     selected_titles = set()
@@ -1182,14 +1247,6 @@ def _run_keyword_union_job(
                 now,
             )
         )
-        snapshot_result = create_domain_snapshot(
-            job.vault,
-            tuple(dict.fromkeys((*job.domains, *MANAGED_DOMAINS))),
-            VaultStatePaths.for_vault(job.vault).root / "snapshots",
-            _job_id(job),
-        )
-        state_payload["snapshot"] = snapshot_result.to_dict()
-        _atomic_json(state_file, state_payload)
         historical_title_notes = {}
         for domain in _known_vault_domains(job):
             root = job.vault / "30_精选资料" / domain
@@ -1432,6 +1489,7 @@ def _run_keyword_union_job(
                 selection_mode="keyword_union",
                 matched_keywords=entry.matched_keywords,
                 selection_hash=selection_hash,
+                journal=journal,
             )
             canonical_path = exported_path.relative_to(
                 job.vault
@@ -1476,6 +1534,7 @@ def _run_keyword_union_job(
             _job_id(job),
             expected_candidates=expected_candidates,
             older_title_paths=older_title_paths,
+            journal=journal,
         )
         catalog_stats = catalog.keyword_stats(selection_hash)
         candidate_manifest = [
@@ -1509,7 +1568,11 @@ def _run_keyword_union_job(
     for domain in finalization_domains:
         target = job.vault / "30_精选资料" / domain
         target.mkdir(parents=True, exist_ok=True)
-        finalization = finalize_knowledge_base(target, domain=domain)
+        finalization = finalize_knowledge_base(
+            target,
+            domain=domain,
+            journal=journal,
+        )
         if finalization.errors:
             raise RuntimeError(
                 f"{domain} 索引重建失败: {'; '.join(finalization.errors)}"
@@ -1565,6 +1628,7 @@ def _run_keyword_union_job(
                 }
             )
 
+    journal.seal()
     report = {
         "ok": (
             searches_complete
@@ -1599,33 +1663,91 @@ def _run_keyword_union_job(
         "cache": cache_counts,
         "materialization": materialization,
         "reconciliation": reconciliation,
-        "snapshot": snapshot_result.to_dict(),
+        "transaction_snapshot": {
+            "mode": "incremental",
+            **journal.to_dict(),
+            "catalog_protected": catalog_protected,
+            "path": str(journal.transaction_dir),
+        },
         "rate_limit": wait_stats,
         "catalog": catalog_stats,
         "integrity": integrity.to_dict(),
         "integrity_summary": integrity_summary,
     }
+    report["git_history"] = {
+        "enabled": git_baseline.enabled,
+        "branch": git_baseline.branch,
+        "commit": git_baseline.head,
+        "tracked_paths": 0,
+        "pushed": False,
+        "status": "pending" if report["ok"] else "skipped",
+    }
+    report["legacy_snapshot_cleanup"] = {
+        "executed": False,
+        "reason": "export_validation_failed" if not report["ok"] else "pending",
+    }
     if report["ok"]:
         try:
-            cleanup = prune_export_snapshots(
+            git_history = commit_transaction(
                 job.vault,
-                VaultStatePaths.for_vault(job.vault).root / "snapshots",
-                current_job_id=_job_id(job),
+                journal,
+                git_baseline,
+                (
+                    "同步印象笔记关键词导出："
+                    f"{job.since.isoformat()} 至 {job.until.isoformat()}"
+                ),
             )
-        except (OSError, ValueError) as exc:
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             report["ok"] = False
-            report["snapshot_cleanup"] = {
-                "executed": False,
-                "reason": "cleanup_failed",
+            report["git_history"] = {
+                "enabled": git_baseline.enabled,
+                "branch": git_baseline.branch,
+                "commit": git_baseline.head,
+                "tracked_paths": 0,
+                "pushed": False,
+                "status": "failed",
                 "error": str(exc),
             }
+            report["legacy_snapshot_cleanup"] = {
+                "executed": False,
+                "reason": "git_commit_failed",
+            }
         else:
-            report["snapshot_cleanup"] = cleanup.to_dict()
-    else:
-        report["snapshot_cleanup"] = {
-            "executed": False,
-            "reason": "export_validation_failed",
-        }
+            report["git_history"] = git_history.to_dict()
+            journal.mark_committed(git_history.commit)
+            report["transaction_snapshot"] = {
+                "mode": "incremental",
+                **journal.to_dict(),
+                "catalog_protected": catalog_protected,
+                "path": str(journal.transaction_dir),
+            }
+            report["transaction_pruning"] = {
+                "deleted": prune_committed_transactions(
+                    job.vault,
+                    state_root,
+                    current_job_id=_job_id(job),
+                )
+            }
+            if git_history.enabled:
+                try:
+                    cleanup = prune_legacy_export_snapshots(
+                        job.vault,
+                        state_root / "snapshots",
+                    )
+                except (OSError, ValueError) as exc:
+                    report["ok"] = False
+                    report["legacy_snapshot_cleanup"] = {
+                        "executed": False,
+                        "reason": "cleanup_failed",
+                        "error": str(exc),
+                    }
+                else:
+                    report["legacy_snapshot_cleanup"] = cleanup.to_dict()
+            else:
+                report["legacy_snapshot_cleanup"] = {
+                    "executed": False,
+                    "reason": "git_disabled",
+                }
     _atomic_json(report_file, report)
     return report
 

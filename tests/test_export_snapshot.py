@@ -16,6 +16,40 @@ def sha256(path):
 
 
 class ExportSnapshotTests(unittest.TestCase):
+    def test_legacy_cleanup_deletes_only_complete_valid_export_pairs(self):
+        from scripts.export_snapshot import (
+            create_domain_snapshot,
+            prune_legacy_export_snapshots,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            ai = vault / "30_精选资料" / "AI"
+            ai.mkdir(parents=True)
+            (ai / "文章.md").write_text("AI", encoding="utf-8")
+            snapshot_dir = (
+                vault / ".state" / "yinxiang-notes" / "snapshots"
+            )
+            legacy = create_domain_snapshot(
+                vault,
+                ("AI",),
+                snapshot_dir,
+                "1111111111111111",
+            )
+            unmanaged = snapshot_dir / "manual-backup.zip"
+            unmanaged.write_bytes(b"keep")
+            orphan = snapshot_dir / "2222222222222222-before.zip"
+            orphan.write_bytes(b"keep")
+
+            result = prune_legacy_export_snapshots(vault, snapshot_dir)
+
+            self.assertTrue(result.executed)
+            self.assertFalse(legacy.archive.exists())
+            self.assertFalse(legacy.manifest.exists())
+            self.assertTrue(unmanaged.exists())
+            self.assertTrue(orphan.exists())
+            self.assertEqual(result.deleted_files, 2)
+
     def test_snapshot_contains_only_declared_domain_files_and_manifest(self):
         from scripts.export_snapshot import create_domain_snapshot
 

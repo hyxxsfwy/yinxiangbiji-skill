@@ -256,12 +256,20 @@ class VaultMutationJournal:
         objects = [path for path in objects if path.is_file() and not path.name.endswith(".tmp")]
         backup_name = self.manifest["catalog"].get("backup")
         backup = str(self.transaction_dir / backup_name) if backup_name else None
+        backup_bytes = (
+            (self.transaction_dir / backup_name).stat().st_size
+            if backup_name
+            else 0
+        )
         return TransactionSummary(
             job_id=self.manifest["job_id"],
             state=self.manifest["state"],
             changed_paths=len(self.changed_paths()),
             object_count=len(objects),
-            stored_bytes=sum(path.stat().st_size for path in objects),
+            stored_bytes=(
+                sum(path.stat().st_size for path in objects)
+                + backup_bytes
+            ),
             sqlite_backup=backup,
         )
 

@@ -96,6 +96,7 @@ class ExportTransactionTests(unittest.TestCase):
 
             self.assertEqual(summary.changed_paths, 4)
             self.assertEqual(summary.object_count, 3)
+            self.assertGreater(summary.stored_bytes, 30)
             self.assertEqual(restored.state, "rolled_back")
             self.assertEqual(existing.read_text(encoding="utf-8"), "before")
             self.assertEqual(deleted.read_text(encoding="utf-8"), "delete-before")

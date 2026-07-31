@@ -366,3 +366,78 @@ def prune_export_snapshots(
         deleted=tuple(deleted),
         skipped=tuple(skipped),
     )
+
+
+def prune_legacy_export_snapshots(vault, snapshot_dir):
+    """删除所有完整且校验通过的 16 位任务 ID 全量 ZIP 快照。"""
+    vault = Path(vault).expanduser().resolve()
+    if not vault.is_dir():
+        raise ValueError(f"Vault 不存在: {vault}")
+    snapshot_dir = _require_within(snapshot_dir, vault, "快照目录")
+    if not snapshot_dir.exists():
+        return SnapshotCleanupResult(
+            executed=True,
+            kept_job_ids=(),
+            deleted=(),
+            skipped=(),
+        )
+    if not snapshot_dir.is_dir() or snapshot_dir.is_symlink():
+        raise ValueError(f"快照目录不是安全的普通目录: {snapshot_dir}")
+
+    entries = tuple(sorted(snapshot_dir.iterdir(), key=lambda path: path.name))
+    job_ids = set()
+    for entry in entries:
+        match = (
+            _EXPORT_SNAPSHOT_ARCHIVE_RE.fullmatch(entry.name)
+            or _EXPORT_SNAPSHOT_MANIFEST_RE.fullmatch(entry.name)
+        )
+        if match:
+            job_ids.add(match.group("job_id"))
+
+    validated_pairs = []
+    handled = set()
+    skipped = []
+    for job_id in sorted(job_ids):
+        archive = snapshot_dir / f"{job_id}-before.zip"
+        manifest = snapshot_dir / f"{job_id}-before.sha256.json"
+        existing = tuple(path for path in (archive, manifest) if path.exists())
+        handled.update(path.name for path in existing)
+        if (
+            len(existing) != 2
+            or any(path.is_symlink() or not path.is_file() for path in existing)
+        ):
+            skipped.extend(
+                {
+                    "path": path.name,
+                    "reason": "incomplete_or_unsafe_pair",
+                }
+                for path in existing
+            )
+            continue
+        _load_existing_snapshot(archive, manifest)
+        validated_pairs.append((archive, manifest))
+
+    for entry in entries:
+        if entry.name not in handled:
+            skipped.append(
+                {
+                    "path": entry.name,
+                    "reason": "unmanaged_snapshot",
+                }
+            )
+
+    deleted = []
+    for archive, manifest in validated_pairs:
+        for path in (archive, manifest):
+            if path.parent.resolve() != snapshot_dir:
+                raise ValueError(f"快照删除目标逃逸出快照目录: {path}")
+            size = path.stat().st_size
+            path.unlink()
+            deleted.append({"path": path.name, "size": size})
+
+    return SnapshotCleanupResult(
+        executed=True,
+        kept_job_ids=(),
+        deleted=tuple(deleted),
+        skipped=tuple(skipped),
+    )

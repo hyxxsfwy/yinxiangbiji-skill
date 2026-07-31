@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,16 @@ from types import SimpleNamespace
 from evernote.edam.error.ttypes import EDAMSystemException
 
 from tests.support import workspace_temp_dir
+
+
+def git(vault, *args):
+    return subprocess.run(
+        ["git", "-C", str(vault), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
 
 
 def metadata(guid, title, updated, created=1775000000000):
@@ -1184,7 +1195,7 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
         self.assertIn("倪海厦：气血不足的调理方法", index_text)
         self.assertTrue(report["ok"], report)
 
-    def test_keyword_snapshot_exists_before_first_materialization(self):
+    def test_keyword_transaction_exists_before_first_materialization(self):
         from scripts import export_multi_domain
         from scripts.export_multi_domain import (
             _job_id,
@@ -1214,22 +1225,24 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                 body="AI before",
             )
             job = normalize_job(keyword_union_payload(), vault)
-            snapshot = (
+            transaction_manifest = (
                 vault
                 / ".state"
                 / "yinxiang-notes"
-                / "snapshots"
-                / f"{_job_id(job)}-before.zip"
+                / "transactions"
+                / _job_id(job)
+                / "manifest.json"
             )
             real_export = export_multi_domain.export_note_to_obsidian
 
-            def assert_snapshot_first(note, *args, **kwargs):
-                self.assertTrue(snapshot.is_file())
+            def assert_transaction_first(note, *args, **kwargs):
+                self.assertTrue(transaction_manifest.is_file())
+                self.assertIn("journal", kwargs)
                 return real_export(note, *args, **kwargs)
 
             with patch(
                 "scripts.export_multi_domain.export_note_to_obsidian",
-                side_effect=assert_snapshot_first,
+                side_effect=assert_transaction_first,
             ):
                 report = run_export_job(
                     job,
@@ -1242,13 +1255,16 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                     max_rate_limit_wait=0,
                 )
 
+            self.assertNotIn("snapshot", report)
             self.assertEqual(
-                Path(report["snapshot"]["archive"]),
-                snapshot,
+                report["transaction_snapshot"]["mode"],
+                "incremental",
             )
-            self.assertTrue(
-                Path(report["snapshot"]["manifest"]).is_file()
+            self.assertEqual(
+                report["transaction_snapshot"]["state"],
+                "committed",
             )
+            self.assertTrue(transaction_manifest.is_file())
 
     def test_successful_keyword_export_prunes_old_export_snapshots(self):
         from scripts.export_multi_domain import (
@@ -1257,6 +1273,7 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
             run_export_job,
         )
         from scripts.export_snapshot import create_domain_snapshot
+        from scripts.vault_git import initialize_vault_git
 
         item = metadata("guid-1", "AI Agent", 1780000000000)
         store = FakeNoteStore(
@@ -1288,30 +1305,46 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
                 snapshot_dir,
                 "1111111111111111",
             )
+            git(vault, "init", "-b", "main")
+            git(vault, "config", "user.name", "测试用户")
+            git(vault, "config", "user.email", "test@example.invalid")
+            initialize_vault_git(vault)
             job = normalize_job(keyword_union_payload(), vault)
 
             report = run_export_job(
                 job,
                 store,
                 "token",
-                catalog_path=temp_dir / "catalog.sqlite3",
+                catalog_path=(
+                    vault
+                    / ".state"
+                    / "yinxiang-notes"
+                    / "export-catalog.sqlite3"
+                ),
                 state_file=temp_dir / "state.json",
                 report_file=temp_dir / "report.json",
                 rate_limit_mode="stop",
                 max_rate_limit_wait=0,
             )
 
-            current = (
-                snapshot_dir / f"{_job_id(job)}-before.zip"
-            )
             self.assertTrue(report["ok"], report)
             self.assertFalse(old.archive.exists())
             self.assertFalse(old.manifest.exists())
-            self.assertTrue(current.is_file())
-            self.assertTrue(report["snapshot_cleanup"]["executed"])
+            self.assertFalse(
+                (
+                    snapshot_dir / f"{_job_id(job)}-before.zip"
+                ).exists()
+            )
+            self.assertTrue(
+                report["legacy_snapshot_cleanup"]["executed"]
+            )
             self.assertEqual(
-                report["snapshot_cleanup"]["deleted_files"],
+                report["legacy_snapshot_cleanup"]["deleted_files"],
                 2,
+            )
+            self.assertEqual(
+                report["git_history"]["status"],
+                "committed",
             )
 
     def test_failed_keyword_export_keeps_old_export_snapshots(self):
@@ -1378,9 +1411,11 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertTrue(old.archive.is_file())
             self.assertTrue(old.manifest.is_file())
-            self.assertFalse(report["snapshot_cleanup"]["executed"])
+            self.assertFalse(
+                report["legacy_snapshot_cleanup"]["executed"]
+            )
             self.assertEqual(
-                report["snapshot_cleanup"]["reason"],
+                report["legacy_snapshot_cleanup"]["reason"],
                 "export_validation_failed",
             )
 
