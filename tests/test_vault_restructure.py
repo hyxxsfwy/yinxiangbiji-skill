@@ -112,7 +112,7 @@ class MigrationPlanTests(unittest.TestCase):
         )
         self.assertEqual(
             mappings["HYXX个人知识库/Codex CLI 使用技巧记录.md"],
-            "20_知识笔记/软件工程/Codex CLI 使用技巧记录.md",
+            "20_知识笔记/信息技术/Codex CLI 使用技巧记录.md",
         )
         self.assertNotIn("HYXX个人知识库/.obsidian", mappings)
 
@@ -255,13 +255,13 @@ class ScaffoldTests(unittest.TestCase):
             note = (
                 vault
                 / "20_知识笔记"
-                / "软件工程"
+                / "信息技术"
                 / "Codex 5.6.md"
             )
             note.write_text(
                 "---\n"
                 "type: 知识\n"
-                "domain: 软件工程\n"
+                "domain: 信息技术\n"
                 "status: 常青\n"
                 "updated: 2026-07-27\n"
                 "---\n\n"
@@ -273,7 +273,7 @@ class ScaffoldTests(unittest.TestCase):
             catalog = render_knowledge_catalog(vault)
 
         self.assertIn(
-            "[[软件工程/Codex 5.6.md|Codex 5.6]]",
+            "[[信息技术/Codex 5.6.md|Codex 5.6]]",
             catalog,
         )
 
@@ -297,12 +297,12 @@ class ScaffoldTests(unittest.TestCase):
                 "20_知识笔记/知识地图.md",
                 "20_知识笔记/AI",
                 "20_知识笔记/Quant",
-                "20_知识笔记/软件工程",
+                "20_知识笔记/信息技术",
                 "20_知识笔记/投资理财",
                 "20_知识笔记/个人成长",
                 "30_精选资料/AI/目录索引.md",
                 "30_精选资料/Quant/目录索引.md",
-                "30_精选资料/软件工程/目录索引.md",
+                "30_精选资料/信息技术/目录索引.md",
                 "30_精选资料/投资理财/目录索引.md",
                 "30_精选资料/个人成长/目录索引.md",
                 "80_系统/知识库治理/管理规则.md",
@@ -369,7 +369,7 @@ class CopyAndMetadataTests(unittest.TestCase):
             codex = (
                 vault
                 / "20_知识笔记"
-                / "软件工程"
+                / "信息技术"
                 / "Codex CLI 使用技巧记录.md"
             ).read_text(encoding="utf-8")
 
@@ -379,7 +379,7 @@ class CopyAndMetadataTests(unittest.TestCase):
         self.assertIn("主题/Agent", agent)
         self.assertIn(original_body.strip(), agent)
         self.assertIn('type: "知识"', codex)
-        self.assertIn('domain: "软件工程"', codex)
+        self.assertIn('domain: "信息技术"', codex)
         self.assertIn('status: "常青"', codex)
         self.assertIn('review_status: "human-approved"', codex)
 
@@ -443,7 +443,7 @@ class CopyAndMetadataTests(unittest.TestCase):
             seed_old_vault(vault)
             apply_copy_phase(build_migration_plan(vault))
             self.assertFalse(
-                (vault / "20_知识笔记" / "软件工程" / ".obsidian").exists()
+                (vault / "20_知识笔记" / "信息技术" / ".obsidian").exists()
             )
 
     def test_merge_frontmatter_overrides_required_fields_in_fixed_order(self):

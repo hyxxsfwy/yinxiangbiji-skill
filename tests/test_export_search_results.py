@@ -682,7 +682,7 @@ class DomainGatedExportTests(unittest.TestCase):
             state_file.write_text(
                 json.dumps(
                     {
-                        "version": 2,
+                        "version": 3,
                         "reviews": {
                             "already-exported": {
                                 "updated": int(updated_ms / 1000),

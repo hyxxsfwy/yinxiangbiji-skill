@@ -14,6 +14,10 @@ from urllib.parse import quote, unquote
 import zipfile
 
 try:
+    from scripts.domain_taxonomy import (
+        DOMAIN_PROFILES as MANAGED_DOMAIN_PROFILES,
+        MANAGED_DOMAINS,
+    )
     from scripts.curate_selected_materials import (
         AUTO_LINKS_END,
         AUTO_LINKS_SECTION,
@@ -33,6 +37,10 @@ try:
         runtime_write_lock,
     )
 except ModuleNotFoundError:
+    from domain_taxonomy import (
+        DOMAIN_PROFILES as MANAGED_DOMAIN_PROFILES,
+        MANAGED_DOMAINS,
+    )
     from curate_selected_materials import (
         AUTO_LINKS_END,
         AUTO_LINKS_SECTION,
@@ -59,136 +67,9 @@ _ASSET_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _WIKILINK = re.compile(r"\[\[([^|\]]+)(?:\|[^\]]*)?\]\]")
 _MONTH_DIRECTORY = re.compile(r"^\d{4}年(?:0[1-9]|1[0-2])月$")
 _REMOTE_TARGET = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-CLASSIFICATION_POLICY_VERSION = 12
+CLASSIFICATION_POLICY_VERSION = 13
 
-DOMAIN_PROFILES = {
-    "AI": {
-        "core": (
-            "ai", "人工智能", "生成式ai", "大模型", "大语言模型", "llm",
-            "机器学习", "深度学习", "神经网络", "强化学习", "智能体",
-            "ai agent", "rag", "chatgpt", "openai", "claude", "deepseek",
-            "gpt", "qwen", "codex", "transformer", "扩散模型",
-            "开源模型", "模型推理", "参数规模",
-            "agent", "agent skills", "skill", "本体论", "推理技术",
-            "openclaw", "workbuddy", "coding agent",
-            "anthropic", "glm", "kimi", "minimax", "huggingface",
-            "hugging face", "rwkv", "rlhf",
-            "ai时代", "ai创业", "vibe coding", "文生视频", "视频生成",
-            "自动出视频", "吴恩达", "andrew ng", "loop engineering",
-        ),
-        "support": (
-            "agent", "prompt", "提示词", "token", "embedding", "向量检索",
-            "微调", "模型训练", "mcp", "harness",
-        ),
-    },
-    "Quant": {
-        "core": (
-            "量化交易", "量化投资", "量化研究", "因子投资", "多因子",
-            "回测", "高频交易", "algorithmic trading", "quantitative finance",
-            "交易策略", "技术交易", "量化金融",
-            "止损", "交易系统", "历史行情",
-            "交易法", "短线交易", "交易信号", "量化策略",
-            "quant", "因子", "日内交易", "截面反转", "反转策略",
-            "高频", "做市", "量化分析", "量化分析师",
-        ),
-        "support": (
-            "alpha", "因子", "交易信号", "最大回撤", "夏普", "时间序列",
-            "策略收益", "组合优化", "实盘", "动量", "ea", "缠论",
-        ),
-    },
-    "软件工程": {
-        "core": (
-            "软件工程", "软件开发", "程序设计", "代码重构", "系统架构",
-            "微服务", "编程语言", "devops", "持续集成", "开源社区",
-            "linux 内核", "c++", "javascript", "数据库", "kubernetes",
-            "rocketmq", "kafka", "electron", "程序员", "开源项目",
-            "postgresql", "mysql", "bug", "源码", "编程", "软件",
-            "好产品", "产品开发", "需求验证", "产品体验", "技术评估",
-            "开发排期", "项目管理",
-        ),
-        "support": (
-            "代码", "开发", "测试", "接口", "api", "部署", "编译器",
-            "版本维护", "版本控制", "github", "容器",
-            "bug", "windows", "源码", "框架",
-        ),
-    },
-    "投资理财": {
-        "core": (
-            "投资理财", "资产配置", "投资组合", "股票", "证券", "基金",
-            "etf", "定投", "金融", "理财", "债券", "财务自由",
-            "区块链", "比特币", "加密货币",
-            "币圈", "defi", "美股", "a股", "白银", "黄金", "挖矿",
-            "储蓄", "存钱", "个人理财",
-            "港股", "港卡", "现金流", "交易商", "银行卡", "信用卡",
-            "以太坊", "ethereum", "eth", "solana", "sol", "期权",
-        ),
-        "support": (
-            "收益率", "仓位", "现金流", "分红", "利率", "财报", "牛市",
-            "熊市", "房贷", "贷款", "估值", "交易", "爆仓", "银行",
-            "预算",
-        ),
-    },
-    "知识管理": {
-        "core": (
-            "知识管理", "个人知识管理", "第二大脑", "双向链接", "卡片笔记",
-            "zettelkasten", "obsidian", "notion", "pkm", "gtd",
-        ),
-        "support": (
-            "笔记系统", "知识库", "信息整理", "标签体系", "收件箱",
-        ),
-    },
-    "健康医学": {
-        "core": (
-            "健康医学", "临床", "疾病", "诊断", "治疗", "患者", "医生",
-            "医院", "药物", "癌症", "肿瘤", "血压", "血糖", "免疫",
-            "公共卫生", "疾控", "医学研究",
-            "猝死", "基因组", "医疗", "护士",
-            "bmi", "代谢", "体重", "脂肪",
-            "减肥", "减重", "盆底肌", "卵巢", "疲劳", "睡眠", "心血管",
-            "脑梗", "中风", "抑郁", "抑郁症",
-        ),
-        "support": (
-            "健康", "症状", "手术", "感染", "营养", "睡眠", "心脏",
-            "大脑", "寿命",
-        ),
-    },
-    "中医": {
-        "core": (
-            "中医", "中药", "经络", "针灸", "穴位", "方剂", "辨证论治",
-            "阴阳", "气血", "脏腑", "黄帝内经", "五运六气", "气机",
-            "寒湿", "疏肝", "舒肝", "散结",
-        ),
-        "support": ("调理", "体质", "养生", "脉象", "舌象"),
-    },
-    "两性情感": {
-        "core": (
-            "两性", "婚姻", "伴侣", "夫妻", "恋爱", "亲密关系", "情感关系",
-            "婚恋", "离婚", "彩礼", "婚房", "婆媳", "择偶",
-            "出轨", "老公", "老婆", "丈夫", "妻子", "男友", "女友",
-            "媳妇", "结婚", "小三",
-            "关系冲突", "心理边界", "人际关系",
-            "亲亲抱抱", "女权", "男权", "性格", "课题分离",
-        ),
-        "support": (
-            "爱情", "相亲", "家庭关系", "男性责任", "女性", "男人", "女人",
-            "沟通", "情绪",
-        ),
-    },
-    "个人成长": {
-        "core": (
-            "个人成长", "自我管理", "时间管理", "职业规划", "习惯养成",
-            "学习方法", "认知提升", "情绪管理", "自我反思",
-            "人生选择", "前额叶", "拖延", "生活方式", "自我提升",
-            "工作倦怠", "辞职", "失业", "裁员", "跳槽", "找工作",
-            "职业转型", "离职", "招聘", "学历", "资历", "人才成长",
-        ),
-        "support": (
-            "复盘", "目标管理", "专注", "阅读", "学习", "职业", "沟通",
-            "效率",
-        ),
-    },
-}
-MANAGED_DOMAINS = tuple(DOMAIN_PROFILES)
+DOMAIN_PROFILES = MANAGED_DOMAIN_PROFILES
 SPECIFIC_DOMAINS = {
     "Quant",
     "投资理财",
@@ -245,7 +126,7 @@ TITLE_FALLBACKS = (
         r"失业|裁员|跳槽|找工作|辞职|离职|工作倦怠|职业转型|"
         r"招聘|学历|资历|人才成长|沟通",
     )),
-    ("软件工程", re.compile(
+    ("信息技术", re.compile(
         r"C\+\+|JavaScript|PostgreSQL|MySQL|Win11|Windows|BUG|GitHub|"
         r"代码|编程|数据库|开发者|SSD|硬盘|软件|架构师|开源协议|API",
         re.I,

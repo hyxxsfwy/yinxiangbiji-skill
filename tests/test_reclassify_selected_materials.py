@@ -27,13 +27,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_DOMAINS = (
     "AI",
     "Quant",
-    "软件工程",
+    "信息技术",
     "投资理财",
     "知识管理",
     "健康医学",
     "中医",
     "两性情感",
     "个人成长",
+    "科技产业",
+    "自然科学",
+    "历史与社会",
 )
 
 
@@ -68,11 +71,11 @@ class ClassificationTests(unittest.TestCase):
                 "Linux 内核维护者制定连续性计划，涉及代码合并、版本维护、"
                 "开源社区治理和软件开发流程。"
             ),
-            "软件工程",
+            "信息技术",
         )
 
         self.assertEqual(result.decision, "keep")
-        self.assertEqual(result.target_domain, "软件工程")
+        self.assertEqual(result.target_domain, "信息技术")
 
     def test_ai_article_is_not_moved_by_health_examples_in_body(self):
         result = classify_document(
@@ -175,11 +178,11 @@ class ClassificationTests(unittest.TestCase):
                 "文章讨论需求验证、产品体验、技术评估、开发排期和项目管理，"
                 "重点是软件产品是否解决真实问题。"
             ),
-            "软件工程",
+            "信息技术",
         )
 
         self.assertEqual(result.decision, "keep")
-        self.assertEqual(result.target_domain, "软件工程")
+        self.assertEqual(result.target_domain, "信息技术")
 
     def test_binance_alpha_reward_article_is_investment_not_quant(self):
         result = classify_document(
@@ -423,7 +426,7 @@ class ClassificationTests(unittest.TestCase):
         )
 
         self.assertEqual(result.decision, "move")
-        self.assertEqual(result.target_domain, "软件工程")
+        self.assertEqual(result.target_domain, "信息技术")
 
     def test_standalone_ai_in_title_keeps_ai_article(self):
         result = classify_document(
@@ -526,7 +529,7 @@ class ReviewDecisionTests(unittest.TestCase):
 
     def test_decisions_reject_move_trash_overlap(self):
         payload = {
-            "moves": {"AI/2026年01月/文章.md": "软件工程"},
+            "moves": {"AI/2026年01月/文章.md": "信息技术"},
             "trash": ["AI/2026年01月/文章.md"],
             "links": {},
         }
@@ -565,13 +568,13 @@ class ReviewDecisionTests(unittest.TestCase):
     def test_decisions_require_exact_schema_and_canonical_document_paths(self):
         invalid_payloads = (
             {
-                "move": {"AI/2026年01月/文章.md": "软件工程"},
+                "move": {"AI/2026年01月/文章.md": "信息技术"},
                 "trash": [],
                 "links": {},
             },
             {"moves": {}, "trash": []},
             {
-                "moves": {"AI/文章.md": "软件工程"},
+                "moves": {"AI/文章.md": "信息技术"},
                 "trash": [],
                 "links": {},
             },
@@ -754,7 +757,7 @@ class ReviewExecutionTests(unittest.TestCase):
                 vault,
                 moves={
                     Path("Quant/2026年01月/源码拆解.md"):
-                    "软件工程"
+                    "信息技术"
                 },
                 trash=(),
                 links={},
@@ -763,7 +766,7 @@ class ReviewExecutionTests(unittest.TestCase):
             copied = (
                 vault
                 / "30_精选资料"
-                / "软件工程"
+                / "信息技术"
                 / "_attachments"
                 / "Expression_67@2x.png"
             )
@@ -858,13 +861,13 @@ class ReviewExecutionTests(unittest.TestCase):
             correct = (
                 vault
                 / "30_精选资料"
-                / "软件工程"
+                / "信息技术"
                 / "2026年01月"
                 / "持续集成.md"
             )
             self._write_note(
                 correct,
-                "软件工程",
+                "信息技术",
                 "持续集成",
                 "软件开发团队使用代码测试、版本控制和持续集成。",
             )
@@ -888,21 +891,21 @@ class ReviewExecutionTests(unittest.TestCase):
                 vault / "30_精选资料" / "AI" / "2026年01月" / "同名.md"
             )
             destination = (
-                vault / "30_精选资料" / "软件工程" / "2026年01月" / "同名.md"
+                vault / "30_精选资料" / "信息技术" / "2026年01月" / "同名.md"
             )
             earlier_source = (
                 vault / "30_精选资料" / "AI" / "2026年01月" / "先处理.md"
             )
             self._write_note(source, "AI", "同名", "源内容")
-            self._write_note(destination, "软件工程", "同名", "目标内容")
+            self._write_note(destination, "信息技术", "同名", "目标内容")
             self._write_note(earlier_source, "AI", "先处理", "必须保持")
 
             with self.assertRaises(FileExistsError):
                 execute_review(
                     vault,
                     moves={
-                        Path("AI/2026年01月/先处理.md"): "软件工程",
-                        Path("AI/2026年01月/同名.md"): "软件工程",
+                        Path("AI/2026年01月/先处理.md"): "信息技术",
+                        Path("AI/2026年01月/同名.md"): "信息技术",
                     },
                     trash=(),
                     links={},
@@ -962,7 +965,7 @@ class ReviewExecutionTests(unittest.TestCase):
 
             archive, manifest = create_review_snapshot(
                 vault,
-                moves={Path("AI/2026年01月/迁移.md"): "软件工程"},
+                moves={Path("AI/2026年01月/迁移.md"): "信息技术"},
                 trash=(),
                 links={},
             )
@@ -1053,9 +1056,9 @@ class ReviewExecutionTests(unittest.TestCase):
                 execute_review(
                     vault,
                     moves={
-                        first: "软件工程",
-                        second: "软件工程",
-                        equal: "软件工程",
+                        first: "信息技术",
+                        second: "信息技术",
+                        equal: "信息技术",
                     },
                     trash=(),
                     links={},
@@ -1063,7 +1066,7 @@ class ReviewExecutionTests(unittest.TestCase):
             except FileExistsError as exc:
                 self.fail(f"批次内附件冲突不应拒绝合法 move: {exc}")
 
-            target_assets = selected / "软件工程/_attachments"
+            target_assets = selected / "信息技术/_attachments"
             self.assertEqual(
                 {
                     path.name: path.read_bytes()
@@ -1077,19 +1080,19 @@ class ReviewExecutionTests(unittest.TestCase):
             self.assertIn(
                 "../_attachments/shared.png",
                 (
-                    selected / "软件工程/2026年01月/批次甲.md"
+                    selected / "信息技术/2026年01月/批次甲.md"
                 ).read_text(encoding="utf-8"),
             )
             self.assertIn(
                 "../_attachments/shared_6ce5fb87f75c.png",
                 (
-                    selected / "软件工程/2026年01月/批次乙.md"
+                    selected / "信息技术/2026年01月/批次乙.md"
                 ).read_text(encoding="utf-8"),
             )
             self.assertIn(
                 "../_attachments/shared.png",
                 (
-                    selected / "软件工程/2026年01月/批次同内容.md"
+                    selected / "信息技术/2026年01月/批次同内容.md"
                 ).read_text(encoding="utf-8"),
             )
 
@@ -1197,12 +1200,12 @@ class ReviewExecutionTests(unittest.TestCase):
 
             execute_review(
                 vault,
-                moves={moved: "软件工程"},
+                moves={moved: "信息技术"},
                 trash=(),
                 links={moved: (neighbor,), neighbor: (moved,)},
             )
 
-            moved_note = selected / "软件工程/2026年01月/迁移资料.md"
+            moved_note = selected / "信息技术/2026年01月/迁移资料.md"
             neighbor_note = selected / neighbor
             self.assertEqual(validate_links(vault), ())
             self.assertIn(
@@ -1210,7 +1213,7 @@ class ReviewExecutionTests(unittest.TestCase):
                 moved_note.read_text(encoding="utf-8"),
             )
             self.assertIn(
-                "[[30_精选资料/软件工程/2026年01月/迁移资料|迁移资料]]",
+                "[[30_精选资料/信息技术/2026年01月/迁移资料|迁移资料]]",
                 neighbor_note.read_text(encoding="utf-8"),
             )
 
@@ -1229,7 +1232,7 @@ class ReviewExecutionTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 execute_review(
                     vault,
-                    moves={moved: "软件工程"},
+                    moves={moved: "信息技术"},
                     trash=(discarded,),
                     links={neighbor: (missing,), missing: (neighbor,)},
                 )
@@ -1254,7 +1257,7 @@ class ReviewExecutionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 execute_review(
                     vault,
-                    moves={ai_source: "软件工程", quant_source: "软件工程"},
+                    moves={ai_source: "信息技术", quant_source: "信息技术"},
                     trash=(),
                     links={},
                 )
@@ -1262,7 +1265,7 @@ class ReviewExecutionTests(unittest.TestCase):
             self.assertTrue((selected / ai_source).is_file())
             self.assertTrue((selected / quant_source).is_file())
             self.assertFalse(
-                (selected / "软件工程/2026年01月/同名资料.md").exists()
+                (selected / "信息技术/2026年01月/同名资料.md").exists()
             )
 
     def test_selected_root_directory_link_escape_is_rejected_before_delete(self):
@@ -1351,7 +1354,7 @@ class ReviewExecutionTests(unittest.TestCase):
             source_asset = vault / "30_精选资料/AI/_attachments/picture.png"
             source_asset.parent.mkdir(parents=True)
             source_asset.write_bytes(b"managed-picture")
-            target_domain = vault / "30_精选资料/软件工程"
+            target_domain = vault / "30_精选资料/信息技术"
             target_domain.mkdir(parents=True)
             create_directory_link_or_skip(
                 self,
@@ -1362,7 +1365,7 @@ class ReviewExecutionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 execute_review(
                     vault,
-                    moves={source_relative: "软件工程"},
+                    moves={source_relative: "信息技术"},
                     trash=(),
                     links={},
                 )
@@ -1384,14 +1387,14 @@ class ReviewExecutionTests(unittest.TestCase):
             physical_domain.mkdir(parents=True)
             create_directory_link_or_skip(
                 self,
-                selected / "软件工程",
+                selected / "信息技术",
                 physical_domain,
             )
 
             with self.assertRaises(ValueError):
                 execute_review(
                     vault,
-                    moves={relative: "软件工程"},
+                    moves={relative: "信息技术"},
                     trash=(),
                     links={},
                 )
@@ -1471,7 +1474,7 @@ class ReviewExecutionTests(unittest.TestCase):
                     with self.assertRaises((ValueError, FileNotFoundError)):
                         execute_review(
                             vault,
-                            moves={source_relative: "软件工程"},
+                            moves={source_relative: "信息技术"},
                             trash=(),
                             links={},
                         )
@@ -1504,7 +1507,7 @@ class ReviewExecutionTests(unittest.TestCase):
             occupied = (
                 vault
                 / "30_精选资料"
-                / "软件工程"
+                / "信息技术"
                 / "_attachments"
                 / "Expression 67@2x.png"
             )
@@ -1513,12 +1516,12 @@ class ReviewExecutionTests(unittest.TestCase):
 
             execute_review(
                 vault,
-                moves={source_relative: "软件工程"},
+                moves={source_relative: "信息技术"},
                 trash=(),
                 links={},
             )
 
-            moved = vault / "30_精选资料/软件工程/2026年01月/编码附件.md"
+            moved = vault / "30_精选资料/信息技术/2026年01月/编码附件.md"
             rendered = moved.read_text(encoding="utf-8")
             raw_target = next(
                 target
@@ -1531,7 +1534,7 @@ class ReviewExecutionTests(unittest.TestCase):
             self.assertEqual(referenced.read_bytes(), b"correct-content")
             report = verify_review_results(
                 vault,
-                {source_relative: "软件工程"},
+                {source_relative: "信息技术"},
                 (),
                 {},
             )
@@ -1551,14 +1554,14 @@ class ReviewExecutionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 execute_review(
                     vault,
-                    moves={first: "软件工程", second: "投资理财"},
+                    moves={first: "信息技术", second: "投资理财"},
                     trash=(),
                     links={},
                 )
 
             self.assertTrue((selected / first).is_file())
             self.assertTrue((selected / second).is_file())
-            self.assertFalse((selected / "软件工程/2026年01月/先处理.md").exists())
+            self.assertFalse((selected / "信息技术/2026年01月/先处理.md").exists())
             self.assertFalse(
                 (vault / ".state/yinxiang-notes/snapshots").exists()
             )
@@ -1577,7 +1580,7 @@ class ReviewExecutionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 execute_review(
                     vault,
-                    moves={relative: "软件工程"},
+                    moves={relative: "信息技术"},
                     trash=(),
                     links={},
                 )
@@ -1603,13 +1606,13 @@ class ReviewExecutionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 execute_review(
                     vault,
-                    moves={moved: "软件工程"},
+                    moves={moved: "信息技术"},
                     trash=(),
                     links={},
                 )
 
             self.assertTrue((selected / moved).is_file())
-            self.assertFalse((selected / "软件工程/2026年01月/待移动.md").exists())
+            self.assertFalse((selected / "信息技术/2026年01月/待移动.md").exists())
             self.assertFalse(
                 (vault / ".state/yinxiang-notes/snapshots").exists()
             )
@@ -1648,7 +1651,7 @@ class ReviewExecutionTests(unittest.TestCase):
                 execute_review(
                     vault,
                     moves={
-                        relative: "软件工程",
+                        relative: "信息技术",
                         relative.as_posix(): "投资理财",
                     },
                     trash=(),
@@ -1677,7 +1680,7 @@ class ReviewExecutionTests(unittest.TestCase):
 
             archive, _ = execute_review(
                 vault,
-                moves={relative: "软件工程"},
+                moves={relative: "信息技术"},
                 trash=(),
                 links={},
             )
@@ -1751,15 +1754,15 @@ class ReviewVerificationTests(unittest.TestCase):
             self._write_note(selected / first, "AI", "双向一", "双向资料一")
             self._write_note(selected / second, "AI", "双向二", "双向资料二")
             self._write_note(
-                selected / "软件工程/2026年01月/[索引]条目.md",
-                "软件工程",
+                selected / "信息技术/2026年01月/[索引]条目.md",
+                "信息技术",
                 "[索引]条目",
                 "索引转义验证资料",
             )
             asset = selected / "AI/_attachments/Expression_67@2x.png"
             asset.parent.mkdir(parents=True)
             asset.write_bytes(b"encoded-attachment")
-            moves = {moved: "软件工程"}
+            moves = {moved: "信息技术"}
             trash = (discarded,)
             links = {first: (second,), second: (first,)}
             snapshot = create_review_snapshot(vault, moves, trash, links)
@@ -1772,11 +1775,11 @@ class ReviewVerificationTests(unittest.TestCase):
             self.assertEqual(report["trash"], 1)
             self.assertEqual(report["managed_link_notes"], 2)
             self.assertEqual(report["missing_assets"], [])
-            self.assertIn("软件工程", report["index_counts"])
+            self.assertIn("信息技术", report["index_counts"])
             self.assertEqual(report["snapshot_files"], 4)
 
             copied_asset = (
-                selected / "软件工程/_attachments/Expression_67@2x.png"
+                selected / "信息技术/_attachments/Expression_67@2x.png"
             )
             copied_asset.unlink()
             missing_asset_report = verify_review_results(
@@ -1784,7 +1787,7 @@ class ReviewVerificationTests(unittest.TestCase):
             )
             self.assertFalse(missing_asset_report["ok"])
             self.assertIn(
-                "30_精选资料/软件工程/_attachments/Expression_67@2x.png",
+                "30_精选资料/信息技术/_attachments/Expression_67@2x.png",
                 "\n".join(missing_asset_report["issues"]),
             )
 
@@ -1980,13 +1983,13 @@ class ReviewVerificationTests(unittest.TestCase):
             self._write_note(selected / moved, "AI", "越界验证", "正文")
             execute_review(
                 vault,
-                moves={moved: "软件工程"},
+                moves={moved: "信息技术"},
                 trash=(),
                 links={},
             )
             outside = root / "outside.bin"
             outside.write_bytes(b"outside")
-            destination = selected / "软件工程/2026年01月/越界验证.md"
+            destination = selected / "信息技术/2026年01月/越界验证.md"
             destination.write_text(
                 destination.read_text(encoding="utf-8")
                 + f"\n![]({outside.resolve().as_posix()})\n",
@@ -1995,7 +1998,7 @@ class ReviewVerificationTests(unittest.TestCase):
 
             report = verify_review_results(
                 vault,
-                {moved: "软件工程"},
+                {moved: "信息技术"},
                 (),
                 {},
             )
@@ -2028,13 +2031,13 @@ class ReviewVerificationTests(unittest.TestCase):
             selected = vault / "30_精选资料"
             moved = Path("AI/2026年01月/领域不符.md")
             self._write_note(selected / moved, "AI", "领域不符", "待迁移正文")
-            moves = {moved: "软件工程"}
+            moves = {moved: "信息技术"}
 
             execute_review(vault, moves, trash=(), links={})
-            destination = selected / "软件工程/2026年01月/领域不符.md"
+            destination = selected / "信息技术/2026年01月/领域不符.md"
             destination.write_text(
                 destination.read_text(encoding="utf-8").replace(
-                    'domain: "软件工程"', 'domain: "AI"'
+                    'domain: "信息技术"', 'domain: "AI"'
                 ),
                 encoding="utf-8",
             )
@@ -2054,13 +2057,13 @@ class ReviewVerificationTests(unittest.TestCase):
             selected = vault / "30_精选资料"
             moved = Path("AI/2026年01月/伪字段资料.md")
             self._write_note(selected / moved, "AI", "伪字段资料", "待迁移正文")
-            moves = {moved: "软件工程"}
+            moves = {moved: "信息技术"}
 
             execute_review(vault, moves, trash=(), links={})
-            destination = selected / "软件工程/2026年01月/伪字段资料.md"
+            destination = selected / "信息技术/2026年01月/伪字段资料.md"
             destination.write_text(
                 "# 伪字段资料\n\n正文中的伪字段不能作为 frontmatter。\n"
-                "domain: 软件工程\n",
+                "domain: 信息技术\n",
                 encoding="utf-8",
             )
 
@@ -2076,14 +2079,14 @@ class ReviewVerificationTests(unittest.TestCase):
             selected = vault / "30_精选资料"
             moved = Path("AI/2026年01月/块标量伪字段.md")
             self._write_note(selected / moved, "AI", "块标量伪字段", "待迁移正文")
-            moves = {moved: "软件工程"}
+            moves = {moved: "信息技术"}
 
             execute_review(vault, moves, trash=(), links={})
-            destination = selected / "软件工程/2026年01月/块标量伪字段.md"
+            destination = selected / "信息技术/2026年01月/块标量伪字段.md"
             destination.write_text(
                 "---\n"
                 "notes: |\n"
-                '  domain: "软件工程"\n'
+                '  domain: "信息技术"\n'
                 "---\n\n"
                 "# 块标量伪字段\n",
                 encoding="utf-8",
@@ -2108,16 +2111,16 @@ class ReviewVerificationTests(unittest.TestCase):
                         "块标量领域",
                         "待迁移正文",
                     )
-                    moves = {moved: "软件工程"}
+                    moves = {moved: "信息技术"}
 
                     execute_review(vault, moves, trash=(), links={})
                     destination = (
-                        selected / "软件工程/2026年01月/块标量领域.md"
+                        selected / "信息技术/2026年01月/块标量领域.md"
                     )
                     destination.write_text(
                         "---\n"
                         f"domain: {indicator}\n"
-                        "  软件工程\n"
+                        "  信息技术\n"
                         "---\n\n"
                         "# 块标量领域\n",
                         encoding="utf-8",
@@ -2132,7 +2135,7 @@ class ReviewVerificationTests(unittest.TestCase):
                     )
 
     def test_verify_accepts_quoted_and_unquoted_scalar_domains(self):
-        for domain_line in ('domain: "软件工程"', "domain: 软件工程"):
+        for domain_line in ('domain: "信息技术"', "domain: 信息技术"):
             with self.subTest(domain_line=domain_line):
                 with workspace_temp_dir() as vault:
                     (vault / ".obsidian").mkdir()
@@ -2144,11 +2147,11 @@ class ReviewVerificationTests(unittest.TestCase):
                         "普通标量领域",
                         "待迁移正文",
                     )
-                    moves = {moved: "软件工程"}
+                    moves = {moved: "信息技术"}
 
                     execute_review(vault, moves, trash=(), links={})
                     destination = (
-                        selected / "软件工程/2026年01月/普通标量领域.md"
+                        selected / "信息技术/2026年01月/普通标量领域.md"
                     )
                     destination.write_text(
                         "---\n"
@@ -2315,7 +2318,7 @@ class CommandLineTests(unittest.TestCase):
             decisions = self._write_decisions(
                 vault,
                 {
-                    "moves": {"AI/2026年01月/原始资料.md": "软件工程"},
+                    "moves": {"AI/2026年01月/原始资料.md": "信息技术"},
                     "trash": [],
                     "links": {},
                 },
@@ -2348,7 +2351,7 @@ class CommandLineTests(unittest.TestCase):
                 vault,
                 {
                     "moves": {
-                        "AI/2026年01月/原始资料.md": "软件工程",
+                        "AI/2026年01月/原始资料.md": "信息技术",
                     },
                     "trash": [],
                     "links": {},
@@ -2358,7 +2361,7 @@ class CommandLineTests(unittest.TestCase):
             paths = VaultStatePaths.for_vault(vault)
             source = vault / "30_精选资料/AI/2026年01月/原始资料.md"
             destination = (
-                vault / "30_精选资料/软件工程/2026年01月/原始资料.md"
+                vault / "30_精选资料/信息技术/2026年01月/原始资料.md"
             )
 
             with runtime_write_lock(paths, "active-task"):
@@ -2426,7 +2429,7 @@ class CommandLineTests(unittest.TestCase):
                 vault,
                 {
                     "moves": {
-                        "AI/2026年01月/原始资料.md": "软件工程",
+                        "AI/2026年01月/原始资料.md": "信息技术",
                         "AI/2026年01月/无前置字段.md": "投资理财",
                     },
                     "trash": [],
@@ -2458,7 +2461,7 @@ class CommandLineTests(unittest.TestCase):
                 (
                     vault
                     / "30_精选资料"
-                    / "软件工程"
+                    / "信息技术"
                     / "2026年01月"
                     / "原始资料.md"
                 ).exists()
@@ -2479,7 +2482,7 @@ class CommandLineTests(unittest.TestCase):
                 vault,
                 {
                     "moves": {
-                        "AI/2026年01月/原始资料.md": "软件工程",
+                        "AI/2026年01月/原始资料.md": "信息技术",
                     },
                     "trash": [],
                     "links": {},
@@ -2518,7 +2521,7 @@ class CommandLineTests(unittest.TestCase):
                 vault,
                 {
                     "moves": {
-                        "AI/2026年01月/原始资料.md": "软件工程",
+                        "AI/2026年01月/原始资料.md": "信息技术",
                     },
                     "trash": [],
                     "links": {},
@@ -2527,7 +2530,7 @@ class CommandLineTests(unittest.TestCase):
             output = vault / "failed-execution.json"
             source = vault / "30_精选资料/AI/2026年01月/原始资料.md"
             destination = (
-                vault / "30_精选资料/软件工程/2026年01月/原始资料.md"
+                vault / "30_精选资料/信息技术/2026年01月/原始资料.md"
             )
 
             with patch(

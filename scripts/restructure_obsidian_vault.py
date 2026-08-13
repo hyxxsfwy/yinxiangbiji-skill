@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
 try:
+    from scripts.domain_taxonomy import MANAGED_DOMAINS
     from scripts.knowledge_base import write_knowledge_base_index
     from scripts.runtime import load_vault_root
     from scripts.vault_state import (
@@ -22,6 +23,7 @@ try:
         runtime_write_lock,
     )
 except ModuleNotFoundError:
+    from domain_taxonomy import MANAGED_DOMAINS
     from knowledge_base import write_knowledge_base_index
     from runtime import load_vault_root
     from vault_state import (
@@ -33,7 +35,7 @@ except ModuleNotFoundError:
 
 CONFIRMATION = "MIGRATE_OBSIDIAN_VAULT"
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DOMAINS = ("AI", "Quant", "软件工程", "投资理财", "个人成长")
+DOMAINS = MANAGED_DOMAINS
 LEGACY_CONTENT_DIRECTORIES = (
     "AI相关知识库",
     "Quant相关知识库",
@@ -398,7 +400,7 @@ def build_migration_plan(vault: Path) -> MigrationPlan:
         ),
         MigrationItem(
             vault / "HYXX个人知识库" / CODEX_FILENAME,
-            vault / "20_知识笔记" / "软件工程" / CODEX_FILENAME,
+            vault / "20_知识笔记" / "信息技术" / CODEX_FILENAME,
             "copy_file",
         ),
     )
@@ -517,7 +519,7 @@ def destination_for_source(plan: MigrationPlan, source: Path) -> Path | None:
     ):
         return plan.vault / "30_精选资料" / "Quant" / "2026年06月" / QUANT_FILENAME
     if relative.as_posix() == "HYXX个人知识库/Codex CLI 使用技巧记录.md":
-        return plan.vault / "20_知识笔记" / "软件工程" / CODEX_FILENAME
+        return plan.vault / "20_知识笔记" / "信息技术" / CODEX_FILENAME
     return None
 
 
@@ -713,7 +715,7 @@ def expected_destination_for_source(source: str) -> str | None:
     if source == f"HYXX个人知识库/{CODEX_FILENAME}":
         return PurePosixPath(
             "20_知识笔记",
-            "软件工程",
+            "信息技术",
             CODEX_FILENAME,
         ).as_posix()
     return None
@@ -1046,7 +1048,7 @@ llm_policy: strict
 
 - [[30_精选资料/AI/目录索引|AI]]
 - [[30_精选资料/Quant/目录索引|Quant]]
-- [[30_精选资料/软件工程/目录索引|软件工程]]
+- [[30_精选资料/信息技术/目录索引|信息技术]]
 - [[30_精选资料/投资理财/目录索引|投资理财]]
 - [[30_精选资料/个人成长/目录索引|个人成长]]
 
@@ -1228,7 +1230,7 @@ def render_alias_dictionary() -> str:
 | 旧名称或别名 | 规范名称 | 用途 |
 | --- | --- | --- |
 | ML&AI | AI | domain |
-| CS_IT | 软件工程 | domain |
+| CS_IT | 信息技术 | domain |
 | 智能体Agent | Agent | 主题或内部链接 |
 """
 
@@ -1421,7 +1423,7 @@ def copy_mapped_content(plan: MigrationPlan):
 
     codex_source = plan.vault / "HYXX个人知识库" / CODEX_FILENAME
     codex_destination = (
-        plan.vault / "20_知识笔记" / "软件工程" / CODEX_FILENAME
+        plan.vault / "20_知识笔记" / "信息技术" / CODEX_FILENAME
     )
     with codex_source.open("r", encoding="utf-8", newline="") as stream:
         codex_original = stream.read()
@@ -1429,7 +1431,7 @@ def copy_mapped_content(plan: MigrationPlan):
         codex_original,
         {
             "type": "知识",
-            "domain": "软件工程",
+            "domain": "信息技术",
             "status": "常青",
             "created": "2026-07-04",
             "tags": [],
@@ -1666,7 +1668,7 @@ def render_migration_summary(
         ),
         (
             Path("HYXX个人知识库") / CODEX_FILENAME,
-            Path("20_知识笔记") / "软件工程" / CODEX_FILENAME,
+            Path("20_知识笔记") / "信息技术" / CODEX_FILENAME,
         ),
     ]
     if include_lifecycle_mappings:
