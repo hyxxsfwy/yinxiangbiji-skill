@@ -44,6 +44,9 @@ Copy-Item .env.example .env
 | 预览 vault 重组 | `python scripts/restructure_obsidian_vault.py` | 只读本地 |
 | 执行 vault 重组 | `python scripts/restructure_obsidian_vault.py --apply --confirm MIGRATE_OBSIDIAN_VAULT` | 修改本地 Vault |
 | 验证 vault 结构 | `python scripts/restructure_obsidian_vault.py --verify` | 只读本地 |
+| 预演领域契约迁移 | `python scripts/migrate_domain_taxonomy.py preview` | 只读本地 |
+| 执行领域契约迁移 | `python scripts/migrate_domain_taxonomy.py apply --confirm EXPAND_MANAGED_DOMAINS` | 修改本地 Vault；增量事务可回滚 |
+| 验证领域契约迁移 | `python scripts/migrate_domain_taxonomy.py verify` | 只读业务资料 |
 | 重扫并审计精选资料归类 | `references/selected-materials-governance.md` → `python scripts/reclassify_selected_materials.py audit` | 只读本地；写审计报告 |
 | 执行重分类决定 | `python scripts/reclassify_selected_materials.py apply --decisions "decisions.json" --confirm RECLASSIFY_SELECTED_MATERIALS` | 修改本地 Vault |
 | 验证重分类结果 | `python scripts/reclassify_selected_materials.py verify --decisions "decisions.json"` | 业务资料只读；写验证报告 |
@@ -57,6 +60,7 @@ Copy-Item .env.example .env
 - 创建、更新、移入废纸篓必须对应用户的明确请求。
 - 永久清空只接受固定确认词 `DELETE_ALL`，且仍需用户明确授权。
 - Vault 重组只接受 `MIGRATE_OBSIDIAN_VAULT`。
+- 固定受管领域迁移只接受 `EXPAND_MANAGED_DOMAINS`，仅自动执行“软件工程”到“信息技术”的契约迁移。
 - 精选资料重分类只接受 `RECLASSIFY_SELECTED_MATERIALS`；必须先运行 `audit` 并人工确认 decisions。
 - 旧逐篇清单执行只接受 `CURATE_SELECTED_MATERIALS`；默认命令仅预览，不落盘。
 - 不用真实账号执行创建、更新或删除回归测试。

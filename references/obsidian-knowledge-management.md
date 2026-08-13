@@ -81,6 +81,16 @@
 
 ## 迁移与验证
 
+已有 Vault 从九领域升级到固定受管十二领域时，使用专用命令。`preview` 和 `verify` 对业务资料只读；`apply` 持有独占写锁，为每个实际改动文件保存事务前像，失败时自动恢复。它仅自动把“软件工程”迁移为“信息技术”，其余既有资料不自动移动：
+
+```powershell
+python scripts/migrate_domain_taxonomy.py preview
+python scripts/migrate_domain_taxonomy.py apply --confirm EXPAND_MANAGED_DOMAINS
+python scripts/migrate_domain_taxonomy.py verify
+```
+
+迁移会同步补齐两层十二领域目录、更新精确 frontmatter 与旧目录链接，并全量重建精选资料索引、知识笔记总索引和首页入口。重复 `preview` 的 `change_count` 为 `0` 才满足幂等门禁。
+
 先在本地预览路径映射；预览和验证均只读本地 vault。预览只输出路径映射，不生成清单或链接报告：
 
 ```powershell

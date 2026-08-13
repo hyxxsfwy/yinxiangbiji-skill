@@ -262,6 +262,15 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("type: 资料", self.governance_reference)
         self.assertIn("YYYY年MM月", self.governance_reference)
 
+    def test_domain_taxonomy_migration_commands_and_boundaries_are_documented(self):
+        for document in (self.skill, self.knowledge_reference):
+            self.assertIn("migrate_domain_taxonomy.py preview", document)
+            self.assertIn("migrate_domain_taxonomy.py apply", document)
+            self.assertIn("migrate_domain_taxonomy.py verify", document)
+            self.assertIn("EXPAND_MANAGED_DOMAINS", document)
+        self.assertIn("其余既有资料", self.governance_reference)
+        self.assertIn("不自动移动", self.governance_reference)
+
     def test_snapshot_and_index_docs_match_the_full_apply_write_scope(self):
         contract = self.governance_reference
         self.assertIn("不包含附件副本", contract)
