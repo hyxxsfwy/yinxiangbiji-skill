@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import uuid
 
@@ -177,7 +178,24 @@ def _atomic_text(path, text, journal):
     journal.record_write(path)
 
 
-def _remove_empty_tree(root):
+def _rmdir_empty(directory, *, strict):
+    try:
+        directory.rmdir()
+        return
+    except PermissionError:
+        os.chmod(directory, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+        try:
+            directory.rmdir()
+            return
+        except OSError as exc:
+            if strict:
+                raise RuntimeError(f"无法删除空旧领域目录: {directory}") from exc
+    except OSError as exc:
+        if strict:
+            raise RuntimeError(f"旧领域目录仍有未迁移内容: {directory}") from exc
+
+
+def _remove_empty_tree(root, *, strict=False):
     if not root.is_dir():
         return
     for directory in sorted(
@@ -185,14 +203,8 @@ def _remove_empty_tree(root):
         key=lambda path: len(path.parts),
         reverse=True,
     ):
-        try:
-            directory.rmdir()
-        except OSError:
-            pass
-    try:
-        root.rmdir()
-    except OSError:
-        pass
+        _rmdir_empty(directory, strict=strict)
+    _rmdir_empty(root, strict=strict)
 
 
 def _transaction_hash(plan):
@@ -239,7 +251,7 @@ def apply_plan(plan, confirm):
                 _atomic_text(path, rewritten, journal)
 
             for source_root, _ in plan.moves:
-                _remove_empty_tree(source_root)
+                _remove_empty_tree(source_root, strict=True)
 
             for domain in MANAGED_DOMAINS:
                 domain_root = plan.vault / "30_精选资料" / domain
@@ -271,10 +283,7 @@ def apply_plan(plan, confirm):
         journal.restore(ROLLBACK_CONFIRMATION)
     finally:
         for directory in sorted(created_directories, key=lambda path: len(path.parts), reverse=True):
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
+            _remove_empty_tree(directory)
     raise failure
 
 

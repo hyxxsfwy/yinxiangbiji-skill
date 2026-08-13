@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import unittest
 from unittest.mock import patch
 
@@ -31,6 +33,17 @@ def seed_vault(vault):
 
 
 class DomainTaxonomyMigrationTests(unittest.TestCase):
+    def test_empty_readonly_tree_can_be_removed_for_onedrive_directories(self):
+        from scripts.migrate_domain_taxonomy import _remove_empty_tree
+
+        with workspace_temp_dir() as root:
+            legacy = root / "软件工程" / "2026年08月"
+            legacy.mkdir(parents=True)
+            os.chmod(legacy, stat.S_IREAD)
+            os.chmod(legacy.parent, stat.S_IREAD)
+            _remove_empty_tree(legacy.parent, strict=True)
+            self.assertFalse(legacy.parent.exists())
+
     def test_preview_is_read_only_and_lists_rename_and_missing_domains(self):
         from scripts.migrate_domain_taxonomy import build_plan
 
@@ -107,6 +120,7 @@ class DomainTaxonomyMigrationTests(unittest.TestCase):
             restored = vault / "20_知识笔记" / "软件工程" / "工程实践.md"
             self.assertEqual(restored.read_bytes(), original)
             self.assertFalse((vault / "20_知识笔记" / "信息技术" / "工程实践.md").exists())
+            self.assertFalse((vault / "30_精选资料" / "信息技术").exists())
 
 
 class CommandLineTests(unittest.TestCase):
