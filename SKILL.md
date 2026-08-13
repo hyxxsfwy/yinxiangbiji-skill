@@ -19,6 +19,17 @@ description: Use when a user needs 印象笔记中国版 note operations or loca
 
 ## 凭据与路径边界
 
+### Developer Token 预检与更新
+
+每次真实账号任务开始前，先运行只读命令 `python scripts/list_notebooks.py` 验证 Token；连续任务跨天时，每天首次访问前重新验证。不得输出、转述或记录 Token 与 NoteStore URL。
+
+若返回 `AUTH_EXPIRED` 或 `EDAMUserException(errorCode=9, parameter='authenticationToken')`，停止全部账号写操作，并按以下步骤更新：
+
+1. 在浏览器登录需要操作的印象笔记中国版账号。
+2. 打开 [Developer Token 页面](https://app.yinxiang.com/api/DeveloperToken.action)，按页面提示生成或更新 Token。
+3. 将页面提供的 Developer Token 和 NoteStore URL 分别写入仓库根目录 `.env` 的 `EVERNOTE_TOKEN`、`EVERNOTE_NOTESTORE_URL`；只在本地替换，不发送到聊天、日志、Vault 或 Git。
+4. 重新运行只读预检；只有预检成功后，才继续创建、更新、删除或导出任务。
+
 ```powershell
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
