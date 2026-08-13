@@ -15,7 +15,7 @@ description: Use when a user needs 印象笔记中国版 note operations or loca
 - 精选资料逐篇决策、双向链接与审核：`references/selected-materials-governance.md`
 - Obsidian 目录、Properties、索引与 LLM Wiki：`references/obsidian-knowledge-management.md`
 
-精选资料固定受管九个领域：AI、Quant、软件工程、投资理财、知识管理、健康医学、中医、两性情感、个人成长。
+精选资料固定受管十二领域：AI、Quant、信息技术、投资理财、知识管理、健康医学、中医、两性情感、个人成长、科技产业、自然科学、历史与社会。
 
 ## 凭据与路径边界
 

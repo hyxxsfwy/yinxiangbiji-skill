@@ -3,102 +3,44 @@
   "until": "2026-04-01",
   "selection_mode": "keyword_union",
   "domains": {
-    "软件工程": {
-      "keywords": [
-        "软件工程",
-        "项目管理",
-        "Engineering"
-      ]
+    "信息技术": {
+      "keywords": ["软件工程", "项目管理", "数据库", "存储", "容器", "边缘计算", "Engineering", "程序员", "网络安全", "Freebuf"]
     },
     "AI": {
-      "keywords": [
-        "AI",
-        "人工智能",
-        "机器学习",
-        "深度学习",
-        "强化学习",
-        "大模型",
-        "本体",
-        "ontology",
-        "LLM",
-        "GPT",
-        "RAG",
-        "Agent",
-        "MCP",
-        "Skills",
-        "Harness",
-        "Anthropic",
-        "OpenAI",
-        "Claude",
-        "Codex",
-        "WorkBuddy",
-        "DeepSeek",
-        "Qwen",
-        "千问",
-        "GLM",
-        "Kimi",
-        "MiniMax",
-        "HugginFace",
-        "Transformer",
-        "Attention",
-        "RWKV",
-        "RLHF",
-        "图文生成",
-        "扩散模型"
-      ]
+      "keywords": ["AI", "人工智能", "机器学习", "深度学习", "强化学习", "大模型", "本体", "ontology", "LLM", "GPT", "RAG", "Agent", "MCP", "Skills", "Harness", "Anthropic", "OpenAI", "Claude", "Codex", "WorkBuddy", "DeepSeek", "Qwen", "千问", "GLM", "Kimi", "MiniMax", "Grok", "Gemini", "Gemma", "Meta", "HugginFace", "Transformer", "Attention", "RWKV", "RLHF", "SeedDance", "图文生成", "扩散模型"]
     },
     "Quant": {
-      "keywords": [
-        "量化",
-        "量化交易",
-        "Quant"
-      ]
+      "keywords": ["量化", "量化交易", "Quant"]
     },
     "投资理财": {
-      "keywords": [
-        "金融",
-        "理财",
-        "定投",
-        "基金",
-        "贷款",
-        "ETF",
-        "区块链",
-        "比特币",
-        "BTC",
-        "以太坊",
-        "ETH",
-        "SOL"
-      ]
+      "keywords": ["金融", "理财", "财务自由", "定投", "基金", "贷款", "ETF", "区块链", "币圈", "比特币", "BTC", "ETH", "SOL", "TRX", "USDT", "江卓尔", "孙宇晨", "吴说Real", "颜克权"]
     },
     "知识管理": {
-      "keywords": [
-        "GTD",
-        "PKM"
-      ]
+      "keywords": ["GTD", "PKM"]
     },
     "健康医学": {
-      "keywords": [
-        "中医",
-        "健康",
-        "医学",
-        "医生",
-        "疾控"
-      ]
+      "keywords": ["健康", "医学", "医生", "疾控"]
+    },
+    "中医": {
+      "keywords": ["中医"]
     },
     "两性情感": {
-      "keywords": [
-        "婚姻",
-        "幸福",
-        "两性",
-        "情感",
-        "心理"
-      ]
+      "keywords": ["婚姻", "幸福", "两性", "情感", "心理", "恋爱"]
+    },
+    "个人成长": {
+      "keywords": ["成真"]
+    },
+    "科技产业": {
+      "keywords": ["芯片", "存储", "光伏", "GPU", "NPU", "NVIDIA", "新能源", "电车", "比亚迪", "电池", "小米", "红米", "苹果", "华为"]
+    },
+    "自然科学": {
+      "keywords": ["数学", "物理", "化学", "生物", "地理", "天文"]
+    },
+    "历史与社会": {
+      "keywords": ["历史", "政治", "中产", "女权"]
     }
   },
   "aliases": {
-    "HugginFace": [
-      "HuggingFace",
-      "Hugging Face"
-    ]
+    "HugginFace": ["HuggingFace", "Hugging Face"]
   }
 }

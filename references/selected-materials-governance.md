@@ -4,7 +4,9 @@
 
 对 `30_精选资料` 做全局重扫或重新归类时，以 `reclassify_selected_materials.py` 为主工具。先运行 `audit` 取得全库证据，再由人工把需要执行的决定写入 JSON；未写入决定文件的资料不变。
 
-受管范围固定九领域：AI、Quant、软件工程、投资理财、知识管理、健康医学、中医、两性情感、个人成长。每个领域的索引只收录 `30_精选资料/<domain>/YYYY年MM月/*.md` 中 frontmatter 为 `type: 资料` 且 `domain` 与当前领域完全匹配的文档。
+固定受管十二领域为：AI、Quant、信息技术、投资理财、知识管理、健康医学、中医、两性情感、个人成长、科技产业、自然科学、历史与社会。每个领域的索引只收录 `30_精选资料/<domain>/YYYY年MM月/*.md` 中 frontmatter 为 `type: 资料` 且 `domain` 与当前领域完全匹配的文档。
+
+领域契约升级只自动执行“软件工程”到“信息技术”的目录、frontmatter 和精确链接迁移。其余既有资料由 `audit` 生成建议，未经人工 decisions 不自动移动或移入废纸篓。
 
 | 决策 | 适用条件 | 执行动作 |
 |---|---|---|
@@ -78,7 +80,7 @@ python scripts/reclassify_selected_materials.py verify --decisions "decisions.js
 
 `move` 保留正文和来源元数据，更新 frontmatter 的 `domain`，把本地附件复制到目标领域的 `_attachments/`，并改写相对引用；来源附件仍保留。`trash` 保留可恢复副本及其本地附件，不把无保留价值判断扩展到其他错域资料。
 
-自动链接只写入受管理的 `llmwiki:auto-links` 区域，按路径稳定排序；重复执行保持幂等，空链接决定移除受管理区域而不改正文或人工链接。写入完成后全量重建全部九个领域的 `目录索引.md`；每份索引仅包含规范 `YYYY年MM月` 目录下 `type: 资料` 且 `domain` 匹配当前领域的文档。
+自动链接只写入受管理的 `llmwiki:auto-links` 区域，按路径稳定排序；重复执行保持幂等，空链接决定移除受管理区域而不改正文或人工链接。写入完成后全量重建全部十二个领域的 `目录索引.md`；每份索引仅包含规范 `YYYY年MM月` 目录下 `type: 资料` 且 `domain` 匹配当前领域的文档。
 
 执行阶段出现异常时，工具使用执行前快照回滚本批业务改动，并在失败报告中保留快照位置、`completed`、`pending` 和具体问题；若回滚本身不完整，问题列表会明确列出未恢复项。
 
@@ -89,7 +91,7 @@ python scripts/reclassify_selected_materials.py verify --decisions "decisions.js
 - `moves` 的来源已消失，目标文件存在且 `domain` 等于目标领域；
 - `trash` 只存在于废纸篓镜像路径，相关本地附件仍可解析；
 - 受管理链接与 decisions 一致、严格双向、端点存在且没有歧义；
-- 全部九个领域的索引存在，且与规范 `YYYY年MM月` 目录下 `type: 资料`、`domain` 匹配的真实文档集合完全一致；
+- 全部十二个领域的索引存在，且与规范 `YYYY年MM月` 目录下 `type: 资料`、`domain` 匹配的真实文档集合完全一致；
 - 所有核验路径均位于 Vault 内。
 
 `apply` 会先生成快照与 SHA-256 清单，并在写入后同时验证快照和结果；仍须再运行独立 `verify` 核对落盘状态。只有报告 `ok: true` 且问题列表为空时，才能声明重分类完成。

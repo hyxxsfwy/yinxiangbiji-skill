@@ -1020,7 +1020,11 @@ def ensure_target_structure(plan: MigrationPlan):
 
 
 def render_home() -> str:
-    return """---
+    domain_links = "\n".join(
+        f"- [[30_精选资料/{domain}/目录索引|{domain}]]"
+        for domain in MANAGED_DOMAINS
+    )
+    return f"""---
 type: 索引
 domain:
 status: 常青
@@ -1046,11 +1050,7 @@ llm_policy: strict
 
 ## 精选资料
 
-- [[30_精选资料/AI/目录索引|AI]]
-- [[30_精选资料/Quant/目录索引|Quant]]
-- [[30_精选资料/信息技术/目录索引|信息技术]]
-- [[30_精选资料/投资理财/目录索引|投资理财]]
-- [[30_精选资料/个人成长/目录索引|个人成长]]
+{domain_links}
 
 ## 系统
 

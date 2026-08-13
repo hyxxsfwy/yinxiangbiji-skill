@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将固定受管领域统一扩展为十二领域，把“软件工程”安全重命名为“信息技术”，并在正式 Obsidian Vault 中完成可回滚迁移和只读审计。
+**Goal:** 将范围统一为固定受管十二领域，把“软件工程”安全重命名为“信息技术”，并在正式 Obsidian Vault 中完成可回滚迁移和只读审计。
 
 **Architecture:** 新增单一领域注册表，导出、重分类、脚手架和命令行只从该注册表读取领域集合。新增独立的领域迁移命令，以预览、确认写入、独立验证和事务回滚处理正式 Vault；其余旧资料只审计，不自动改域。
 

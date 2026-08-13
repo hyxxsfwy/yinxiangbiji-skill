@@ -1525,6 +1525,15 @@ class CommandLineTests(unittest.TestCase):
             ):
                 self.assertFalse((vault / old_directory).exists())
             self.assertTrue((vault / "30_精选资料" / "AI").exists())
+            from scripts.domain_taxonomy import MANAGED_DOMAINS
+
+            home = (vault / "00_首页.md").read_text(encoding="utf-8")
+            for domain in MANAGED_DOMAINS:
+                with self.subTest(domain=domain):
+                    self.assertIn(
+                        f"[[30_精选资料/{domain}/目录索引|{domain}]]",
+                        home,
+                    )
             self.assertIn(
                 "- 结果：通过",
                 (records / "2026-07-27-链接检查.md").read_text(

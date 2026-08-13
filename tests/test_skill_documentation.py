@@ -55,6 +55,20 @@ class SkillDocumentationTests(unittest.TestCase):
             / "plans"
             / "2026-07-29-yinxiang-skill-consolidation.md"
         ).read_text(encoding="utf-8")
+        self.domain_design = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "specs"
+            / "2026-08-14-managed-domain-expansion-design.md"
+        ).read_text(encoding="utf-8")
+        self.domain_plan = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "plans"
+            / "2026-08-14-managed-domain-expansion.md"
+        ).read_text(encoding="utf-8")
         self.baseline_evidence = (
             REPO_ROOT
             / "docs"
@@ -212,28 +226,39 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("业务资料只读", self.governance_reference)
         self.assertIn("写验证报告", self.governance_reference)
 
-    def test_reclassification_contract_uses_fixed_nine_domains_everywhere(self):
+    def test_reclassification_contract_uses_fixed_twelve_domains_everywhere(self):
         domains = (
             "AI",
             "Quant",
-            "软件工程",
+            "信息技术",
             "投资理财",
             "知识管理",
             "健康医学",
             "中医",
             "两性情感",
             "个人成长",
+            "科技产业",
+            "自然科学",
+            "历史与社会",
         )
         for document in (
-            self.design,
-            self.plan,
+            self.skill,
+            self.domain_design,
+            self.domain_plan,
             self.governance_reference,
             self.knowledge_reference,
         ):
             with self.subTest(document=document[:40]):
-                self.assertIn("固定九领域", document)
+                self.assertIn("固定受管十二领域", document)
                 for domain in domains:
                     self.assertIn(domain, document)
+        for current_document in (
+            self.skill,
+            self.governance_reference,
+            self.knowledge_reference,
+        ):
+            self.assertNotIn("domain: 软件工程", current_document)
+            self.assertNotIn("30_精选资料/软件工程", current_document)
         self.assertIn("type: 资料", self.governance_reference)
         self.assertIn("YYYY年MM月", self.governance_reference)
 
@@ -241,12 +266,12 @@ class SkillDocumentationTests(unittest.TestCase):
         contract = self.governance_reference
         self.assertIn("不包含附件副本", contract)
         self.assertIn("来源附件仍保留", contract)
-        self.assertIn("全部九个领域", contract)
+        self.assertIn("全部十二个领域", contract)
         self.assertIn("全量重建", contract)
         self.assertIn("全部既存索引", contract)
         self.assertNotIn("重建受影响领域的 `目录索引.md`", contract)
         self.assertIn("不包含附件副本", self.design)
-        self.assertIn("全部九个领域", self.design)
+        self.assertIn("全部十二个领域", self.domain_design)
 
     def test_pressure_evidence_labels_summaries_and_preserves_raw_metadata(self):
         self.assertIn(
@@ -347,17 +372,24 @@ class SkillDocumentationTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
         expected = {
-            "软件工程", "项目管理", "AI", "人工智能", "机器学习",
+            "软件工程", "项目管理", "数据库", "存储", "容器", "边缘计算",
+            "AI", "人工智能", "机器学习",
             "深度学习", "强化学习", "大模型", "本体", "ontology",
             "LLM", "GPT", "RAG", "Agent", "MCP", "Skills", "Harness",
             "Anthropic", "OpenAI", "Claude", "Codex", "WorkBuddy",
             "DeepSeek", "Qwen", "千问", "GLM", "Kimi", "MiniMax",
-            "HugginFace", "Transformer", "Attention", "RWKV", "RLHF",
-            "Engineering", "图文生成", "扩散模型", "量化", "量化交易",
+            "Grok", "Gemini", "Gemma", "Meta", "HugginFace", "Transformer",
+            "Attention", "RWKV", "RLHF", "Engineering", "SeedDance",
+            "图文生成", "扩散模型", "量化", "量化交易",
             "Quant", "金融", "理财", "定投", "基金", "贷款", "ETF",
-            "区块链", "比特币", "BTC", "以太坊", "ETH", "SOL", "GTD",
-            "PKM", "中医", "健康", "医学", "医生", "疾控", "婚姻",
-            "幸福", "两性", "情感", "心理",
+            "区块链", "币圈", "比特币", "BTC", "ETH", "SOL", "TRX",
+            "USDT", "财务自由", "芯片", "光伏", "GPU", "NPU", "NVIDIA",
+            "新能源", "电车", "比亚迪", "电池", "小米", "红米", "苹果",
+            "华为", "数学", "物理", "化学", "生物", "地理", "天文",
+            "GTD", "PKM", "程序员", "网络安全", "Freebuf", "历史", "政治",
+            "中医", "健康", "医学", "医生", "疾控", "婚姻", "幸福", "两性",
+            "情感", "心理", "恋爱", "女权", "中产", "成真", "江卓尔",
+            "孙宇晨", "吴说Real", "颜克权",
         }
         actual = {
             keyword
@@ -366,10 +398,14 @@ class SkillDocumentationTests(unittest.TestCase):
         }
 
         self.assertEqual(actual, expected)
-        self.assertEqual(len(actual), 63)
+        self.assertEqual(len(actual), len(expected))
         self.assertEqual(
             list(payload["domains"]),
-            ["软件工程", "AI", "Quant", "投资理财", "知识管理", "健康医学", "两性情感"],
+            [
+                "信息技术", "AI", "Quant", "投资理财", "知识管理",
+                "健康医学", "中医", "两性情感", "个人成长",
+                "科技产业", "自然科学", "历史与社会",
+            ],
         )
         self.assertEqual(payload["since"], "2026-01-01")
         self.assertEqual(payload["until"], "2026-04-01")
