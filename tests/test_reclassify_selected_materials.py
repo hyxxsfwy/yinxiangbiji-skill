@@ -41,6 +41,34 @@ EXPECTED_DOMAINS = (
 
 
 class ClassificationTests(unittest.TestCase):
+    def test_specific_new_domains_override_incidental_old_domain_terms(self):
+        cases = (
+            (
+                "自然科学中的机器学习",
+                (
+                    "用机器学习分析天文学观测数据，重点推导行星轨道、"
+                    "经典力学和天体物理。"
+                ),
+                "AI",
+                "自然科学",
+            ),
+            (
+                "女权运动与公共政策",
+                (
+                    "文章研究女性主义、女权运动、政治制度、社会阶层和"
+                    "公共政策。"
+                ),
+                "两性情感",
+                "历史与社会",
+            ),
+        )
+
+        for title, body, current_domain, expected in cases:
+            with self.subTest(expected=expected):
+                result = classify_document(title, body, current_domain)
+                self.assertEqual(result.decision, "move")
+                self.assertEqual(result.target_domain, expected)
+
     def test_quant_keyword_does_not_make_vehicle_article_quant(self):
         result = classify_document(
             "10000辆氢能两轮车下线",

@@ -296,6 +296,86 @@ class SearchQueryTests(unittest.TestCase):
 
 
 class DomainRelevanceTests(unittest.TestCase):
+    def test_new_managed_domains_have_a_unique_primary_domain(self):
+        from scripts.domain_taxonomy import MANAGED_DOMAINS
+        from scripts.export_search_results import assess_primary_domain
+
+        cases = {
+            "信息技术": (
+                "PostgreSQL 数据库采用 Kubernetes 容器部署，讨论索引、"
+                "备份、分布式存储和网络安全加固。"
+            ),
+            "科技产业": (
+                "分析英伟达 GPU 供需、先进制程、半导体产业链、"
+                "市场份额和公司收入。"
+            ),
+            "自然科学": (
+                "用微积分和经典力学推导行星轨道，并结合天文学观测"
+                "讨论恒星。"
+            ),
+            "历史与社会": (
+                "比较历史事件、政治制度、社会阶层、公共政策与社会治理。"
+            ),
+        }
+
+        for expected, body in cases.items():
+            with self.subTest(expected=expected):
+                result = assess_primary_domain(
+                    expected,
+                    f"<en-note>{body}</en-note>",
+                    MANAGED_DOMAINS,
+                )
+                self.assertTrue(result.matched, result.reason)
+                self.assertEqual(result.domain, expected)
+
+    def test_recent_model_names_form_an_ai_evidence_cluster(self):
+        from scripts.domain_taxonomy import MANAGED_DOMAINS
+        from scripts.export_search_results import assess_primary_domain
+
+        result = assess_primary_domain(
+            "新模型观察",
+            (
+                "<en-note>Gemini、Gemma、Grok 与 SeedDance 都是生成式模型，"
+                "文章比较多模态图文生成、Attention 和上下文窗口。</en-note>"
+            ),
+            MANAGED_DOMAINS,
+        )
+
+        self.assertTrue(result.matched, result.reason)
+        self.assertEqual(result.domain, "AI")
+
+    def test_ambiguous_hardware_terms_follow_the_body_topic(self):
+        from scripts.domain_taxonomy import MANAGED_DOMAINS
+        from scripts.export_search_results import assess_primary_domain
+
+        cases = (
+            (
+                "AI",
+                "使用英伟达 GPU 训练大语言模型，讨论 Transformer、"
+                "强化学习、模型推理和参数规模。",
+            ),
+            (
+                "信息技术",
+                "PostgreSQL 数据库的分布式存储系统采用容器部署，"
+                "讨论备份、接口和测试。",
+            ),
+            (
+                "科技产业",
+                "分析存储芯片的先进制程、半导体产业链、市场份额、"
+                "产能和公司收入。",
+            ),
+        )
+
+        for expected, body in cases:
+            with self.subTest(expected=expected):
+                result = assess_primary_domain(
+                    "歧义词边界",
+                    f"<en-note>{body}</en-note>",
+                    MANAGED_DOMAINS,
+                )
+                self.assertTrue(result.matched, result.reason)
+                self.assertEqual(result.domain, expected)
+
     def test_primary_domain_is_unique_across_allowed_domains(self):
         from scripts.export_search_results import assess_primary_domain
 
