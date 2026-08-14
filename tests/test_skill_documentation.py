@@ -766,6 +766,51 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("默认只读", self.llm_wiki_operations)
         self.assertIn("不提供自动修复参数", self.llm_wiki_operations)
 
+    def test_llm_wiki_operations_preserve_observed_operation_boundaries(self):
+        blocks = {
+            operation: re.search(
+                rf"## {operation}\b(.*?)(?=\n## |\Z)",
+                self.llm_wiki_operations,
+                re.DOTALL,
+            ).group(1)
+            for operation in ("Ingest", "Query", "Lint")
+        }
+
+        for phrase in (
+            "完整原文",
+            "对应索引",
+            "相关知识",
+            "待审知识笔记",
+            "status: 待提炼",
+            "review_status: pending",
+            "不得改写原始资料正文",
+        ):
+            with self.subTest(operation="Ingest", phrase=phrase):
+                self.assertIn(phrase, blocks["Ingest"])
+
+        for phrase in (
+            "先读索引和知识地图",
+            "回到原始资料",
+            "区分事实、已有作者观点、比较推断和未知项",
+            "新增、可复用且有充分证据",
+            "两个独立来源",
+            "不得把未验证推断直接作为常青结论",
+            "新知识仍为待审",
+        ):
+            with self.subTest(operation="Query", phrase=phrase):
+                self.assertIn(phrase, blocks["Query"])
+
+        for phrase in (
+            "默认只读",
+            "确定性问题",
+            "manual_review",
+            "不提供自动修复参数",
+            "不得自动修改文件",
+            "没有自动修复写入",
+        ):
+            with self.subTest(operation="Lint", phrase=phrase):
+                self.assertIn(phrase, blocks["Lint"])
+
     def test_knowledge_and_comparison_templates_require_sources(self):
         knowledge_text = (
             REPO_ROOT / "templates/obsidian-knowledge-note.md"
