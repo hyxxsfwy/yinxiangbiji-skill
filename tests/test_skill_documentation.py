@@ -239,7 +239,7 @@ class SkillDocumentationTests(unittest.TestCase):
             "个人成长",
             "科技产业",
             "自然科学",
-            "历史与社会",
+            "文史社政",
         )
         for document in (
             self.skill,
@@ -413,7 +413,7 @@ class SkillDocumentationTests(unittest.TestCase):
             [
                 "信息技术", "AI", "Quant", "投资理财", "知识管理",
                 "健康医学", "中医", "两性情感", "个人成长",
-                "科技产业", "自然科学", "历史与社会",
+                "科技产业", "自然科学", "文史社政",
             ],
         )
         self.assertEqual(payload["since"], "2026-01-01")

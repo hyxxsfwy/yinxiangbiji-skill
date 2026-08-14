@@ -16,7 +16,7 @@ import sys
 import uuid
 
 try:
-    from .domain_taxonomy import MANAGED_DOMAINS
+    from .domain_taxonomy import LEGACY_DOMAIN_ALIASES, MANAGED_DOMAINS
     from .export_transaction import ROLLBACK_CONFIRMATION, VaultMutationJournal
     from .knowledge_base import write_knowledge_base_index
     from .reclassify_selected_materials import _verify_indexes
@@ -24,7 +24,7 @@ try:
     from .runtime import configure_utf8_output, load_vault_root
     from .vault_state import VaultStatePaths, require_path_within_vault, runtime_write_lock
 except ImportError:
-    from domain_taxonomy import MANAGED_DOMAINS
+    from domain_taxonomy import LEGACY_DOMAIN_ALIASES, MANAGED_DOMAINS
     from export_transaction import ROLLBACK_CONFIRMATION, VaultMutationJournal
     from knowledge_base import write_knowledge_base_index
     from reclassify_selected_materials import _verify_indexes
@@ -35,15 +35,19 @@ except ImportError:
 
 CONFIRMATION = "EXPAND_MANAGED_DOMAINS"
 LAYERS = ("20_知识笔记", "30_精选资料")
-LEGACY_DOMAIN = "软件工程"
-TARGET_DOMAIN = "信息技术"
 DOMAIN_LINE = re.compile(
-    r"(?m)^domain:\s*(?:软件工程|'软件工程'|\"软件工程\")\s*$"
+    r"(?m)^domain:\s*(?:"
+    + "|".join(
+        rf"{re.escape(domain)}|'(?:{re.escape(domain)})'|\"(?:{re.escape(domain)})\""
+        for domain in LEGACY_DOMAIN_ALIASES
+    )
+    + r")\s*$"
 )
-LEGACY_PATHS = (
-    "20_知识笔记/软件工程",
-    "30_精选资料/软件工程",
-)
+LEGACY_PATHS = {
+    f"{layer}/{legacy}": f"{layer}/{target}"
+    for layer in LAYERS
+    for legacy, target in LEGACY_DOMAIN_ALIASES.items()
+}
 
 
 @dataclass
@@ -87,12 +91,15 @@ def _inside(path, vault, description):
 
 
 def _rewrite_contract(text):
-    rewritten = DOMAIN_LINE.sub("domain: 信息技术", text)
-    for old_path in LEGACY_PATHS:
-        rewritten = rewritten.replace(
-            old_path,
-            old_path.replace(LEGACY_DOMAIN, TARGET_DOMAIN),
+    rewritten = text
+    for legacy, target in LEGACY_DOMAIN_ALIASES.items():
+        legacy_line = re.compile(
+            rf"(?m)^domain:\s*(?:{re.escape(legacy)}|'(?:{re.escape(legacy)})'|\"(?:{re.escape(legacy)})\")\s*$"
         )
+        rewritten = legacy_line.sub(f"domain: {target}", rewritten)
+        rewritten = rewritten.replace(f"|{legacy}]]", f"|{target}]]")
+    for old_path, new_path in LEGACY_PATHS.items():
+        rewritten = rewritten.replace(old_path, new_path)
     return rewritten
 
 
@@ -117,9 +124,11 @@ def build_plan(vault):
             continue
         missing = [domain for domain in MANAGED_DOMAINS if not (root / domain).is_dir()]
         plan.missing_domains[layer] = missing
-        legacy = _inside(root / LEGACY_DOMAIN, vault, "旧领域目录")
-        target = _inside(root / TARGET_DOMAIN, vault, "新领域目录")
-        if legacy.exists():
+        for legacy_domain, target_domain in LEGACY_DOMAIN_ALIASES.items():
+            legacy = _inside(root / legacy_domain, vault, "旧领域目录")
+            target = _inside(root / target_domain, vault, "新领域目录")
+            if not legacy.exists():
+                continue
             if not legacy.is_dir() or legacy.is_symlink():
                 plan.issues.append(f"旧领域路径不是普通目录: {legacy.relative_to(vault)}")
                 continue
@@ -302,8 +311,9 @@ def verify_vault(vault):
                 f"{layer} 领域目录不一致: missing={sorted(expected - actual)}, "
                 f"unexpected={sorted(actual - expected)}"
             )
-        if (root / LEGACY_DOMAIN).exists():
-            issues.append(f"仍存在旧领域目录: {layer}/{LEGACY_DOMAIN}")
+        for legacy_domain in LEGACY_DOMAIN_ALIASES:
+            if (root / legacy_domain).exists():
+                issues.append(f"仍存在旧领域目录: {layer}/{legacy_domain}")
 
     for path in sorted(vault.rglob("*.md")):
         if path.is_symlink() or ".state" in path.relative_to(vault).parts:

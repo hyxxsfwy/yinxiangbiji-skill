@@ -36,7 +36,7 @@ EXPECTED_DOMAINS = (
     "个人成长",
     "科技产业",
     "自然科学",
-    "历史与社会",
+    "文史社政",
 )
 
 
@@ -59,7 +59,7 @@ class ClassificationTests(unittest.TestCase):
                     "公共政策。"
                 ),
                 "两性情感",
-                "历史与社会",
+                "文史社政",
             ),
         )
 

@@ -78,7 +78,7 @@ SPECIFIC_DOMAINS = {
     "知识管理",
     "科技产业",
     "自然科学",
-    "历史与社会",
+    "文史社政",
 }
 FORCED_SPECIFIC_TITLE_PATTERNS = (
     (
@@ -96,7 +96,7 @@ FORCED_SPECIFIC_TITLE_PATTERNS = (
         ),
     ),
     (
-        "历史与社会",
+        "文史社政",
         re.compile(
             r"历史与社会|历史研究|政治制度|国际政治|公共政策|"
             r"社会阶层|社会治理|女性主义|女权运动"

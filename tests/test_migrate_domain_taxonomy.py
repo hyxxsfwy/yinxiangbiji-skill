@@ -32,7 +32,39 @@ def seed_vault(vault):
     )
 
 
+def seed_history_vault(vault):
+    for layer in ("20_知识笔记", "30_精选资料"):
+        (vault / layer / "历史与社会").mkdir(parents=True)
+    (vault / ".obsidian").mkdir()
+    note = vault / "20_知识笔记" / "历史与社会" / "制度史.md"
+    note.write_text(
+        "---\ntype: 知识\ndomain: 历史与社会\nstatus: 常青\n---\n\n# 制度史\n",
+        encoding="utf-8",
+    )
+    (vault / "00_首页.md").write_text(
+        "[[30_精选资料/历史与社会/目录索引|历史与社会]]\n",
+        encoding="utf-8",
+    )
+
+
 class DomainTaxonomyMigrationTests(unittest.TestCase):
+    def test_history_domain_is_migrated_to_wenshizheng(self):
+        from scripts.migrate_domain_taxonomy import apply_plan, build_plan, verify_vault
+
+        with workspace_temp_dir() as root:
+            vault = root / "vault"
+            seed_history_vault(vault)
+            plan = build_plan(vault)
+            self.assertTrue(plan.ok, plan.issues)
+            self.assertEqual(len(plan.moves), 2)
+
+            result = apply_plan(plan, confirm="EXPAND_MANAGED_DOMAINS")
+            self.assertTrue(result["ok"], result)
+            migrated = vault / "20_知识笔记" / "文史社政" / "制度史.md"
+            self.assertIn("domain: 文史社政", migrated.read_text(encoding="utf-8"))
+            self.assertFalse((vault / "20_知识笔记" / "历史与社会").exists())
+            self.assertTrue(verify_vault(vault)["ok"])
+
     def test_empty_readonly_tree_can_be_removed_for_onedrive_directories(self):
         from scripts.migrate_domain_taxonomy import _remove_empty_tree
 

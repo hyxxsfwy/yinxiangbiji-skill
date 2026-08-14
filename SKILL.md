@@ -15,7 +15,7 @@ description: Use when a user needs 印象笔记中国版 note operations or loca
 - 精选资料逐篇决策、双向链接与审核：`references/selected-materials-governance.md`
 - Obsidian 目录、Properties、索引与 LLM Wiki：`references/obsidian-knowledge-management.md`
 
-精选资料固定受管十二领域：AI、Quant、信息技术、投资理财、知识管理、健康医学、中医、两性情感、个人成长、科技产业、自然科学、历史与社会。
+精选资料固定受管十二领域：AI、Quant、信息技术、投资理财、知识管理、健康医学、中医、两性情感、个人成长、科技产业、自然科学、文史社政。
 
 ## 凭据与路径边界
 
@@ -71,7 +71,7 @@ Copy-Item .env.example .env
 - 创建、更新、移入废纸篓必须对应用户的明确请求。
 - 永久清空只接受固定确认词 `DELETE_ALL`，且仍需用户明确授权。
 - Vault 重组只接受 `MIGRATE_OBSIDIAN_VAULT`。
-- 固定受管领域迁移只接受 `EXPAND_MANAGED_DOMAINS`，仅自动执行“软件工程”到“信息技术”的契约迁移。
+- 固定受管领域迁移只接受 `EXPAND_MANAGED_DOMAINS`，仅自动执行注册表声明的旧领域改名，不重新分类其他资料。
 - 精选资料重分类只接受 `RECLASSIFY_SELECTED_MATERIALS`；必须先运行 `audit` 并人工确认 decisions。
 - 旧逐篇清单执行只接受 `CURATE_SELECTED_MATERIALS`；默认命令仅预览，不落盘。
 - 不用真实账号执行创建、更新或删除回归测试。

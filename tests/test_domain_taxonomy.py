@@ -13,7 +13,7 @@ EXPECTED_DOMAINS = (
     "个人成长",
     "科技产业",
     "自然科学",
-    "历史与社会",
+    "文史社政",
 )
 
 
@@ -23,7 +23,7 @@ class DomainRegistryTests(unittest.TestCase):
 
         self.assertEqual(MANAGED_DOMAINS, EXPECTED_DOMAINS)
 
-    def test_legacy_software_domain_is_only_accepted_for_migration(self):
+    def test_legacy_domains_are_only_accepted_for_migration(self):
         from scripts.domain_taxonomy import canonical_domain
 
         with self.assertRaisesRegex(ValueError, "不支持的领域"):
@@ -31,6 +31,12 @@ class DomainRegistryTests(unittest.TestCase):
         self.assertEqual(
             canonical_domain("软件工程", allow_legacy=True),
             "信息技术",
+        )
+        with self.assertRaisesRegex(ValueError, "不支持的领域"):
+            canonical_domain("历史与社会")
+        self.assertEqual(
+            canonical_domain("历史与社会", allow_legacy=True),
+            "文史社政",
         )
 
     def test_every_managed_domain_has_a_complete_classification_profile(self):
