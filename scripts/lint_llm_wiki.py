@@ -3,9 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.domain_taxonomy import MANAGED_DOMAINS
 from scripts.restructure_obsidian_vault import (
@@ -27,6 +31,23 @@ ALLOWED_TYPES = {"资料", "知识", "索引", "模板"}
 ALLOWED_STATUS = {"待提炼", "常青"}
 ALLOWED_REVIEW_STATUS = {"pending", "human-approved"}
 ALLOWED_LLM_POLICY = {"standard", "strict", "off"}
+AUTO_START = "<!-- llmwiki:auto:start -->"
+AUTO_END = "<!-- llmwiki:auto:end -->"
+KNOWLEDGE_MAP_PATH = Path("20_知识笔记/知识地图.md")
+KNOWLEDGE_INDEX_PATH = Path("20_知识笔记/目录索引.md")
+LOG_PATH = Path("80_系统/知识库治理/审核日志/LLM Wiki 操作日志.md")
+LOG_ENTRY_RE = re.compile(
+    r"(?m)^## \[(?P<timestamp>[^\]]+)\] (?P<operation>ingest|query|lint)$"
+)
+LOG_HEADING_RE = re.compile(r"(?m)^##(?: .*)?$")
+LOG_REQUIRED_FIELDS = (
+    "input",
+    "read_scope",
+    "proposed_writes",
+    "actual_writes",
+    "review_status",
+    "issues",
+)
 
 
 @dataclass(frozen=True)
@@ -142,6 +163,206 @@ def _link_issue(
         _relative(vault, source),
         f"Wikilink {raw_target!r}: {reason}",
     )
+
+
+def _auto_region_valid(markdown: str) -> bool:
+    return (
+        markdown.count(AUTO_START) == 1
+        and markdown.count(AUTO_END) == 1
+        and markdown.index(AUTO_START) < markdown.index(AUTO_END)
+    )
+
+
+def _indexed_targets(
+    vault: Path,
+    index_path: Path,
+    markdown: str,
+) -> set[Path]:
+    targets = set()
+    for raw in _body_wikilink_targets(markdown):
+        target, reason = resolve_wikilink(
+            vault,
+            index_path,
+            _normalized_wikilink_target(raw),
+        )
+        if target is not None and reason is None:
+            targets.add(target)
+    return targets
+
+
+def _drift_detail(vault: Path, missing: set[Path], unexpected: set[Path]) -> str:
+    parts = []
+    if missing:
+        paths = ", ".join(sorted(_relative(vault, path) for path in missing))
+        parts.append(f"遗漏: {paths}")
+    if unexpected:
+        paths = ", ".join(sorted(_relative(vault, path) for path in unexpected))
+        parts.append(f"越界: {paths}")
+    return "; ".join(parts)
+
+
+def _index_targets_from_file(vault: Path, index_path: Path) -> set[Path]:
+    if not index_path.is_file():
+        return set()
+    _, markdown = split_frontmatter(index_path.read_text(encoding="utf-8"))
+    return _indexed_targets(vault, index_path, markdown)
+
+
+def _index_drift_issue(
+    vault: Path,
+    index_path: Path,
+    expected: set[Path],
+) -> LintIssue | None:
+    try:
+        actual = _index_targets_from_file(vault, index_path)
+    except (OSError, UnicodeError, ValueError):
+        actual = set()
+    missing = expected - actual
+    unexpected = actual - expected
+    if not missing and not unexpected:
+        return None
+    return LintIssue(
+        "INDEX_DRIFT",
+        "error",
+        _relative(vault, index_path),
+        _drift_detail(vault, missing, unexpected),
+    )
+
+
+def _index_drift_issues(
+    vault: Path,
+    documents: tuple[Path, ...],
+    document_cache: dict[Path, tuple[dict[str, object], str]],
+) -> tuple[LintIssue, ...]:
+    issues = []
+    knowledge_root = (vault / "20_知识笔记").resolve()
+    selected_root = (vault / "30_精选资料").resolve()
+    expected_knowledge = {
+        path
+        for path in document_cache
+        if _is_within(knowledge_root, path)
+        and document_cache[path][0].get("type") == "知识"
+    }
+    knowledge_index = vault / KNOWLEDGE_INDEX_PATH
+    issue = _index_drift_issue(vault, knowledge_index, expected_knowledge)
+    if issue is not None:
+        issues.append(issue)
+
+    expected_by_domain: dict[str, set[Path]] = {}
+    domain_names = set()
+    for path in document_cache:
+        if not _is_within(selected_root, path):
+            continue
+        relative = path.relative_to(selected_root)
+        if len(relative.parts) < 2:
+            continue
+        domain = relative.parts[0]
+        if document_cache[path][0].get("type") == "资料":
+            expected_by_domain.setdefault(domain, set()).add(path)
+            domain_names.add(domain)
+    for path in documents:
+        if (
+            path.name == "目录索引.md"
+            and path.parent.parent == selected_root
+        ):
+            domain_names.add(path.parent.name)
+    for domain in sorted(domain_names):
+        index_path = vault / "30_精选资料" / domain / "目录索引.md"
+        issue = _index_drift_issue(
+            vault,
+            index_path,
+            expected_by_domain.get(domain, set()),
+        )
+        if issue is not None:
+            issues.append(issue)
+    return tuple(issues)
+
+
+def _invalid_log_issue(vault: Path, detail: str) -> LintIssue:
+    return LintIssue(
+        "INVALID_LOG_ENTRY",
+        "warning",
+        LOG_PATH.as_posix(),
+        detail,
+    )
+
+
+def _log_issues(vault: Path) -> tuple[LintIssue, ...]:
+    log_path = require_path_within_vault(
+        vault / LOG_PATH,
+        vault,
+        "LLM Wiki 操作日志",
+        allowed_root=vault / "80_系统/知识库治理",
+    )
+    if not log_path.is_file():
+        return (_invalid_log_issue(vault, "日志文件不存在"),)
+    try:
+        markdown = log_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return (_invalid_log_issue(vault, f"日志文件无法读取: {exc}"),)
+
+    issues = []
+    headings = tuple(LOG_HEADING_RE.finditer(markdown))
+    previous_timestamp: datetime | None = None
+    for position, heading in enumerate(headings):
+        title = heading.group(0)
+        match = LOG_ENTRY_RE.fullmatch(title)
+        entry_number = position + 1
+        if match is None:
+            issues.append(
+                _invalid_log_issue(vault, f"第 {entry_number} 个二级标题格式无效")
+            )
+        else:
+            raw_timestamp = match.group("timestamp")
+            try:
+                timestamp = datetime.fromisoformat(raw_timestamp)
+            except ValueError:
+                issues.append(
+                    _invalid_log_issue(
+                        vault,
+                        f"第 {entry_number} 个条目时间戳无效: {raw_timestamp}",
+                    )
+                )
+            else:
+                if previous_timestamp is not None:
+                    timezone_mismatch = (
+                        timestamp.utcoffset() is None
+                    ) != (previous_timestamp.utcoffset() is None)
+                    if timezone_mismatch:
+                        issues.append(
+                            _invalid_log_issue(
+                                vault,
+                                f"第 {entry_number} 个条目与上一条时间戳时区不一致",
+                            )
+                        )
+                    elif timestamp < previous_timestamp:
+                        issues.append(
+                            _invalid_log_issue(
+                                vault,
+                                f"第 {entry_number} 个条目时间顺序倒退: {raw_timestamp}",
+                            )
+                        )
+                previous_timestamp = timestamp
+
+        block_end = (
+            headings[position + 1].start()
+            if position + 1 < len(headings)
+            else len(markdown)
+        )
+        block = markdown[heading.end():block_end]
+        missing_fields = [
+            field
+            for field in LOG_REQUIRED_FIELDS
+            if re.search(rf"(?m)^- {re.escape(field)}:", block) is None
+        ]
+        if missing_fields:
+            issues.append(
+                _invalid_log_issue(
+                    vault,
+                    f"第 {entry_number} 个条目缺少字段: {', '.join(missing_fields)}",
+                )
+            )
+    return tuple(issues)
 
 
 def lint_vault(
@@ -286,6 +507,33 @@ def lint_vault(
                     "没有其他正文 Wikilink 指向该知识笔记",
                 )
             )
+    knowledge_map = require_path_within_vault(
+        vault / KNOWLEDGE_MAP_PATH,
+        vault,
+        "知识地图",
+        allowed_root=vault / "20_知识笔记",
+    )
+    try:
+        knowledge_map_markdown = knowledge_map.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        knowledge_map_markdown = ""
+    if not _auto_region_valid(knowledge_map_markdown):
+        issues.append(
+            LintIssue(
+                "INVALID_AUTO_REGION",
+                "error",
+                KNOWLEDGE_MAP_PATH.as_posix(),
+                "自动区必须且只能包含一对有序的 llmwiki 标记",
+            )
+        )
+    issues.extend(
+        _index_drift_issues(
+            vault,
+            documents,
+            document_cache,
+        )
+    )
+    issues.extend(_log_issues(vault))
     return LintReport(
         vault=vault,
         checked_at=checked_at or datetime.now(timezone.utc),

@@ -1,5 +1,7 @@
 import hashlib
 import json
+import subprocess
+import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,6 +91,14 @@ def issue_facts(
     ]
 
 
+def tree_hashes(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 class LintCoreTests(unittest.TestCase):
     def test_minimal_vault_has_no_basic_structure_errors(self):
         with workspace_temp_dir() as root:
@@ -162,6 +172,12 @@ class LintCoreTests(unittest.TestCase):
                     "domain: 未知领域",
                 )
                 + "\n# 后续文件\n",
+            )
+            index = vault / "20_知识笔记/目录索引.md"
+            index.write_text(
+                index.read_text(encoding="utf-8")
+                + "\n[[知识管理/00-array]]\n[[知识管理/99-after]]\n",
+                encoding="utf-8",
             )
             report = lint_vault(vault, checked_at=FIXED_TIME)
         self.assertEqual(
@@ -424,3 +440,218 @@ class LintLinkGraphTests(unittest.TestCase):
             issue_facts(with_body_link, checked_codes),
             [],
         )
+
+
+class LintConsistencyTests(unittest.TestCase):
+    def test_reports_auto_region_index_drift_and_invalid_log(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            knowledge_map = vault / "20_知识笔记/知识地图.md"
+            knowledge_map.write_text(
+                knowledge_map.read_text(encoding="utf-8").replace(
+                    "<!-- llmwiki:auto:end -->",
+                    "",
+                ),
+                encoding="utf-8",
+            )
+            write(
+                vault / "20_知识笔记/知识管理/未索引.md",
+                "---\ntype: 知识\ndomain: 知识管理\nstatus: 待提炼\n"
+                "review_status: pending\nllm_policy: standard\n"
+                "sources: [\"[[30_精选资料/知识管理/2026年08月/来源一]]\"]\n"
+                "---\n\n# 未索引\n",
+            )
+            log = vault / "80_系统/知识库治理/审核日志/LLM Wiki 操作日志.md"
+            log.write_text("# LLM Wiki 操作日志\n\n## 非法条目\n", encoding="utf-8")
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+        codes = {item.code for item in report.issues}
+        self.assertTrue(
+            {"INVALID_AUTO_REGION", "INDEX_DRIFT", "INVALID_LOG_ENTRY"}.issubset(
+                codes
+            )
+        )
+
+    def test_knowledge_index_drift_detail_is_sorted_and_map_is_selective(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            source = vault / "30_精选资料/知识管理/2026年08月/来源一.md"
+            for name in ("乙笔记", "甲笔记"):
+                write(
+                    vault / f"20_知识笔记/知识管理/{name}.md",
+                    "---\ntype: 知识\ndomain: 知识管理\nstatus: 待提炼\n"
+                    "review_status: pending\nllm_policy: standard\n"
+                    "sources: [\"[[30_精选资料/知识管理/2026年08月/来源一]]\"]\n"
+                    f"---\n\n# {name}\n",
+                )
+            index = vault / "20_知识笔记/目录索引.md"
+            index.write_text(
+                index.read_text(encoding="utf-8")
+                + "\n[[30_精选资料/知识管理/2026年08月/来源一]]\n",
+                encoding="utf-8",
+            )
+            knowledge_map = vault / "20_知识笔记/知识地图.md"
+            knowledge_map.write_text(
+                knowledge_map.read_text(encoding="utf-8").replace(
+                    "<!-- llmwiki:auto:end -->",
+                    "[[知识管理/甲笔记]]\n<!-- llmwiki:auto:end -->",
+                ),
+                encoding="utf-8",
+            )
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+        drift = [
+            item
+            for item in report.issues
+            if item.code == "INDEX_DRIFT" and item.path == "20_知识笔记/目录索引.md"
+        ]
+        self.assertEqual(len(drift), 1)
+        self.assertEqual(drift[0].severity, "error")
+        self.assertEqual(
+            drift[0].detail,
+            "遗漏: 20_知识笔记/知识管理/乙笔记.md, 20_知识笔记/知识管理/甲笔记.md; "
+            f"越界: {source.relative_to(vault).as_posix()}",
+        )
+
+    def test_selected_domain_index_reports_missing_and_wrong_level_targets(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            write(
+                vault / "30_精选资料/知识管理/2026年08月/补充来源.md",
+                "---\ntype: 资料\ndomain: 知识管理\nstatus: 待提炼\n"
+                "review_status: pending\nllm_policy: strict\n---\n\n# 补充来源\n",
+            )
+            index = vault / "30_精选资料/知识管理/目录索引.md"
+            index.write_text(
+                index.read_text(encoding="utf-8")
+                + "\n[[20_知识笔记/知识管理/复利知识]]\n",
+                encoding="utf-8",
+            )
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+        drift = [
+            item
+            for item in report.issues
+            if item.code == "INDEX_DRIFT"
+            and item.path == "30_精选资料/知识管理/目录索引.md"
+        ]
+        self.assertEqual(len(drift), 1)
+        self.assertEqual(
+            drift[0].detail,
+            "遗漏: 30_精选资料/知识管理/2026年08月/补充来源.md; "
+            "越界: 20_知识笔记/知识管理/复利知识.md",
+        )
+
+    def test_missing_log_is_a_warning(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            log = vault / "80_系统/知识库治理/审核日志/LLM Wiki 操作日志.md"
+            log.unlink()
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+        self.assertEqual(
+            issue_facts(report, {"INVALID_LOG_ENTRY"}),
+            [
+                (
+                    "80_系统/知识库治理/审核日志/LLM Wiki 操作日志.md",
+                    "INVALID_LOG_ENTRY",
+                    "warning",
+                )
+            ],
+        )
+        self.assertTrue(report.ok)
+
+    def test_log_format_fields_timestamp_and_order_are_warnings(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            log = vault / "80_系统/知识库治理/审核日志/LLM Wiki 操作日志.md"
+            log.write_text(
+                "# LLM Wiki 操作日志\n\n"
+                "##\n"
+                "- input: bad title\n\n"
+                "## [不是时间] query\n"
+                "- input: malformed timestamp\n"
+                "- read_scope: all\n"
+                "- proposed_writes: []\n"
+                "- actual_writes: []\n"
+                "- review_status: pending\n"
+                "- issues: 1\n\n"
+                "## [2026-08-15T08:00:00+00:00] lint\n"
+                "- input: first\n"
+                "- read_scope: all\n"
+                "- proposed_writes: []\n"
+                "- actual_writes: []\n"
+                "- review_status: pending\n"
+                "- issues: 0\n\n"
+                "## [2026-08-14T08:00:00+00:00] ingest\n"
+                "- input: second\n",
+                encoding="utf-8",
+            )
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+        warnings = [
+            item for item in report.issues if item.code == "INVALID_LOG_ENTRY"
+        ]
+        self.assertGreaterEqual(len(warnings), 4)
+        self.assertEqual({item.severity for item in warnings}, {"warning"})
+        details = "\n".join(item.detail for item in warnings)
+        for expected in ("标题格式", "时间戳", "缺少字段", "时间顺序"):
+            self.assertIn(expected, details)
+
+    def test_log_mixed_timezone_entries_warn_instead_of_aborting(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            log = vault / "80_系统/知识库治理/审核日志/LLM Wiki 操作日志.md"
+            fields = (
+                "- input: sample\n"
+                "- read_scope: all\n"
+                "- proposed_writes: []\n"
+                "- actual_writes: []\n"
+                "- review_status: pending\n"
+                "- issues: 0\n"
+            )
+            log.write_text(
+                "# LLM Wiki 操作日志\n\n"
+                "## [2026-08-14T08:00:00+00:00] lint\n"
+                f"{fields}\n"
+                "## [2026-08-14T09:00:00] query\n"
+                f"{fields}",
+                encoding="utf-8",
+            )
+            try:
+                report = lint_vault(vault, checked_at=FIXED_TIME)
+            except TypeError as exc:
+                self.fail(f"混合时区日志不应中止扫描: {exc}")
+        details = "\n".join(
+            item.detail
+            for item in report.issues
+            if item.code == "INVALID_LOG_ENTRY"
+        )
+        self.assertIn("时区不一致", details)
+
+
+class LintReadOnlyTests(unittest.TestCase):
+    def test_lint_does_not_change_any_vault_file(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            before = tree_hashes(vault)
+            lint_vault(vault, checked_at=FIXED_TIME)
+            after = tree_hashes(vault)
+        self.assertEqual(after, before)
+
+    def test_report_dictionary_is_json_serializable(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            payload = lint_vault(vault, checked_at=FIXED_TIME).to_dict()
+        rendered = json.dumps(payload, ensure_ascii=False)
+        self.assertEqual(json.loads(rendered)["summary"]["error"], 0)
+
+    def test_script_help_exposes_only_read_only_options(self):
+        repository = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            [sys.executable, "scripts/lint_llm_wiki.py", "--help"],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--vault", completed.stdout)
+        self.assertIn("--format", completed.stdout)
+        for forbidden in ("--apply", "--fix", "--write"):
+            self.assertNotIn(forbidden, completed.stdout)
