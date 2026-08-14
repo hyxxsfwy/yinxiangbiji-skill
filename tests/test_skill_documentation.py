@@ -119,21 +119,49 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertIn("references/selected-materials-governance.md", self.skill)
 
     def test_skill_routes_llm_wiki_operations_and_read_only_lint(self):
-        for phrase in (
-            "Ingest",
-            "Query",
-            "Lint",
-            "references/llm-wiki-operations.md",
-            "templates/obsidian-agents.md",
-            "python scripts/lint_llm_wiki.py --vault",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, self.skill)
-        self.assertIn("Lint 只读", self.skill)
-        self.assertNotIn("lint_llm_wiki.py --apply", self.skill)
-        self.assertNotIn("lint_llm_wiki.py --fix", self.skill)
+        route_section = self.skill.split("## 快速任务路由", 1)[1].split(
+            "\n## ",
+            1,
+        )[0]
+        routes = {}
+        for line in route_section.splitlines():
+            if not line.startswith("|") or line.startswith("|---"):
+                continue
+            task, entry, impact = (
+                cell.strip() for cell in line.strip("|").split("|")
+            )
+            if task != "任务":
+                routes[task] = (entry, impact)
+
+        expected = {
+            "逐篇摄取精选资料": (
+                "`references/llm-wiki-operations.md` → Ingest",
+                "默认只读资料；知识产物保持待审",
+            ),
+            "基于 Wiki 查询并选择性沉淀": (
+                "`references/llm-wiki-operations.md` → Query",
+                "默认只读；沉淀需满足门槛并获写入授权",
+            ),
+            "检查 LLM Wiki": (
+                '`python scripts/lint_llm_wiki.py --vault '
+                '"$env:OBSIDIAN_VAULT_PATH"`',
+                "Lint 只读本地",
+            ),
+        }
+        self.assertEqual(
+            {task: routes.get(task) for task in expected},
+            expected,
+        )
+        lint_entry = routes["检查 LLM Wiki"][0]
+        for forbidden_flag in ("--apply", "--fix", "--write-report"):
+            with self.subTest(forbidden_flag=forbidden_flag):
+                self.assertNotIn(forbidden_flag, lint_entry)
 
     def test_knowledge_reference_preserves_production_deployment_gate(self):
+        schema_section = self.knowledge_reference.split(
+            "## Schema 与操作层",
+            1,
+        )[1].split("\n## ", 1)[0]
         for phrase in (
             "Vault 根目录 `AGENTS.md`",
             "templates/obsidian-agents.md",
@@ -142,7 +170,19 @@ class SkillDocumentationTests(unittest.TestCase):
             "知识草稿保持待审",
         ):
             with self.subTest(phrase=phrase):
-                self.assertIn(phrase, self.knowledge_reference)
+                self.assertIn(phrase, schema_section)
+
+    def test_skill_routes_each_knowledge_product_to_its_template(self):
+        reference_section = self.skill.split(
+            "详细规则按任务加载，不在入口重复：",
+            1,
+        )[1].split("\n精选资料固定受管十二领域", 1)[0]
+        for route in (
+            "普通知识沉淀：`templates/obsidian-knowledge-note.md`",
+            "跨来源对比：`templates/obsidian-comparison-note.md`",
+        ):
+            with self.subTest(route=route):
+                self.assertIn(route, reference_section)
 
     def test_skill_routes_reclassification_and_legacy_curation_separately(self):
         self.assertIn("reclassify_selected_materials.py", self.skill)
@@ -609,21 +649,41 @@ class SkillDocumentationTests(unittest.TestCase):
                 self.assertNotIn(stale_phrase, self.skill + self.readme)
 
         lint_section = self.readme.split("### LLM Wiki 三大操作", 1)[1].split(
-            "\n### ",
+            "\n唯一有效的生命周期目录是：",
             1,
         )[0]
-        powershell_examples = "\n".join(
+        lint_blocks = re.findall(
+            r"```powershell\n(.*?)\n```",
+            lint_section,
+            re.DOTALL,
+        )
+        self.assertEqual(len(lint_blocks), 1)
+        lint_commands = [
+            line.strip()
+            for line in lint_blocks[0].splitlines()
+            if line.strip()
+        ]
+        approved_lint_commands = [
+            'python scripts/lint_llm_wiki.py --vault '
+            '"D:\\OneDrive\\文档\\@_Obsidian"',
+            'python scripts/lint_llm_wiki.py --vault '
+            '"D:\\OneDrive\\文档\\@_Obsidian" --format json',
+        ]
+        self.assertEqual(lint_commands, approved_lint_commands)
+
+        remaining_text = "\n".join(
             re.findall(
                 r"```powershell\n(.*?)\n```",
-                self.skill + self.readme.replace(lint_section, ""),
+                self.skill + self.readme,
                 re.DOTALL,
             )
         )
+        for command in approved_lint_commands:
+            remaining_text = remaining_text.replace(command, "", 1)
         self.assertNotIn(
             r"D:\OneDrive\文档\@_Obsidian",
-            powershell_examples,
+            remaining_text,
         )
-        self.assertIn(r"D:\OneDrive\文档\@_Obsidian", lint_section)
 
     def test_powershell_examples_load_dotenv_through_runtime_contract(self):
         reference = (
