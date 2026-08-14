@@ -187,3 +187,54 @@ class LintCoreTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(main(["--vault", str(vault / "missing")]), 2)
+
+
+class LintLinkGraphTests(unittest.TestCase):
+    def test_reports_missing_source_broken_link_orphan_and_comparison_threshold(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            knowledge = vault / "20_知识笔记/知识管理/复利知识.md"
+            content = knowledge.read_text(encoding="utf-8")
+            content = content.replace(
+                'sources: ["[[30_精选资料/知识管理/2026年08月/来源一]]"]',
+                "sources: []",
+            )
+            content += "\n[[不存在的目标]]\n"
+            knowledge.write_text(content, encoding="utf-8")
+            write(
+                vault / "20_知识笔记/知识管理/孤儿.md",
+                "---\ntype: 知识\ndomain: 知识管理\nstatus: 待提炼\n"
+                "review_status: pending\nllm_policy: standard\n"
+                "sources: [\"[[30_精选资料/知识管理/2026年08月/来源一]]\"]\n"
+                "---\n\n# 孤儿\n",
+            )
+            write(
+                vault / "20_知识笔记/知识管理/单源对比.md",
+                "---\ntype: 知识\nknowledge_kind: 对比\ndomain: 知识管理\n"
+                "status: 待提炼\nreview_status: pending\nllm_policy: standard\n"
+                "sources: [\"[[30_精选资料/知识管理/2026年08月/来源一]]\"]\n"
+                "---\n\n# 单源对比\n",
+            )
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+        codes = {item.code for item in report.issues}
+        self.assertTrue(
+            {
+                "MISSING_SOURCE",
+                "BROKEN_WIKILINK",
+                "ORPHAN_KNOWLEDGE_NOTE",
+                "INSUFFICIENT_COMPARISON_SOURCES",
+            }.issubset(codes)
+        )
+
+    def test_duplicate_stem_is_reported_as_ambiguous(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            write(vault / "20_知识笔记/AI/重名.md", "# 重名一\n")
+            write(vault / "20_知识笔记/Quant/重名.md", "# 重名二\n")
+            note = vault / "20_知识笔记/知识管理/复利知识.md"
+            note.write_text(
+                note.read_text(encoding="utf-8") + "\n[[重名]]\n",
+                encoding="utf-8",
+            )
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+        self.assertIn("AMBIGUOUS_WIKILINK", {item.code for item in report.issues})

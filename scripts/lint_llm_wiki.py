@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.domain_taxonomy import MANAGED_DOMAINS
-from scripts.restructure_obsidian_vault import split_frontmatter
+from scripts.restructure_obsidian_vault import (
+    iter_markdown_references,
+    resolve_wikilink,
+    split_frontmatter,
+)
 from scripts.runtime import load_vault_root
 from scripts.vault_state import require_path_within_vault
 
@@ -89,6 +94,56 @@ def _managed_documents(vault: Path) -> tuple[Path, ...]:
     return tuple(sorted(set(documents)))
 
 
+def _frontmatter_source_targets(fields: dict[str, object]) -> tuple[str, ...]:
+    value = fields.get("sources", [])
+    if not isinstance(value, list):
+        return ()
+    targets = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        match = re.fullmatch(r"\[\[(.+?)\]\]", item.strip())
+        if match:
+            targets.append(match.group(1))
+    return tuple(targets)
+
+
+def _body_wikilink_targets(markdown: str) -> tuple[str, ...]:
+    return tuple(
+        reference.target
+        for reference in iter_markdown_references(markdown)
+        if reference.is_wikilink and not reference.is_image
+    )
+
+
+def _normalized_wikilink_target(raw: str) -> str:
+    without_alias = raw.split("|", 1)[0].strip()
+    return re.split(r"[#^]", without_alias, maxsplit=1)[0].strip()
+
+
+def _is_within(root: Path, path: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _link_issue(
+    vault: Path,
+    source: Path,
+    raw_target: str,
+    reason: str,
+) -> LintIssue:
+    code = "AMBIGUOUS_WIKILINK" if reason == "目标不唯一" else "BROKEN_WIKILINK"
+    return LintIssue(
+        code,
+        "error",
+        _relative(vault, source),
+        f"Wikilink {raw_target!r}: {reason}",
+    )
+
+
 def lint_vault(
     vault: Path,
     *,
@@ -114,6 +169,8 @@ def lint_vault(
                 )
             )
     documents = _managed_documents(vault)
+    document_cache: dict[Path, tuple[dict[str, object], str]] = {}
+    semantic_paths: set[Path] = set()
     allowed_values = {
         "type": ALLOWED_TYPES,
         "domain": set(MANAGED_DOMAINS),
@@ -123,7 +180,7 @@ def lint_vault(
     }
     for path in documents:
         try:
-            fields, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+            fields, markdown = split_frontmatter(path.read_text(encoding="utf-8"))
             if not fields:
                 raise ValueError("缺少 Frontmatter")
         except (OSError, UnicodeError, ValueError) as exc:
@@ -136,11 +193,14 @@ def lint_vault(
                 )
             )
             continue
+        document_cache[path] = (fields, markdown)
+        properties_valid = True
         for name, values in allowed_values.items():
             value = fields.get(name, "")
             if name == "domain" and fields.get("type") == "索引" and value == "":
                 continue
             if not isinstance(value, str) or value not in values:
+                properties_valid = False
                 issues.append(
                     LintIssue(
                         "INVALID_PROPERTY_VALUE",
@@ -149,6 +209,83 @@ def lint_vault(
                         f"{name}={value!r} 不在允许值中",
                     )
                 )
+        if properties_valid:
+            semantic_paths.add(path)
+
+    selected_root = (vault / "30_精选资料").resolve()
+    knowledge_root = (vault / "20_知识笔记").resolve()
+    inbound_paths: set[Path] = set()
+    for path in documents:
+        if path not in semantic_paths:
+            continue
+        fields, markdown = document_cache[path]
+        valid_sources: set[Path] = set()
+        for raw_target in _frontmatter_source_targets(fields):
+            target = _normalized_wikilink_target(raw_target)
+            if not target:
+                continue
+            resolved, reason = resolve_wikilink(vault, path, target)
+            if reason:
+                issues.append(_link_issue(vault, path, raw_target, reason))
+            elif resolved is not None and _is_within(selected_root, resolved):
+                valid_sources.add(resolved)
+
+        is_knowledge_note = (
+            fields.get("type") == "知识"
+            and _is_within(knowledge_root, path)
+            and path.name not in {"目录索引.md", "知识地图.md"}
+        )
+        if is_knowledge_note and not valid_sources:
+            issues.append(
+                LintIssue(
+                    "MISSING_SOURCE",
+                    "error",
+                    _relative(vault, path),
+                    "知识笔记至少需要一个可解析到 30_精选资料 的 sources 项",
+                )
+            )
+        if (
+            is_knowledge_note
+            and fields.get("knowledge_kind") == "对比"
+            and len(valid_sources) < 2
+        ):
+            issues.append(
+                LintIssue(
+                    "INSUFFICIENT_COMPARISON_SOURCES",
+                    "error",
+                    _relative(vault, path),
+                    "对比笔记至少需要两个不同且有效的精选资料来源",
+                )
+            )
+
+        for raw_target in _body_wikilink_targets(markdown):
+            target = _normalized_wikilink_target(raw_target)
+            if not target:
+                continue
+            resolved, reason = resolve_wikilink(vault, path, target)
+            if reason:
+                issues.append(_link_issue(vault, path, raw_target, reason))
+            elif resolved is not None:
+                inbound_paths.add(resolved)
+
+    for path in documents:
+        if path not in semantic_paths:
+            continue
+        fields, _ = document_cache[path]
+        is_knowledge_note = (
+            fields.get("type") == "知识"
+            and _is_within(knowledge_root, path)
+            and path.name not in {"目录索引.md", "知识地图.md"}
+        )
+        if is_knowledge_note and path not in inbound_paths:
+            issues.append(
+                LintIssue(
+                    "ORPHAN_KNOWLEDGE_NOTE",
+                    "warning",
+                    _relative(vault, path),
+                    "没有其他正文 Wikilink 指向该知识笔记",
+                )
+            )
     return LintReport(
         vault=vault,
         checked_at=checked_at or datetime.now(timezone.utc),

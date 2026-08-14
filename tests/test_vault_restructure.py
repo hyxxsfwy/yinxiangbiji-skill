@@ -514,6 +514,31 @@ class CopyAndMetadataTests(unittest.TestCase):
 
 
 class LinkValidationTests(unittest.TestCase):
+    def test_public_resolver_returns_unique_target_and_ambiguity(self):
+        from scripts.restructure_obsidian_vault import resolve_wikilink
+
+        with workspace_temp_dir() as root:
+            vault = root / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            source = vault / "20_知识笔记/AI/入口.md"
+            source.parent.mkdir(parents=True)
+            source.write_text("# 入口\n", encoding="utf-8")
+            unique = vault / "30_精选资料/AI/唯一.md"
+            unique.parent.mkdir(parents=True)
+            unique.write_text("# 唯一\n", encoding="utf-8")
+            resolved, reason = resolve_wikilink(vault, source, "唯一")
+            self.assertEqual(resolved, unique)
+            self.assertIsNone(reason)
+            duplicate = vault / "20_知识笔记/Quant/唯一.md"
+            duplicate.parent.mkdir(parents=True)
+            duplicate.write_text(
+                "# 重名\n",
+                encoding="utf-8",
+            )
+            resolved, reason = resolve_wikilink(vault, source, "唯一")
+            self.assertIsNone(resolved)
+            self.assertEqual(reason, "目标不唯一")
+
     def test_reports_missing_local_target_and_ignores_http(self):
         from scripts.restructure_obsidian_vault import scan_local_links
 

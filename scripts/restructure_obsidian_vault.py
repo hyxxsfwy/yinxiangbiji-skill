@@ -272,7 +272,7 @@ def _inside_vault(vault: Path, path: Path) -> bool:
     return True
 
 
-def _resolve_wikilink(
+def resolve_wikilink(
     vault: Path,
     source: Path,
     target: str,
@@ -330,7 +330,7 @@ def scan_local_links(vault: Path) -> tuple[LinkIssue, ...]:
             ):
                 continue
             if reference.is_wikilink:
-                _, reason = _resolve_wikilink(
+                _, reason = resolve_wikilink(
                     vault,
                     source,
                     target_without_anchor,
