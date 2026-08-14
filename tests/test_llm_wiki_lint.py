@@ -1,8 +1,10 @@
 import hashlib
+import io
 import json
 import subprocess
 import sys
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -144,15 +146,26 @@ class LintCoreTests(unittest.TestCase):
         with workspace_temp_dir() as root:
             vault = seed_minimal_vault(root)
             write(
-                vault / "20_知识笔记/知识管理/损坏.md",
+                vault / "20_知识笔记/知识管理/00-损坏.md",
                 "---\ninvalid yaml line\n---\n# 损坏\n",
+            )
+            write(
+                vault / "20_知识笔记/知识管理/99-后续问题.md",
+                "---\ntype: 知识\ndomain: 未知领域\nstatus: 待提炼\n"
+                "review_status: pending\nllm_policy: standard\n---\n\n# 后续问题\n",
             )
             report = lint_vault(vault, checked_at=FIXED_TIME)
         self.assertIn(
-            "INVALID_FRONTMATTER",
-            {item.code for item in report.issues},
+            ("20_知识笔记/知识管理/00-损坏.md", "INVALID_FRONTMATTER"),
+            [(item.path, item.code) for item in report.issues],
         )
-        self.assertGreater(report.checked_files, 1)
+        self.assertIn(
+            (
+                "20_知识笔记/知识管理/99-后续问题.md",
+                "INVALID_PROPERTY_VALUE",
+            ),
+            [(item.path, item.code) for item in report.issues],
+        )
 
     def test_array_property_has_stable_code_and_scan_continues(self):
         with workspace_temp_dir() as root:
@@ -214,6 +227,17 @@ class LintCoreTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(main(["--vault", str(vault / "missing")]), 2)
+
+    def test_json_main_returns_zero_and_emits_parseable_report_for_valid_vault(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                return_code = main(["--vault", str(vault), "--format", "json"])
+        self.assertEqual(return_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["summary"]["error"], 0)
 
 
 class LintLinkGraphTests(unittest.TestCase):
@@ -470,6 +494,43 @@ class LintConsistencyTests(unittest.TestCase):
                 codes
             )
         )
+
+    def test_auto_region_rejects_duplicate_or_reversed_markers(self):
+        malformed_regions = {
+            "重复 start": (
+                "<!-- llmwiki:auto:start -->\n"
+                "<!-- llmwiki:auto:start -->\n"
+                "[[知识管理/复利知识]]\n"
+                "<!-- llmwiki:auto:end -->\n"
+            ),
+            "重复 end": (
+                "<!-- llmwiki:auto:start -->\n"
+                "[[知识管理/复利知识]]\n"
+                "<!-- llmwiki:auto:end -->\n"
+                "<!-- llmwiki:auto:end -->\n"
+            ),
+            "end 在 start 之前": (
+                "<!-- llmwiki:auto:end -->\n"
+                "[[知识管理/复利知识]]\n"
+                "<!-- llmwiki:auto:start -->\n"
+            ),
+        }
+        for case, region in malformed_regions.items():
+            with self.subTest(case=case), workspace_temp_dir() as root:
+                vault = seed_minimal_vault(root)
+                knowledge_map = vault / "20_知识笔记/知识地图.md"
+                knowledge_map.write_text(
+                    "---\ntype: 索引\ndomain: \nstatus: 常青\n"
+                    "review_status: human-approved\nllm_policy: standard\n---\n\n"
+                    "# 知识地图\n\n"
+                    + region,
+                    encoding="utf-8",
+                )
+                report = lint_vault(vault, checked_at=FIXED_TIME)
+            self.assertIn(
+                "INVALID_AUTO_REGION",
+                {item.code for item in report.issues},
+            )
 
     def test_knowledge_index_drift_detail_is_sorted_and_map_is_selective(self):
         with workspace_temp_dir() as root:

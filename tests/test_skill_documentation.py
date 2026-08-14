@@ -28,6 +28,18 @@ def parse_frontmatter(markdown: str) -> dict[str, str]:
     return fields
 
 
+def markdown_section(markdown: str, heading: str) -> str:
+    """Return one exact level-two Markdown section, excluding its heading."""
+    match = re.search(
+        rf"(?m)^## {re.escape(heading)}\r?\n(.*?)(?=^## |\Z)",
+        markdown,
+        re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"缺少二级章节: {heading}")
+    return match.group(1)
+
+
 class SkillDocumentationTests(unittest.TestCase):
     def setUp(self):
         self.skill = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
@@ -43,6 +55,16 @@ class SkillDocumentationTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.llm_wiki_operations = (
             REPO_ROOT / "references" / "llm-wiki-operations.md"
+        ).read_text(encoding="utf-8")
+        self.llm_wiki_schema = (
+            REPO_ROOT / "templates" / "obsidian-agents.md"
+        ).read_text(encoding="utf-8")
+        self.llm_wiki_verification = (
+            REPO_ROOT
+            / "docs"
+            / "superpowers"
+            / "skill-tests"
+            / "2026-08-14-llm-wiki-verification.md"
         ).read_text(encoding="utf-8")
         self.design = (
             REPO_ROOT
@@ -671,19 +693,23 @@ class SkillDocumentationTests(unittest.TestCase):
         ]
         self.assertEqual(lint_commands, approved_lint_commands)
 
-        remaining_text = "\n".join(
-            re.findall(
-                r"```powershell\n(.*?)\n```",
-                self.skill + self.readme,
-                re.DOTALL,
-            )
+        remaining_lint_examples = "\n".join(
+            line
+            for line in lint_commands
+            if line not in approved_lint_commands
         )
-        for command in approved_lint_commands:
-            remaining_text = remaining_text.replace(command, "", 1)
-        self.assertNotIn(
-            r"D:\OneDrive\文档\@_Obsidian",
-            remaining_text,
+        absolute_path = re.compile(
+            r"(?i)(?:[a-z]:[\\/]|\\\\(?:[?.]\\)?[^\\\s]+\\)"
         )
+        for forbidden_variant in (
+            r"d:\onedrive\文档\@_Obsidian",
+            r"\\server\share\@_Obsidian",
+            r"\\?\D:\OneDrive\文档\@_Obsidian",
+            r"\\.\D:\OneDrive\文档\@_Obsidian",
+        ):
+            with self.subTest(forbidden_variant=forbidden_variant):
+                self.assertRegex(forbidden_variant, absolute_path)
+        self.assertNotRegex(remaining_lint_examples, absolute_path)
 
     def test_powershell_examples_load_dotenv_through_runtime_contract(self):
         reference = (
@@ -837,9 +863,7 @@ class SkillDocumentationTests(unittest.TestCase):
                 self.assertTrue((REPO_ROOT / relative_path).is_file())
 
     def test_llm_wiki_schema_maps_existing_layers_and_operations(self):
-        schema = (REPO_ROOT / "templates/obsidian-agents.md").read_text(
-            encoding="utf-8"
-        )
+        schema = self.llm_wiki_schema
         for phrase in (
             "30_精选资料",
             "20_知识笔记",
@@ -860,6 +884,102 @@ class SkillDocumentationTests(unittest.TestCase):
         self.assertNotIn("迁移到 `raw/`", schema)
         self.assertNotIn("迁移到 `wiki/`", schema)
         self.assertNotRegex(schema, r"[A-Z]:\\")
+
+    def test_llm_wiki_schema_defines_lifecycle_policy_and_write_gate_by_section(self):
+        directories = markdown_section(self.llm_wiki_schema, "目录职责")
+        for path, responsibility in {
+            "`01_收件箱`": "临时接收",
+            "`10_项目`": "进行中的项目材料",
+            "`20_知识笔记`": "受控知识层",
+            "`30_精选资料`": "事实来源层",
+            "`80_系统/知识库治理`": "规则、审核队列、审核日志和审计报告",
+            "`90_归档`": "已结束且仍需保留",
+            "`99_废纸篓`": "可恢复删除",
+        }.items():
+            with self.subTest(path=path):
+                self.assertIn(path, directories)
+                self.assertIn(responsibility, directories)
+        self.assertIn("生命周期目录不构成自动写入目标", directories)
+
+        properties = markdown_section(
+            self.llm_wiki_schema,
+            "Properties 与建页门槛",
+        )
+        self.assertIn("每篇知识笔记只能有一个唯一主领域", properties)
+
+        policy = markdown_section(self.llm_wiki_schema, "权限矩阵")
+        rows = {
+            cells[0]: cells[1:]
+            for line in policy.splitlines()
+            if line.startswith("|") and not line.startswith("|---")
+            for cells in [[cell.strip() for cell in line.strip("|").split("|")]]
+            if cells[0] != "策略"
+        }
+        self.assertEqual(
+            set(rows),
+            {
+                "`llm_policy: standard`",
+                "`llm_policy: strict`",
+                "`llm_policy: off`",
+            },
+        )
+        self.assertIn(
+            "本次明确授权",
+            " ".join(rows["`llm_policy: standard`"]),
+        )
+        self.assertIn(
+            "只提出建议",
+            " ".join(rows["`llm_policy: strict`"]),
+        )
+        self.assertIn(
+            "禁止 AI 读取、分析和写入",
+            " ".join(rows["`llm_policy: off`"]),
+        )
+
+        knowledge_map = markdown_section(self.llm_wiki_schema, "知识地图边界")
+        self.assertIn("<!-- llmwiki:auto:start -->", knowledge_map)
+        self.assertIn("<!-- llmwiki:auto:end -->", knowledge_map)
+        self.assertIn("标记之外均为人工保护区", knowledge_map)
+
+        write_gate = markdown_section(self.llm_wiki_schema, "生产写入门禁")
+        for phrase in (
+            "默认不自动写入",
+            "目标必须位于配置的 Vault 根目录内",
+            "本次任务中用户明确授权",
+            "审核或记录请求本身均不构成写入授权",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, write_gate)
+
+    def test_llm_wiki_contract_rejects_legacy_layout_synonyms_and_path_variants(self):
+        schema = self.llm_wiki_schema
+        legacy_layout = re.compile(
+            r"(?:迁移|移动|搬迁|搬运|改造|重组|创建|新建|生成)"
+            r"[^。\n]{0,20}`?(?:raw|wiki)[\\/]`?",
+            re.IGNORECASE,
+        )
+        for example in (
+            "迁移到 `raw/`",
+            "搬运现有资料到 wiki/",
+            "新建 raw\\ 作为来源层",
+            "生成 `wiki/` 目录",
+        ):
+            with self.subTest(example=example):
+                self.assertRegex(example, legacy_layout)
+        self.assertNotRegex(schema, legacy_layout)
+
+        absolute_path = re.compile(
+            r"(?i)(?:[a-z]:[\\/]|\\\\(?:[?.]\\)?[^\\\s]+\\)"
+        )
+        for example in (
+            r"d:\vault\AGENTS.md",
+            r"\\server\share\vault",
+            r"\\?\D:\vault",
+            r"\\.\D:\vault",
+        ):
+            with self.subTest(example=example):
+                self.assertRegex(example, absolute_path)
+        self.assertNotRegex(schema, absolute_path)
 
     def test_llm_wiki_operations_define_inputs_writes_and_completion(self):
         for operation in ("Ingest", "Query", "Lint"):
@@ -920,6 +1040,41 @@ class SkillDocumentationTests(unittest.TestCase):
         ):
             with self.subTest(operation="Lint", phrase=phrase):
                 self.assertIn(phrase, blocks["Lint"])
+
+    def test_llm_wiki_lint_outputs_default_to_response_not_vault_writes(self):
+        lint = markdown_section(self.llm_wiki_operations, "Lint")
+        for phrase in (
+            "默认仅通过标准输出或当前回答返回",
+            "审核队列和审计记录",
+            "写入 Vault",
+            "仍属于生产写入",
+            "本次任务中另获用户明确授权",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, lint)
+
+        operation_log = markdown_section(self.llm_wiki_operations, "操作日志")
+        self.assertIn("默认通过标准输出或当前回答返回", operation_log)
+        self.assertIn("写入 Vault 日志", operation_log)
+        self.assertIn("本次任务的用户明确授权", operation_log)
+
+    def test_forward_verification_keeps_valid_samples_contiguous_before_appendix(self):
+        marker = "## 修复轮次 1 有效样本"
+        appendix_marker = "## 附录：首轮作废样本与历史留痕"
+        self.assertEqual(self.llm_wiki_verification.count(marker), 1)
+        self.assertEqual(self.llm_wiki_verification.count(appendix_marker), 1)
+        valid = self.llm_wiki_verification.split(marker, 1)[1].split(
+            appendix_marker,
+            1,
+        )[0]
+        appendix = self.llm_wiki_verification.split(appendix_marker, 1)[1]
+        for operation in ("Ingest", "Query", "Lint"):
+            self.assertIn(f"## {operation}（修复轮次 1）", valid)
+            self.assertNotIn(f"## {operation}（首轮作废）", valid)
+            self.assertIn(f"## {operation}（首轮作废）", appendix)
+        self.assertEqual(valid.count("### 原始回答 "), 15)
+        self.assertEqual(valid.count("### 评分"), 3)
+        self.assertNotIn("（修复轮次 1）", appendix)
 
     def test_knowledge_and_comparison_templates_require_sources(self):
         knowledge_text = (
