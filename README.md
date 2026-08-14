@@ -183,6 +183,19 @@ type: "inline-images"
 
 迁移只作用于本地 Obsidian vault，不访问印象笔记帐号。先预览迁移计划，再在用户明确授权后执行；执行会创建 ZIP 快照，验证失败不会删除旧目录。
 
+### LLM Wiki 三大操作
+
+- Ingest：一次处理一篇 `30_精选资料`，产出保持待审。
+- Query：先读索引和知识地图，只有新增且可复用的洞察才建议沉淀。
+- Lint：只读检查 Schema、Properties、来源、链接、孤儿页、索引、自动区和日志。
+
+```powershell
+python scripts/lint_llm_wiki.py --vault "D:\OneDrive\文档\@_Obsidian"
+python scripts/lint_llm_wiki.py --vault "D:\OneDrive\文档\@_Obsidian" --format json
+```
+
+命令只读，不自动修复；正式 Vault 的 Ingest、Query 或 Schema 部署仍需明确写入授权。
+
 唯一有效的生命周期目录是：
 
 ```text

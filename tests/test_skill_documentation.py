@@ -103,12 +103,46 @@ class SkillDocumentationTests(unittest.TestCase):
 
     def test_skill_description_discovers_local_obsidian_governance(self):
         frontmatter = parse_frontmatter(self.skill)
-        for phrase in ("Obsidian", "reclassify", "index", "bidirectional links"):
+        for phrase in (
+            "Obsidian",
+            "reclassify",
+            "indexes",
+            "maintain links",
+            "ingest sources",
+            "query durable knowledge",
+            "lint an LLM Wiki",
+        ):
             self.assertIn(phrase, frontmatter["description"])
 
     def test_skill_routes_detailed_workflows_to_references(self):
         self.assertIn("references/export-workflows.md", self.skill)
         self.assertIn("references/selected-materials-governance.md", self.skill)
+
+    def test_skill_routes_llm_wiki_operations_and_read_only_lint(self):
+        for phrase in (
+            "Ingest",
+            "Query",
+            "Lint",
+            "references/llm-wiki-operations.md",
+            "templates/obsidian-agents.md",
+            "python scripts/lint_llm_wiki.py --vault",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.skill)
+        self.assertIn("Lint 只读", self.skill)
+        self.assertNotIn("lint_llm_wiki.py --apply", self.skill)
+        self.assertNotIn("lint_llm_wiki.py --fix", self.skill)
+
+    def test_knowledge_reference_preserves_production_deployment_gate(self):
+        for phrase in (
+            "Vault 根目录 `AGENTS.md`",
+            "templates/obsidian-agents.md",
+            "部署到正式 Vault 前必须获得明确授权",
+            "原始资料正文只读",
+            "知识草稿保持待审",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.knowledge_reference)
 
     def test_skill_routes_reclassification_and_legacy_curation_separately(self):
         self.assertIn("reclassify_selected_materials.py", self.skill)
@@ -574,10 +608,14 @@ class SkillDocumentationTests(unittest.TestCase):
             with self.subTest(stale_phrase=stale_phrase):
                 self.assertNotIn(stale_phrase, self.skill + self.readme)
 
+        lint_section = self.readme.split("### LLM Wiki 三大操作", 1)[1].split(
+            "\n### ",
+            1,
+        )[0]
         powershell_examples = "\n".join(
             re.findall(
                 r"```powershell\n(.*?)\n```",
-                self.skill + self.readme,
+                self.skill + self.readme.replace(lint_section, ""),
                 re.DOTALL,
             )
         )
@@ -585,6 +623,7 @@ class SkillDocumentationTests(unittest.TestCase):
             r"D:\OneDrive\文档\@_Obsidian",
             powershell_examples,
         )
+        self.assertIn(r"D:\OneDrive\文档\@_Obsidian", lint_section)
 
     def test_powershell_examples_load_dotenv_through_runtime_contract(self):
         reference = (
@@ -612,7 +651,18 @@ class SkillDocumentationTests(unittest.TestCase):
 
         self.assertIn(runtime_loader, self.readme)
         self.assertIn("scripts.runtime", self.skill)
-        self.assertNotIn("$env:OBSIDIAN_VAULT_PATH", active_documents)
+        obsidian_env_lines = [
+            line
+            for line in active_documents.splitlines()
+            if "$env:OBSIDIAN_VAULT_PATH" in line
+        ]
+        self.assertEqual(
+            obsidian_env_lines,
+            [
+                '| 检查 LLM Wiki | `python scripts/lint_llm_wiki.py '
+                '--vault "$env:OBSIDIAN_VAULT_PATH"` | Lint 只读本地 |'
+            ],
+        )
         self.assertNotIn("$env:YINXIANG_SYNC_VAULT_PATH", active_documents)
         self.assertIn(
             "PowerShell 不会自动把 `.env` 注入 `$env:`",

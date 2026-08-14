@@ -1,6 +1,6 @@
 ---
 name: yinxiang-notes
-description: Use when a user needs 印象笔记中国版 note operations or local Obsidian governance, including export or sync, reclassify vault content, rebuild an index, or maintain bidirectional links.
+description: Use when a user needs 印象笔记中国版 note operations or local Obsidian governance, including export or sync, reclassify vault content, rebuild indexes, maintain links, ingest sources, query durable knowledge, or lint an LLM Wiki.
 ---
 
 # 印象笔记中国版与 Obsidian 治理
@@ -14,6 +14,8 @@ description: Use when a user needs 印象笔记中国版 note operations or loca
 - 导出、唯一领域、全局去重、断点续跑与验收：`references/export-workflows.md`
 - 精选资料逐篇决策、双向链接与审核：`references/selected-materials-governance.md`
 - Obsidian 目录、Properties、索引与 LLM Wiki：`references/obsidian-knowledge-management.md`
+- LLM Wiki 三层职责、Ingest、Query、Lint 与操作日志：`references/llm-wiki-operations.md`
+- 部署到 Vault 根目录的工具中立 Schema：`templates/obsidian-agents.md`
 
 精选资料固定受管十二领域：AI、Quant、信息技术、投资理财、知识管理、健康医学、中医、两性情感、个人成长、科技产业、自然科学、文史社政。
 
@@ -62,6 +64,9 @@ Copy-Item .env.example .env
 | 执行重分类决定 | `python scripts/reclassify_selected_materials.py apply --decisions "decisions.json" --confirm RECLASSIFY_SELECTED_MATERIALS` | 修改本地 Vault |
 | 验证重分类结果 | `python scripts/reclassify_selected_materials.py verify --decisions "decisions.json"` | 业务资料只读；写验证报告 |
 | 应用旧逐篇清单 | `references/selected-materials-governance.md` 兼容小节 → `python scripts/curate_selected_materials.py --help` | 默认只读本地 |
+| 逐篇摄取精选资料 | `references/llm-wiki-operations.md` → Ingest | 默认只读资料；知识产物保持待审 |
+| 基于 Wiki 查询并选择性沉淀 | `references/llm-wiki-operations.md` → Query | 默认只读；沉淀需满足门槛并获写入授权 |
+| 检查 LLM Wiki | `python scripts/lint_llm_wiki.py --vault "$env:OBSIDIAN_VAULT_PATH"` | Lint 只读本地 |
 
 完整参数以 `python scripts/<脚本>.py --help` 和 `README.md` 为准。
 
@@ -74,6 +79,8 @@ Copy-Item .env.example .env
 - 固定受管领域迁移只接受 `EXPAND_MANAGED_DOMAINS`，仅自动执行注册表声明的旧领域改名，不重新分类其他资料。
 - 精选资料重分类只接受 `RECLASSIFY_SELECTED_MATERIALS`；必须先运行 `audit` 并人工确认 decisions。
 - 旧逐篇清单执行只接受 `CURATE_SELECTED_MATERIALS`；默认命令仅预览，不落盘。
+- Ingest 和 Query 的读取、分析与写入建议不构成生产写入授权；实际写正式 Vault 前仍需用户明确授权。
+- Lint 只读，不得把检查请求解释为修复授权。
 - 不用真实账号执行创建、更新或删除回归测试。
 
 ## 完成门禁
