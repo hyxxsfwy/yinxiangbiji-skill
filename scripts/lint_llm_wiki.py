@@ -138,9 +138,9 @@ def lint_vault(
             continue
         for name, values in allowed_values.items():
             value = fields.get(name, "")
-            if name == "domain" and fields.get("type") == "索引" and not value:
+            if name == "domain" and fields.get("type") == "索引" and value == "":
                 continue
-            if value not in values:
+            if not isinstance(value, str) or value not in values:
                 issues.append(
                     LintIssue(
                         "INVALID_PROPERTY_VALUE",

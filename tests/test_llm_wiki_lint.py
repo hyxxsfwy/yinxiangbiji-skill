@@ -133,6 +133,40 @@ class LintCoreTests(unittest.TestCase):
         )
         self.assertGreater(report.checked_files, 1)
 
+    def test_array_property_has_stable_code_and_scan_continues(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            frontmatter = (
+                "---\ntype: 知识\ndomain: [\"知识管理\"]\nstatus: 待提炼\n"
+                "review_status: pending\nllm_policy: standard\n---\n"
+            )
+            write(
+                vault / "20_知识笔记/知识管理/00-array.md",
+                frontmatter + "\n# 数组属性\n",
+            )
+            write(
+                vault / "20_知识笔记/知识管理/99-after.md",
+                frontmatter.replace(
+                    'domain: ["知识管理"]',
+                    "domain: 未知领域",
+                )
+                + "\n# 后续文件\n",
+            )
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+        self.assertEqual(
+            [(item.path, item.code) for item in report.issues],
+            [
+                (
+                    "20_知识笔记/知识管理/00-array.md",
+                    "INVALID_PROPERTY_VALUE",
+                ),
+                (
+                    "20_知识笔记/知识管理/99-after.md",
+                    "INVALID_PROPERTY_VALUE",
+                ),
+            ],
+        )
+
     def test_directory_link_cannot_escape_vault(self):
         with workspace_temp_dir() as root:
             vault = seed_minimal_vault(root / "vault")
