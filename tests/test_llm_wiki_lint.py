@@ -624,6 +624,36 @@ class LintConsistencyTests(unittest.TestCase):
         )
         self.assertIn("时区不一致", details)
 
+    def test_log_different_utc_offsets_warn_instead_of_aborting(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            log = vault / "80_系统/知识库治理/审核日志/LLM Wiki 操作日志.md"
+            fields = (
+                "- input: sample\n"
+                "- read_scope: all\n"
+                "- proposed_writes: []\n"
+                "- actual_writes: []\n"
+                "- review_status: pending\n"
+                "- issues: 0\n"
+            )
+            log.write_text(
+                "# LLM Wiki 操作日志\n\n"
+                "## [2026-08-14T08:00:00+00:00] lint\n"
+                f"{fields}\n"
+                "## [2026-08-14T17:00:00+08:00] query\n"
+                f"{fields}",
+                encoding="utf-8",
+            )
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+        warnings = [
+            item
+            for item in report.issues
+            if item.code == "INVALID_LOG_ENTRY"
+        ]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0].severity, "warning")
+        self.assertIn("时区不一致", warnings[0].detail)
+
 
 class LintReadOnlyTests(unittest.TestCase):
     def test_lint_does_not_change_any_vault_file(self):

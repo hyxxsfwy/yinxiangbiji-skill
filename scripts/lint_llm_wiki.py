@@ -326,8 +326,9 @@ def _log_issues(vault: Path) -> tuple[LintIssue, ...]:
             else:
                 if previous_timestamp is not None:
                     timezone_mismatch = (
-                        timestamp.utcoffset() is None
-                    ) != (previous_timestamp.utcoffset() is None)
+                        timestamp.utcoffset()
+                        != previous_timestamp.utcoffset()
+                    )
                     if timezone_mismatch:
                         issues.append(
                             _invalid_log_issue(
