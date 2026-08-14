@@ -41,6 +41,9 @@ class SkillDocumentationTests(unittest.TestCase):
         self.knowledge_reference = (
             REPO_ROOT / "references" / "obsidian-knowledge-management.md"
         ).read_text(encoding="utf-8")
+        self.llm_wiki_operations = (
+            REPO_ROOT / "references" / "llm-wiki-operations.md"
+        ).read_text(encoding="utf-8")
         self.design = (
             REPO_ROOT
             / "docs"
@@ -712,13 +715,74 @@ class SkillDocumentationTests(unittest.TestCase):
             "references/obsidian-knowledge-management.md",
             "references/export-workflows.md",
             "references/selected-materials-governance.md",
+            "references/llm-wiki-operations.md",
             "templates/obsidian-source-note.md",
             "templates/obsidian-knowledge-note.md",
             "templates/obsidian-knowledge-map.md",
+            "templates/obsidian-agents.md",
+            "templates/obsidian-comparison-note.md",
         ]
         for relative_path in asset_paths:
             with self.subTest(path=relative_path):
                 self.assertTrue((REPO_ROOT / relative_path).is_file())
+
+    def test_llm_wiki_schema_maps_existing_layers_and_operations(self):
+        schema = (REPO_ROOT / "templates/obsidian-agents.md").read_text(
+            encoding="utf-8"
+        )
+        for phrase in (
+            "30_精选资料",
+            "20_知识笔记",
+            "80_系统/知识库治理",
+            "Ingest",
+            "Query",
+            "Lint",
+            "一次只处理一篇",
+            "原始资料正文只读",
+            "status: 待提炼",
+            "review_status: pending",
+            "llm_policy: strict",
+            "llm_policy: off",
+            "人工审批",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, schema)
+        self.assertNotIn("迁移到 `raw/`", schema)
+        self.assertNotIn("迁移到 `wiki/`", schema)
+        self.assertNotRegex(schema, r"[A-Z]:\\")
+
+    def test_llm_wiki_operations_define_inputs_writes_and_completion(self):
+        for operation in ("Ingest", "Query", "Lint"):
+            with self.subTest(operation=operation):
+                block = re.search(
+                    rf"## {operation}\b(.*?)(?=\n## |\Z)",
+                    self.llm_wiki_operations,
+                    re.DOTALL,
+                )
+                self.assertIsNotNone(block)
+                for heading in ("输入", "读取顺序", "允许产物", "禁止项", "完成条件"):
+                    self.assertIn(heading, block.group(1))
+        self.assertIn("manual_review", self.llm_wiki_operations)
+        self.assertIn("默认只读", self.llm_wiki_operations)
+        self.assertIn("不提供自动修复参数", self.llm_wiki_operations)
+
+    def test_knowledge_and_comparison_templates_require_sources(self):
+        knowledge_text = (
+            REPO_ROOT / "templates/obsidian-knowledge-note.md"
+        ).read_text(encoding="utf-8")
+        comparison_text = (
+            REPO_ROOT / "templates/obsidian-comparison-note.md"
+        ).read_text(encoding="utf-8")
+        knowledge = parse_frontmatter(knowledge_text)
+        comparison = parse_frontmatter(comparison_text)
+        self.assertEqual(knowledge["sources"], "[]")
+        self.assertEqual(comparison["type"], "知识")
+        self.assertEqual(comparison["knowledge_kind"], "对比")
+        self.assertEqual(comparison["status"], "待提炼")
+        self.assertEqual(comparison["review_status"], "pending")
+        self.assertEqual(comparison["sources"], "[]")
+        for heading in ("共同点", "差异与冲突", "适用条件", "待验证项"):
+            self.assertIn(f"## {heading}", comparison_text)
 
     def test_obsidian_templates_enforce_lifecycle_and_automation_contract(self):
         templates = {
