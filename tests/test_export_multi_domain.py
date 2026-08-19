@@ -1266,6 +1266,45 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
             )
             self.assertTrue(transaction_manifest.is_file())
 
+    def test_committed_keyword_export_reports_locked_transaction_pruning(self):
+        from scripts.export_multi_domain import normalize_job, run_export_job
+
+        item = metadata("guid-1", "AI Agent", 1780000000000)
+        store = FakeNoteStore(
+            {"AI": [item]},
+            {
+                "guid-1": full_note(
+                    item,
+                    "<en-note>AI Agent</en-note>",
+                )
+            },
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            job = normalize_job(keyword_union_payload(), vault)
+            report_path = temp_dir / "report.json"
+            with patch(
+                "scripts.export_multi_domain.prune_committed_transactions",
+                side_effect=PermissionError(5, "temporarily locked"),
+            ):
+                report = run_export_job(
+                    job,
+                    store,
+                    "token",
+                    catalog_path=temp_dir / "catalog.sqlite3",
+                    state_file=temp_dir / "state.json",
+                    report_file=report_path,
+                    rate_limit_mode="stop",
+                    max_rate_limit_wait=0,
+                )
+
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(report["transaction_pruning"]["deleted"], [])
+            self.assertIn("temporarily locked", report["transaction_pruning"]["error"])
+            self.assertTrue(report_path.is_file())
+
     def test_successful_keyword_export_prunes_old_export_snapshots(self):
         from scripts.export_multi_domain import (
             _job_id,
@@ -2776,17 +2815,18 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
     def test_interrupted_job_resumes_from_catalog_without_refetching_completed_body(self):
         from scripts.export_multi_domain import normalize_job, run_export_job
         from scripts.runtime import RateLimitBudgetExceeded
+        from scripts.vault_git import initialize_vault_git
 
         first = metadata("first-guid", "第一篇", 1780000000000)
         second = metadata("second-guid", "第二篇", 1779000000000)
         notes = {
             "first-guid": full_note(
                 first,
-                "<en-note>大语言模型、RAG、智能体、机器学习和模型推理。</en-note>",
+                "<en-note>AI、大语言模型、RAG、智能体、机器学习和模型推理。</en-note>",
             ),
             "second-guid": full_note(
                 second,
-                "<en-note>大语言模型、RAG、智能体、深度学习和模型训练。</en-note>",
+                "<en-note>AI、大语言模型、RAG、智能体、深度学习和模型训练。</en-note>",
             ),
         }
 
@@ -2803,15 +2843,34 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
         with workspace_temp_dir() as temp_dir:
             vault = temp_dir / "vault"
             vault.mkdir()
+            seed_keyword_markdown(
+                vault,
+                domain="AI",
+                title="第一篇",
+                guid="first-guid",
+                created="2026-04-01 10:00:00",
+                body="旧正文",
+                updated_ms=1700000000000,
+            )
+            git(vault, "init", "-b", "main")
+            git(vault, "config", "user.name", "测试用户")
+            git(vault, "config", "user.email", "test@example.invalid")
+            initialize_vault_git(vault)
             job = normalize_job(
                 {
                     "since": "2026-04-01",
                     "until": "2026-07-01",
+                    "selection_mode": "keyword_union",
                     "domains": {"AI": {"keywords": ["AI"]}},
                 },
                 vault,
             )
-            catalog_path = temp_dir / "catalog.sqlite3"
+            catalog_path = (
+                vault
+                / ".state"
+                / "yinxiang-notes"
+                / "export-catalog.sqlite3"
+            )
             state_path = temp_dir / "state.json"
             first_store = InterruptedStore(
                 {"AI": [first, second]},
@@ -2852,12 +2911,21 @@ class MultiDomainJobTests(MultiDomainJobTestMixin, unittest.TestCase):
             )
 
             self.assertEqual(resumed_store.body_calls, ["second-guid"])
-            self.assertEqual(report["candidates"]["catalog_hits"], 1)
+            self.assertEqual(report["cache"]["hits"], 1)
             self.assertEqual(
-                report["candidates"]["body_requests_saved"],
+                report["cache"]["body_requests_saved"],
                 1,
             )
             self.assertTrue(report["ok"])
+            self.assertEqual(
+                git(
+                    vault,
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=no",
+                ).stdout,
+                "",
+            )
 
 
 if __name__ == "__main__":

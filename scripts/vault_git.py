@@ -253,7 +253,7 @@ def initialize_vault_git(vault):
     )
 
 
-def preflight_vault_git(vault):
+def preflight_vault_git(vault, journal=None):
     vault = Path(vault).resolve()
     if not (vault / ".git").is_dir():
         return GitBaseline(False, None, None)
@@ -267,7 +267,39 @@ def preflight_vault_git(vault):
         "--untracked-files=no",
     ).stdout
     if dirty:
-        raise RuntimeError("Git 被跟踪工作树不干净，拒绝开始导出")
+        if journal is None:
+            raise RuntimeError("Git 被跟踪工作树不干净，拒绝开始导出")
+        current_head = _head(vault)
+        if journal.manifest.get("baseline_git_head") != current_head:
+            raise RuntimeError("Git HEAD 与待续跑事务基线不一致")
+        journal.verify_resume_state()
+        staged = tuple(
+            path
+            for path in _git(
+                vault,
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+            ).stdout.split("\0")
+            if path
+        )
+        if staged:
+            raise RuntimeError(f"暂存区不为空，拒绝续跑事务: {staged}")
+        recorded = set(journal.changed_paths())
+        unstaged = tuple(
+            path
+            for path in _git(
+                vault,
+                "diff",
+                "--name-only",
+                "-z",
+            ).stdout.split("\0")
+            if path
+        )
+        unexpected = tuple(path for path in unstaged if path not in recorded)
+        if unexpected:
+            raise RuntimeError(f"检测到事务外被跟踪修改: {unexpected}")
     _require_identity(vault)
     return GitBaseline(True, _branch(vault), _head(vault))
 
@@ -304,8 +336,21 @@ def commit_transaction(vault, journal, baseline, message):
     current_head = _head(vault)
     if current_head != baseline.head:
         raise RuntimeError("Git HEAD 在导出期间发生变化")
+    current_changes = set()
+    for arguments in (
+        ("diff", "--name-only", "-z"),
+        ("diff", "--cached", "--name-only", "-z"),
+        ("ls-files", "--others", "--exclude-standard", "-z"),
+    ):
+        current_changes.update(
+            path
+            for path in _git(vault, *arguments).stdout.split("\0")
+            if path
+        )
     allowed = tuple(
-        path for path in journal.changed_paths() if _is_allowed_path(path)
+        path
+        for path in journal.changed_paths()
+        if _is_allowed_path(path) and path in current_changes
     )
     if allowed:
         _git_add(vault, allowed)

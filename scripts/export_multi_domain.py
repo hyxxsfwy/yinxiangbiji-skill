@@ -1204,29 +1204,45 @@ def _run_keyword_union_job(
     counts["unique_guids"] = len(candidates)
     state_payload["candidate_count"] = len(candidates)
     _atomic_json(state_file, state_payload)
-    git_baseline = preflight_vault_git(job.vault)
     state_root = VaultStatePaths.for_vault(job.vault).root
     resolved_catalog = Path(catalog_path).resolve()
     try:
         resolved_catalog.relative_to(job.vault)
     except ValueError:
-        if git_baseline.enabled:
-            raise ValueError(
-                "启用 Vault Git 后，关键词目录库必须位于 Vault 的 .state 内"
-            )
         journal_catalog = state_root / "external-catalog-not-protected.sqlite3"
         catalog_protected = False
     else:
         journal_catalog = resolved_catalog
         catalog_protected = True
-    journal = VaultMutationJournal.begin(
-        job.vault,
-        state_root,
-        _job_id(job),
-        selection_hash,
-        journal_catalog,
-        baseline_git_head=git_baseline.head,
+    transaction_manifest = (
+        state_root
+        / "transactions"
+        / _job_id(job)
+        / "manifest.json"
     )
+    if transaction_manifest.is_file():
+        journal = VaultMutationJournal.begin(
+            job.vault,
+            state_root,
+            _job_id(job),
+            selection_hash,
+            journal_catalog,
+        )
+        git_baseline = preflight_vault_git(job.vault, journal=journal)
+    else:
+        git_baseline = preflight_vault_git(job.vault)
+        journal = VaultMutationJournal.begin(
+            job.vault,
+            state_root,
+            _job_id(job),
+            selection_hash,
+            journal_catalog,
+            baseline_git_head=git_baseline.head,
+        )
+    if git_baseline.enabled and not catalog_protected:
+        raise ValueError(
+            "启用 Vault Git 后，关键词目录库必须位于 Vault 的 .state 内"
+        )
     state_payload["transaction_snapshot"] = {
         "mode": "incremental",
         **journal.to_dict(),
@@ -1721,13 +1737,21 @@ def _run_keyword_union_job(
                 "catalog_protected": catalog_protected,
                 "path": str(journal.transaction_dir),
             }
-            report["transaction_pruning"] = {
-                "deleted": prune_committed_transactions(
+            try:
+                deleted_transactions = prune_committed_transactions(
                     job.vault,
                     state_root,
                     current_job_id=_job_id(job),
                 )
-            }
+            except OSError as exc:
+                report["transaction_pruning"] = {
+                    "deleted": [],
+                    "error": str(exc),
+                }
+            else:
+                report["transaction_pruning"] = {
+                    "deleted": deleted_transactions,
+                }
             if git_history.enabled:
                 try:
                     cleanup = prune_legacy_export_snapshots(

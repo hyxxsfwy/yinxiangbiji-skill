@@ -128,6 +128,37 @@ class ExportTransactionTests(unittest.TestCase):
                 {"ok": True},
             )
 
+    def test_atomic_manifest_write_outwaits_a_sustained_windows_lock(self):
+        from scripts import export_transaction
+
+        with workspace_temp_dir() as temp_dir:
+            target = temp_dir / "manifest.json"
+            real_replace = export_transaction.os.replace
+            calls = 0
+
+            def sustained_replace(source, destination):
+                nonlocal calls
+                calls += 1
+                if calls <= 5:
+                    raise PermissionError(5, "sustained lock")
+                return real_replace(source, destination)
+
+            with (
+                mock.patch.object(
+                    export_transaction.os,
+                    "replace",
+                    side_effect=sustained_replace,
+                ),
+                mock.patch.object(export_transaction.time, "sleep"),
+            ):
+                export_transaction._atomic_json(target, {"ok": True})
+
+            self.assertEqual(calls, 6)
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                {"ok": True},
+            )
+
     def test_records_preimages_and_restores_write_delete_and_move(self):
         from scripts.export_transaction import VaultMutationJournal
 

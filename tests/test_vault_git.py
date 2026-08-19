@@ -123,6 +123,64 @@ class VaultGitTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "不干净"):
                 preflight_vault_git(vault)
 
+    def test_preflight_accepts_recorded_in_progress_transaction_for_resume(self):
+        from scripts.export_transaction import VaultMutationJournal
+        from scripts.vault_git import initialize_vault_git, preflight_vault_git
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            _git(vault, "init", "-b", "main")
+            _configure_identity(vault)
+            note = vault / "文章.md"
+            note.write_text("before", encoding="utf-8")
+            initialized = initialize_vault_git(vault)
+            state_root = vault / ".state" / "yinxiang-notes"
+            journal = VaultMutationJournal.begin(
+                vault,
+                state_root,
+                "resume-job",
+                "selection",
+                state_root / "catalog.sqlite3",
+                baseline_git_head=initialized.commit,
+            )
+            journal.prepare_write(note)
+            note.write_text("after", encoding="utf-8")
+            journal.record_write(note)
+
+            resumed = preflight_vault_git(vault, journal=journal)
+
+            self.assertEqual(resumed.head, initialized.commit)
+
+    def test_preflight_rejects_resume_when_recorded_path_changed_again(self):
+        from scripts.export_transaction import VaultMutationJournal
+        from scripts.vault_git import initialize_vault_git, preflight_vault_git
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            _git(vault, "init", "-b", "main")
+            _configure_identity(vault)
+            note = vault / "文章.md"
+            note.write_text("before", encoding="utf-8")
+            initialized = initialize_vault_git(vault)
+            state_root = vault / ".state" / "yinxiang-notes"
+            journal = VaultMutationJournal.begin(
+                vault,
+                state_root,
+                "resume-conflict-job",
+                "selection",
+                state_root / "catalog.sqlite3",
+                baseline_git_head=initialized.commit,
+            )
+            journal.prepare_write(note)
+            note.write_text("exported", encoding="utf-8")
+            journal.record_write(note)
+            note.write_text("user edit", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "事务后内容已变化"):
+                preflight_vault_git(vault, journal=journal)
+
     def test_commit_stages_only_changed_paths_from_transaction(self):
         from scripts.export_transaction import VaultMutationJournal
         from scripts.vault_git import (
@@ -216,6 +274,50 @@ class VaultGitTests(unittest.TestCase):
                     baseline,
                     "同步测试导出",
                 )
+
+    def test_recommitting_committed_deletion_reports_no_changes(self):
+        from scripts.export_transaction import VaultMutationJournal
+        from scripts.vault_git import (
+            commit_transaction,
+            initialize_vault_git,
+            preflight_vault_git,
+        )
+
+        with workspace_temp_dir() as temp_dir:
+            vault = temp_dir / "vault"
+            vault.mkdir()
+            _git(vault, "init", "-b", "main")
+            _configure_identity(vault)
+            note = vault / "待删除.md"
+            note.write_text("before", encoding="utf-8")
+            initialize_vault_git(vault)
+            baseline = preflight_vault_git(vault)
+            state_root = vault / ".state" / "yinxiang-notes"
+            journal = VaultMutationJournal.begin(
+                vault,
+                state_root,
+                "repeat-commit-job",
+                "selection",
+                state_root / "catalog.sqlite3",
+                baseline_git_head=baseline.head,
+            )
+            journal.prepare_delete(note)
+            note.unlink()
+            journal.record_delete(note)
+            journal.seal()
+            first = commit_transaction(vault, journal, baseline, "首次提交")
+            journal.mark_committed(first.commit)
+            repeated_baseline = preflight_vault_git(vault)
+
+            repeated = commit_transaction(
+                vault,
+                journal,
+                repeated_baseline,
+                "幂等复核",
+            )
+
+            self.assertEqual(repeated.status, "no_changes")
+            self.assertEqual(repeated.commit, first.commit)
 
 
 if __name__ == "__main__":

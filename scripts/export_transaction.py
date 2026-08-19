@@ -35,14 +35,14 @@ def _atomic_json(path, payload):
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    for attempt in range(5):
+    for attempt in range(121):
         try:
             os.replace(temporary, path)
             break
         except PermissionError:
-            if attempt == 4:
+            if attempt == 120:
                 raise
-            time.sleep(0.02 * (attempt + 1))
+            time.sleep(0.25)
 
 
 @dataclass(frozen=True)
@@ -250,6 +250,25 @@ class VaultMutationJournal:
             if entry["after_exists"] is not None and before != after:
                 changed.append(relative)
         return tuple(sorted(changed))
+
+    def verify_resume_state(self):
+        if self.manifest["state"] != "in_progress":
+            raise RuntimeError("仅允许续跑进行中的事务")
+        for relative, entry in self.manifest["entries"].items():
+            path = self.vault / relative
+            recorded = entry["after_exists"] is not None
+            exists_key = "after_exists" if recorded else "before_exists"
+            hash_key = "after_sha256" if recorded else "before_sha256"
+            expected_exists = entry[exists_key]
+            expected_hash = entry[hash_key]
+            if expected_exists:
+                if not path.is_file() or _sha256(path) != expected_hash:
+                    label = "事务后" if recorded else "事务待记录"
+                    raise RuntimeError(f"{label}内容已变化，拒绝续跑: {relative}")
+            elif path.exists():
+                label = "事务后" if recorded else "事务待记录"
+                raise RuntimeError(f"{label}路径状态已变化，拒绝续跑: {relative}")
+        return self._summary()
 
     def _summary(self):
         objects = list(self.objects_dir.iterdir()) if self.objects_dir.exists() else []
