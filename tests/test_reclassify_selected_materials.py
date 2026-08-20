@@ -356,6 +356,20 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(result.decision, "move")
         self.assertEqual(result.target_domain, "个人成长")
 
+    def test_ai_training_article_is_not_moved_by_clickbait_resignation_title(self):
+        result = classify_document(
+            "同事辞职后说别再只闷头写代码，三个月后工资翻倍",
+            (
+                "正文主体介绍 AI 大模型全栈开发训练营、企业级 AI 项目教程、"
+                "AI 应用开发和 AI 面试官，并提供 AI 工具、MCP、Skills、"
+                "Vibe Coding 教程与人工智能学习知识库。辞职涨薪只是标题引流。"
+            ),
+            "AI",
+        )
+
+        self.assertEqual(result.decision, "keep")
+        self.assertEqual(result.target_domain, "AI")
+
     def test_resignation_compensation_options_move_to_personal_growth(self):
         result = classify_document(
             "1700天无过错被动离职：绩效期权被清零",

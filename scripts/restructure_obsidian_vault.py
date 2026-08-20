@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
 try:
-    from scripts.domain_taxonomy import MANAGED_DOMAINS
+    from scripts.domain_taxonomy import LEGACY_DOMAIN_ALIASES, MANAGED_DOMAINS
     from scripts.knowledge_base import write_knowledge_base_index
     from scripts.runtime import load_vault_root
     from scripts.vault_state import (
@@ -23,7 +23,7 @@ try:
         runtime_write_lock,
     )
 except ModuleNotFoundError:
-    from domain_taxonomy import MANAGED_DOMAINS
+    from domain_taxonomy import LEGACY_DOMAIN_ALIASES, MANAGED_DOMAINS
     from knowledge_base import write_knowledge_base_index
     from runtime import load_vault_root
     from vault_state import (
@@ -158,7 +158,11 @@ def iter_managed_markdown(vault: Path):
         relative = path.relative_to(vault)
         if ".obsidian" in relative.parts:
             continue
-        if relative.parts and relative.parts[0] in OLD_DIRECTORIES:
+        if relative.parts and relative.parts[0] in {
+            *OLD_DIRECTORIES,
+            ".state",
+            ".git",
+        }:
             continue
         yield path
 
@@ -220,8 +224,30 @@ def _destination_without_title(raw: str) -> str:
     return value
 
 
+def _without_inline_code(line: str) -> str:
+    rendered = []
+    index = 0
+    while index < len(line):
+        if line[index] != "`":
+            rendered.append(line[index])
+            index += 1
+            continue
+        delimiter_end = index + 1
+        while delimiter_end < len(line) and line[delimiter_end] == "`":
+            delimiter_end += 1
+        delimiter = line[index:delimiter_end]
+        closing = line.find(delimiter, delimiter_end)
+        if closing < 0:
+            rendered.append(delimiter)
+            index = delimiter_end
+            continue
+        rendered.append(" " * (closing + len(delimiter) - index))
+        index = closing + len(delimiter)
+    return "".join(rendered)
+
+
 def _without_markdown_code_blocks(markdown: str) -> str:
-    """移除围栏和缩进代码块，避免把示例链接当成真实引用。"""
+    """移除围栏、缩进和行内代码，避免把示例链接当成真实引用。"""
     rendered = []
     fence = None
     for line in markdown.splitlines(keepends=True):
@@ -237,8 +263,16 @@ def _without_markdown_code_blocks(markdown: str) -> str:
         if fence is not None or line.startswith(("    ", "\t")):
             rendered.append("\n" if line.endswith(("\n", "\r")) else "")
             continue
-        rendered.append(line)
+        rendered.append(_without_inline_code(line))
     return "".join(rendered)
+
+
+def _looks_like_code_wikilink(target: str) -> bool:
+    value = target.strip()
+    if re.fullmatch(r":[A-Za-z_][A-Za-z0-9_-]*:", value):
+        return True
+    quoted = r"(?:'[^'\r\n]+'|\"[^\"\r\n]+\")"
+    return re.fullmatch(rf"{quoted}(?:\s*,\s*{quoted})+", value) is not None
 
 
 def iter_markdown_references(markdown: str):
@@ -257,11 +291,27 @@ def iter_markdown_references(markdown: str):
             is_wikilink=False,
         )
     for match in WIKILINK.finditer(markdown):
+        target = match.group(2).strip()
+        if _looks_like_code_wikilink(target):
+            continue
         yield MarkdownReference(
-            target=match.group(2).strip(),
+            target=target,
             is_image=bool(match.group(1)),
             is_wikilink=True,
         )
+
+
+def normalized_wikilink_target(raw: str) -> str:
+    without_alias = raw.split("|", 1)[0].strip()
+    markdown_suffix = without_alias.lower().find(".md")
+    if markdown_suffix >= 0:
+        suffix_start = markdown_suffix + len(".md")
+        suffix = without_alias[suffix_start:]
+        anchor = re.search(r"[#^]", suffix)
+        if anchor:
+            return without_alias[: suffix_start + anchor.start()].strip()
+        return without_alias
+    return re.split(r"[#^]", without_alias, maxsplit=1)[0].strip()
 
 
 def _inside_vault(vault: Path, path: Path) -> bool:
@@ -310,18 +360,14 @@ def resolve_wikilink(
 
 def scan_local_links(vault: Path) -> tuple[LinkIssue, ...]:
     vault = assert_vault(vault)
+    selected_root = (vault / "30_精选资料").resolve()
     issues = []
     for source in iter_managed_markdown(vault):
         markdown = source.read_text(encoding="utf-8")
         for reference in iter_markdown_references(markdown):
             raw_target = reference.target.strip()
             if reference.is_wikilink:
-                target_without_alias = raw_target.split("|", 1)[0].strip()
-                target_without_anchor = re.split(
-                    r"[#^]",
-                    target_without_alias,
-                    maxsplit=1,
-                )[0].strip()
+                target_without_anchor = normalized_wikilink_target(raw_target)
             else:
                 target_without_anchor = raw_target.split("#", 1)[0].strip()
             if (
@@ -337,6 +383,11 @@ def scan_local_links(vault: Path) -> tuple[LinkIssue, ...]:
                 )
                 if reason:
                     issues.append(LinkIssue(source, raw_target, reason))
+                continue
+            if (
+                not reference.is_image
+                and _inside_vault(selected_root, source)
+            ):
                 continue
             decoded = unquote(target_without_anchor)
             resolved = (source.parent / decoded).resolve()
@@ -734,6 +785,62 @@ def _safe_manifest_relative(value, label: str) -> tuple[PurePosixPath | None, st
     return relative, None
 
 
+def _canonical_managed_path(value: str) -> str:
+    relative = PurePosixPath(value)
+    if (
+        len(relative.parts) >= 2
+        and relative.parts[0] in {"20_知识笔记", "30_精选资料"}
+    ):
+        domain = LEGACY_DOMAIN_ALIASES.get(
+            relative.parts[1],
+            relative.parts[1],
+        )
+        return PurePosixPath(
+            relative.parts[0],
+            domain,
+            *relative.parts[2:],
+        ).as_posix()
+    return relative.as_posix()
+
+
+def _resolve_manifest_destination(
+    vault: Path,
+    destination_text: str,
+) -> tuple[Path | None, str | None]:
+    relative, destination_issue = _safe_manifest_relative(
+        destination_text,
+        "迁移目标",
+    )
+    if destination_issue or relative is None:
+        return None, destination_issue
+    canonical = PurePosixPath(_canonical_managed_path(destination_text))
+    direct = vault.joinpath(*canonical.parts).resolve()
+    if not _inside_vault(vault, direct):
+        return None, f"迁移目标越出 vault: {destination_text}"
+    if direct.is_file():
+        return direct, None
+    if direct.exists():
+        return None, f"迁移目标不是普通文件: {destination_text}"
+    if (
+        direct.suffix.lower() != ".md"
+        or not canonical.parts
+        or canonical.parts[0] not in {"20_知识笔记", "30_精选资料"}
+    ):
+        return None, f"缺少迁移目标: {destination_text}"
+    managed_root = (vault / canonical.parts[0]).resolve()
+    matches = [
+        path.resolve()
+        for path in managed_root.rglob(canonical.name)
+        if path.is_file()
+    ]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        rendered = sorted(path.relative_to(vault).as_posix() for path in matches)
+        return None, f"迁移目标不唯一: {destination_text}: {rendered}"
+    return None, f"缺少迁移目标: {destination_text}"
+
+
 def load_manifest_strict(
     vault: Path,
     manifest_path: Path,
@@ -835,13 +942,25 @@ def load_manifest_strict(
             )
             if destination_issue:
                 issues.append(destination_issue)
-            elif destination in seen_destinations:
-                issues.append(f"迁移清单包含重复目标: {destination}")
-            else:
-                seen_destinations.add(destination)
+            elif isinstance(destination, str):
+                canonical_destination = _canonical_managed_path(destination)
+                if canonical_destination in seen_destinations:
+                    issues.append(f"迁移清单包含重复目标: {destination}")
+                else:
+                    seen_destinations.add(canonical_destination)
         if source_path is not None:
             expected = expected_destination_for_source(source)
-            if destination != expected:
+            canonical_destination = (
+                _canonical_managed_path(destination)
+                if isinstance(destination, str)
+                else destination
+            )
+            canonical_expected = (
+                _canonical_managed_path(expected)
+                if isinstance(expected, str)
+                else expected
+            )
+            if canonical_destination != canonical_expected:
                 issues.append(
                     f"{prefix}.destination 与迁移映射不一致: "
                     f"{destination!r} != {expected!r}"
@@ -1553,18 +1672,15 @@ def validate_migration(
         destination_text = record.get("destination")
         if destination_text is None:
             continue
-        _, destination_issue = _safe_manifest_relative(
+        if not isinstance(destination_text, str):
+            continue
+        destination, destination_issue = _resolve_manifest_destination(
+            vault,
             destination_text,
-            "迁移目标",
         )
         if destination_issue:
-            continue
-        destination = (vault / Path(destination_text)).resolve()
-        if not _inside_vault(vault, destination):
-            issues.append(f"迁移目标越出 vault: {destination_text}")
-        elif not destination.is_file():
-            issues.append(f"缺少迁移目标: {destination_text}")
-        elif (
+            issues.append(destination_issue)
+        elif destination is not None and (
             record.get("preserve_hash")
             and sha256_file(destination) != record.get("sha256")
         ):
@@ -1627,6 +1743,29 @@ def render_link_report(
     return "\n".join(lines)
 
 
+def _legacy_link_report_matches(
+    markdown: str,
+    *,
+    markdown_files_before: int,
+) -> bool:
+    match = re.fullmatch(
+        r"# Obsidian vault 迁移链接检查\r?\n\r?\n"
+        r"- 结果：(?P<result>通过|失败)\r?\n"
+        r"- 迁移前 Markdown：(?P<markdown>\d+)\r?\n"
+        r"- 检查的 Markdown 链接：(?P<links>\d+)\r?\n"
+        r"- 检查的图片引用：(?P<images>\d+)\r?\n\r?\n"
+        r"## 问题\r?\n\r?\n"
+        r"- (?P<issues>[^\r\n]+)\r?\n",
+        markdown,
+    )
+    return bool(
+        match
+        and match.group("result") == "通过"
+        and int(match.group("markdown")) == markdown_files_before
+        and match.group("issues") == "无"
+    )
+
+
 def write_link_report(report: ValidationReport, path: Path) -> Path:
     path.write_text(
         render_link_report(report, include_wikilinks=True),
@@ -1642,6 +1781,7 @@ def render_migration_summary(
     executed_at: str,
     old_directories_removed: bool,
     include_lifecycle_mappings: bool = True,
+    use_legacy_domain_alias: bool = False,
 ) -> str:
     lines = [
         "# Obsidian vault 迁移说明",
@@ -1668,7 +1808,9 @@ def render_migration_summary(
         ),
         (
             Path("HYXX个人知识库") / CODEX_FILENAME,
-            Path("20_知识笔记") / "信息技术" / CODEX_FILENAME,
+            Path("20_知识笔记")
+            / ("软件工程" if use_legacy_domain_alias else "信息技术")
+            / CODEX_FILENAME,
         ),
     ]
     if include_lifecycle_mappings:
@@ -1804,17 +1946,21 @@ def verify_completed_vault(vault: Path) -> ValidationReport:
         isinstance(manifest, dict)
         and set(manifest) == CURRENT_MANIFEST_KEYS
     )
-    if is_current_manifest:
+    if is_current_manifest and isinstance(
+        manifest.get("link_check_result"),
+        dict,
+    ):
         link_result = manifest.get("link_check_result")
-        expected_link_result = {
-            "result": "passed" if report.passed else "failed",
-            "issues": len(report.issues),
-            "markdown_links_checked": report.local_links_checked,
-            "image_links_checked": report.image_links_checked,
-            "wiki_links_checked": report.wiki_links_checked,
-        }
-        if link_result != expected_link_result:
-            issues.append("迁移清单记录的链接检查结果与重新计算结果不一致")
+        historical_report = ValidationReport(
+            passed=link_result.get("result") == "passed",
+            issues=(),
+            markdown_files_before=report.markdown_files_before,
+            local_links_checked=link_result.get("markdown_links_checked", 0),
+            image_links_checked=link_result.get("image_links_checked", 0),
+            wiki_links_checked=link_result.get("wiki_links_checked", 0),
+        )
+    else:
+        historical_report = report
 
     link_report_path = record_paths["link_report"]
     if link_report_path.is_file():
@@ -1823,12 +1969,18 @@ def verify_completed_vault(vault: Path) -> ValidationReport:
         except OSError as exc:
             issues.append(f"链接检查报告无法读取: {exc}")
         else:
-            expected_link_report = render_link_report(
-                report,
-                include_wikilinks=is_current_manifest,
-            )
-            if actual_link_report != expected_link_report:
-                issues.append("链接检查报告与重新计算结果不一致")
+            if is_current_manifest:
+                expected_link_report = render_link_report(
+                    historical_report,
+                    include_wikilinks=True,
+                )
+                if actual_link_report != expected_link_report:
+                    issues.append("链接检查报告与历史迁移记录不一致")
+            elif not _legacy_link_report_matches(
+                actual_link_report,
+                markdown_files_before=report.markdown_files_before,
+            ):
+                issues.append("链接检查报告与历史迁移记录不一致")
 
     summary_path = record_paths["summary"]
     if summary_path.is_file():
@@ -1849,20 +2001,19 @@ def verify_completed_vault(vault: Path) -> ValidationReport:
                     datetime.fromisoformat(executed_at)
                 except ValueError:
                     issues.append("迁移说明执行时间无效")
-                expected_summary = render_migration_summary(
-                    vault,
-                    report,
-                    executed_at=executed_at,
-                    old_directories_removed=True,
-                )
-                legacy_summary = render_migration_summary(
-                    vault,
-                    report,
-                    executed_at=executed_at,
-                    old_directories_removed=True,
-                    include_lifecycle_mappings=False,
-                )
-                if actual_summary not in (expected_summary, legacy_summary):
+                accepted_summaries = {
+                    render_migration_summary(
+                        vault,
+                        report,
+                        executed_at=executed_at,
+                        old_directories_removed=True,
+                        include_lifecycle_mappings=include_lifecycle,
+                        use_legacy_domain_alias=use_legacy_domain,
+                    )
+                    for include_lifecycle in (True, False)
+                    for use_legacy_domain in (True, False)
+                }
+                if actual_summary not in accepted_summaries:
                     issues.append("迁移说明与当前 vault 验证结果不一致")
 
     issues.extend(

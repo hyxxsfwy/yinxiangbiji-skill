@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
 from scripts.domain_taxonomy import MANAGED_DOMAINS
 from scripts.restructure_obsidian_vault import (
     iter_markdown_references,
+    normalized_wikilink_target,
     resolve_wikilink,
     split_frontmatter,
 )
@@ -138,8 +139,7 @@ def _body_wikilink_targets(markdown: str) -> tuple[str, ...]:
 
 
 def _normalized_wikilink_target(raw: str) -> str:
-    without_alias = raw.split("|", 1)[0].strip()
-    return re.split(r"[#^]", without_alias, maxsplit=1)[0].strip()
+    return normalized_wikilink_target(raw)
 
 
 def _is_within(root: Path, path: Path) -> bool:

@@ -67,7 +67,7 @@ _ASSET_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _WIKILINK = re.compile(r"\[\[([^|\]]+)(?:\|[^\]]*)?\]\]")
 _MONTH_DIRECTORY = re.compile(r"^\d{4}年(?:0[1-9]|1[0-2])月$")
 _REMOTE_TARGET = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-CLASSIFICATION_POLICY_VERSION = 13
+CLASSIFICATION_POLICY_VERSION = 14
 
 DOMAIN_PROFILES = MANAGED_DOMAIN_PROFILES
 SPECIFIC_DOMAINS = {
@@ -297,6 +297,11 @@ def classify_document(title, body, current_domain):
     title_scores = {
         domain: value[0] for domain, value in title_scored.items()
     }
+    body_scored = {
+        domain: _score_profile("", body, profile)
+        for domain, profile in DOMAIN_PROFILES.items()
+    }
+    body_scores = {domain: value[0] for domain, value in body_scored.items()}
     current_title_score = title_scores.get(current_domain, 0)
     fallback_domains = _title_fallback_domains(title)
     forced_specific_title = next(
@@ -307,6 +312,19 @@ def classify_document(title, body, current_domain):
         ),
         None,
     )
+    current_body_core_hits = sum(
+        term in body_scored[current_domain][1]
+        for term in DOMAIN_PROFILES[current_domain]["core"]
+    )
+    if (
+        current_domain == "AI"
+        and forced_specific_title in {None, current_domain}
+        and "个人成长" in fallback_domains
+        and current_body_core_hits >= 3
+        and body_scores[current_domain] >= 16
+        and body_scores[current_domain] >= body_scores["个人成长"] + 8
+    ):
+        return Classification("keep", current_domain, scores, evidence)
     has_competing_specific_title = any(
         domain in SPECIFIC_DOMAINS and domain != current_domain
         for domain in fallback_domains

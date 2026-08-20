@@ -241,6 +241,31 @@ class LintCoreTests(unittest.TestCase):
 
 
 class LintLinkGraphTests(unittest.TestCase):
+    def test_filename_hash_is_not_treated_as_a_wikilink_anchor(self):
+        with workspace_temp_dir() as root:
+            vault = seed_minimal_vault(root)
+            write(
+                vault / "30_精选资料/知识管理/2026年08月/标题#标签.md",
+                "---\ntype: 资料\ndomain: 知识管理\nstatus: 待提炼\n"
+                "review_status: pending\nllm_policy: strict\n---\n\n# 标题\n",
+            )
+            index = vault / "30_精选资料/知识管理/目录索引.md"
+            index.write_text(
+                index.read_text(encoding="utf-8")
+                + "- [[2026年08月/标题#标签.md]]\n",
+                encoding="utf-8",
+            )
+
+            report = lint_vault(vault, checked_at=FIXED_TIME)
+
+        self.assertEqual(
+            issue_facts(
+                report,
+                {"BROKEN_WIKILINK", "AMBIGUOUS_WIKILINK", "INDEX_DRIFT"},
+            ),
+            [],
+        )
+
     def test_reports_missing_source_broken_link_orphan_and_comparison_threshold(self):
         with workspace_temp_dir() as root:
             vault = seed_minimal_vault(root)

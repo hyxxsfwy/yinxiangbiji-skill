@@ -620,6 +620,60 @@ class LinkValidationTests(unittest.TestCase):
 
             self.assertEqual(scan_local_links(vault), ())
 
+    def test_ignores_inline_code_and_code_like_double_brackets(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "note.md").write_text(
+                "行内示例 `[[概念名]]` 不应成为链接。\n"
+                "sed -E 's/[[:space:]]+//g'\n"
+                "return df[['trade_date', 'open']]\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(scan_local_links(vault), ())
+
+    def test_ignores_state_and_git_markdown(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            (vault / "index.md").write_text("# 当前内容\n", encoding="utf-8")
+            for relative in (
+                ".state/quarantine/历史.md",
+                ".git/objects/内部说明.md",
+            ):
+                path = vault / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("[[缺失目标]]\n", encoding="utf-8")
+
+            self.assertEqual(scan_local_links(vault), ())
+
+    def test_selected_tutorial_links_only_enforce_images_and_wikilinks(self):
+        from scripts.restructure_obsidian_vault import scan_local_links
+
+        with workspace_temp_dir() as vault:
+            (vault / ".obsidian").mkdir()
+            article = vault / "30_精选资料/AI/2026年08月/教程.md"
+            article.parent.mkdir(parents=True)
+            article.write_text(
+                "[项目内文档](REFERENCE.md)\n"
+                "![缺图](images/missing.png)\n"
+                "[[缺失知识笔记]]\n",
+                encoding="utf-8",
+            )
+
+            issues = scan_local_links(vault)
+
+        self.assertEqual(
+            [(item.target, item.reason) for item in issues],
+            [
+                ("images/missing.png", "目标不存在"),
+                ("缺失知识笔记", "目标不存在"),
+            ],
+        )
+
     def test_does_not_treat_double_bracket_external_link_labels_as_wikilinks(
         self,
     ):
@@ -689,6 +743,183 @@ class LinkValidationTests(unittest.TestCase):
 
 
 class ValidationRobustnessTests(unittest.TestCase):
+    def test_completed_verify_accepts_legacy_domain_alias_records(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            manifest = records / "2026-07-27-文件清单.json"
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            codex = next(
+                record
+                for record in payload["files"]
+                if record["source"].endswith("Codex CLI 使用技巧记录.md")
+            )
+            codex["destination"] = (
+                "20_知识笔记/软件工程/Codex CLI 使用技巧记录.md"
+            )
+            manifest.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            summary = records / "2026-07-27-迁移说明.md"
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace(
+                    "20_知识笔记\\信息技术\\Codex CLI 使用技巧记录.md",
+                    "20_知识笔记\\软件工程\\Codex CLI 使用技巧记录.md",
+                ),
+                encoding="utf-8",
+            )
+
+            report = verify_completed_vault(vault)
+
+        self.assertTrue(report.passed, report.issues)
+
+    def test_completed_verify_accepts_unique_markdown_relocation(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            source = (
+                vault
+                / "30_精选资料/Quant/2026年06月/"
+                "GPT-6也救不了平庸策略：Vibe Quant 的反思.md"
+            )
+            destination = (
+                vault
+                / "30_精选资料/Quant/2026年08月/"
+                "GPT-6也救不了平庸策略：Vibe Quant 的反思.md"
+            )
+            destination.parent.mkdir(parents=True)
+            source.rename(destination)
+            index = vault / "30_精选资料/Quant/目录索引.md"
+            index.write_text(
+                index.read_text(encoding="utf-8").replace(
+                    "2026年06月/", "2026年08月/"
+                ),
+                encoding="utf-8",
+            )
+
+            report = verify_completed_vault(vault)
+
+        self.assertTrue(report.passed, report.issues)
+
+    def test_completed_verify_rejects_ambiguous_markdown_relocation(self):
+        from scripts.restructure_obsidian_vault import validate_migration
+
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            original = (
+                vault
+                / "30_精选资料/Quant/2026年06月/"
+                "GPT-6也救不了平庸策略：Vibe Quant 的反思.md"
+            )
+            content = original.read_text(encoding="utf-8")
+            original.unlink()
+            for month in ("2026年07月", "2026年08月"):
+                duplicate = vault / "30_精选资料/Quant" / month / original.name
+                duplicate.parent.mkdir(parents=True)
+                duplicate.write_text(content, encoding="utf-8")
+
+            report = validate_migration(
+                vault,
+                records / "2026-07-27-文件清单.json",
+            )
+
+        self.assertFalse(report.passed)
+        self.assertTrue(
+            any("迁移目标不唯一" in issue for issue in report.issues),
+            report.issues,
+        )
+
+    def test_completed_verify_keeps_historical_link_counts_stable(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        with workspace_temp_dir() as vault:
+            apply_fixture_vault(vault)
+            (vault / "新增说明.md").write_text(
+                "[首页](00_首页.md)\n",
+                encoding="utf-8",
+            )
+
+            report = verify_completed_vault(vault)
+
+        self.assertTrue(report.passed, report.issues)
+
+    def test_completed_verify_accepts_legacy_manifest_historical_counts(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            manifest = records / "2026-07-27-文件清单.json"
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "vault": payload["vault"],
+                        "created_at": payload["created_at"],
+                        "files": payload["files"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            link_report = records / "2026-07-27-链接检查.md"
+            link_report.write_text(
+                "\n".join(
+                    line
+                    for line in link_report.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if not line.startswith("- 检查的 WikiLink：")
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (vault / "新增说明.md").write_text(
+                "[首页](00_首页.md)\n",
+                encoding="utf-8",
+            )
+
+            report = verify_completed_vault(vault)
+
+        self.assertTrue(report.passed, report.issues)
+
+    def test_completed_verify_rejects_tampered_legacy_link_report(self):
+        from scripts.restructure_obsidian_vault import verify_completed_vault
+
+        with workspace_temp_dir() as vault:
+            records = apply_fixture_vault(vault)
+            manifest = records / "2026-07-27-文件清单.json"
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "vault": payload["vault"],
+                        "created_at": payload["created_at"],
+                        "files": payload["files"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            link_report = records / "2026-07-27-链接检查.md"
+            link_report.write_text(
+                link_report.read_text(encoding="utf-8")
+                .replace("- 结果：通过", "- 结果：失败")
+                .replace("- 检查的 WikiLink：0\n", ""),
+                encoding="utf-8",
+            )
+
+            report = verify_completed_vault(vault)
+
+        self.assertFalse(report.passed)
+        self.assertIn("链接检查报告与历史迁移记录不一致", report.issues)
+
     def test_lifecycle_names_in_plain_prose_are_not_structure_residue(self):
         from scripts.restructure_obsidian_vault import (
             validate_migration,
